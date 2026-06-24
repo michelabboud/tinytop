@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "wsl-status-dashboard",
+      "name": "tinytop",
       "dependencies": {
         "echarts": "^6.1.0",
       },

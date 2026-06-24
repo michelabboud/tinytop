@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7 - 2026-06-24
+
+- Renamed the project to TinyTop, including package name, app title, default SQLite data directory, browser storage keys, documentation, and local port claim.
+- Rewrote the root `README.md`, `INSTALL.md`, `GUIDE.md`, `ARCHITECTURE.md`, `PROGRESS.md`, and `CHANGELOG.md` documentation set.
+- Added operations and API guides under `docs/guides/`.
+- Documented ports, environment variables, SQLite location, runtime modes, verification commands, troubleshooting, and current persistence limitations.
+
 ## 0.1.6 - 2026-06-24
 
 - Implemented SQLite-backed recent history through a dedicated Bun collector/writer process on `127.0.0.1:4276`.

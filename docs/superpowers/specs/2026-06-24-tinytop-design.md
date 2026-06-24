@@ -1,4 +1,4 @@
-# WSL Status Dashboard Design
+# TinyTop Design
 
 ## Goal
 

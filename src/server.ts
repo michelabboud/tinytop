@@ -177,7 +177,7 @@ export function startServer(): { url: string; stop(force?: boolean): void } {
   const writerBaseUrl =
     process.env.HISTORY_WRITER_URL ?? `http://${process.env.HISTORY_WRITER_HOST ?? DEFAULT_WRITER_HOST}:${process.env.HISTORY_WRITER_PORT ?? DEFAULT_WRITER_PORT}`;
   const writerProcess =
-    process.env.HISTORY_WRITER_URL || process.env.WSL_STATUS_DISABLE_WRITER_SPAWN === "1"
+    process.env.HISTORY_WRITER_URL || process.env.TINYTOP_DISABLE_WRITER_SPAWN === "1"
       ? null
       : Bun.spawn(["bun", "run", new URL("./collector-daemon.ts", import.meta.url).pathname], {
           stdout: "inherit",
@@ -199,7 +199,7 @@ export function startServer(): { url: string; stop(force?: boolean): void } {
     fetch: fetchHandler,
   });
 
-  console.log(`WSL Status Dashboard listening on ${server.url}`);
+  console.log(`TinyTop listening on ${server.url}`);
   return {
     url: String(server.url),
     stop(force?: boolean) {

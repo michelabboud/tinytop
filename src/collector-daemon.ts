@@ -151,7 +151,7 @@ export function startCollectorDaemon(): { url: string; stop(force?: boolean): vo
     console.error(error instanceof Error ? error.message : "initial collection failed");
   });
 
-  console.log(`WSL Status Dashboard writer listening on ${server.url}`);
+  console.log(`TinyTop writer listening on ${server.url}`);
   console.log(`History database: ${defaultHistoryDbPath()}`);
 
   return {

@@ -13,7 +13,7 @@ The dashboard has no project package dependencies. It uses the installed Bun run
 
 ## Playwright QA
 
-Playwright was used only as an external temporary QA runner through `/tmp/wsl-status-dashboard-qa`; it was not added to this project. Chromium was installed into the user Playwright cache to run desktop/mobile rendered checks.
+Playwright was used only as an external temporary QA runner through `/tmp/tinytop-qa`; it was not added to this project. Chromium was installed into the user Playwright cache to run desktop/mobile rendered checks.
 
 ## Alternatives
 

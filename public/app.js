@@ -6,8 +6,8 @@ const MIN_VISIBLE_BAR_SAMPLES = 12;
 const MIN_STACKED_BAR_WIDTH = 12;
 const BAR_CHART_SIDE_PADDING = 70;
 const STORAGE_KEYS = {
-  theme: "wsl-status-dashboard.theme",
-  graphMode: "wsl-status-dashboard.graphMode",
+  theme: "tinytop.theme",
+  graphMode: "tinytop.graphMode",
 };
 const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
 const GRAPH_MODES = {

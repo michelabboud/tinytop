@@ -22,9 +22,9 @@ type MetricSampleRow = {
 export const DEFAULT_HISTORY_LIMIT = 120;
 
 export function defaultHistoryDbPath(): string {
-  if (process.env.WSL_STATUS_HISTORY_DB) return process.env.WSL_STATUS_HISTORY_DB;
+  if (process.env.TINYTOP_HISTORY_DB) return process.env.TINYTOP_HISTORY_DB;
   const dataHome = process.env.XDG_DATA_HOME ?? join(process.env.HOME ?? ".", ".local", "share");
-  return join(dataHome, "wsl-status-dashboard", "history.sqlite");
+  return join(dataHome, "tinytop", "history.sqlite");
 }
 
 function ensureParentDirectory(dbPath: string): void {

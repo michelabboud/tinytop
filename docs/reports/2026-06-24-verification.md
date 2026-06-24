@@ -7,7 +7,7 @@ bun test
 bun run src/server.ts --check
 curl -fsS http://127.0.0.1:4274/health
 curl -fsS http://127.0.0.1:4274/api/snapshot
-bunx playwright test wsl-status-dashboard.qa.spec.js --reporter=line
+bunx playwright test tinytop.qa.spec.js --reporter=line
 ```
 
 ## Results

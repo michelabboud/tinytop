@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add user-selectable visual themes and multiple graph presentations to the standalone WSL Status Dashboard.
+Add user-selectable visual themes and multiple graph presentations to the standalone TinyTop.
 
 ## Design
 

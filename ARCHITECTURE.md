@@ -1,41 +1,177 @@
 # Architecture
 
-The dashboard is a two-process local Bun app. The public dashboard process serves static frontend assets from `public/` on `127.0.0.1:4274`. A private collector/writer process runs on `127.0.0.1:4276`, collects Linux/WSL telemetry, owns the SQLite database, and exposes the local read API used by the dashboard process.
+TinyTop is a two-process local Bun application. The public process serves the browser dashboard. The internal writer process collects telemetry, owns SQLite, and serves current/history reads over loopback.
+
+## Runtime Topology
+
+```text
+Browser
+  |
+  | GET /, /app.js, /styles.css, /vendor/echarts.min.js
+  | GET /api/snapshot
+  | GET /api/history
+  v
+Dashboard process: src/server.ts
+  127.0.0.1:4274
+  |
+  | GET /snapshot/latest
+  | GET /history
+  v
+Writer process: src/collector-daemon.ts
+  127.0.0.1:4276
+  |
+  | reads /proc, df, ps, uname, os-release
+  | writes and reads SQLite
+  v
+SQLite: ~/.local/share/tinytop/history.sqlite
+```
+
+By default, `bun run dev` starts `src/server.ts`, and that process spawns `src/collector-daemon.ts`. For split supervision, start the writer separately with `bun run writer`, then start the dashboard with `TINYTOP_DISABLE_WRITER_SPAWN=1`.
 
 ## Data Flow
 
 1. The browser loads `public/index.html`, `public/styles.css`, `/vendor/echarts.min.js`, and `public/app.js`.
-2. The frontend first requests `/api/history` to hydrate the visible rolling window from SQLite.
-3. The frontend polls `/api/snapshot` on a short interval.
-4. The dashboard process proxies `/api/history` and `/api/snapshot` to the writer process.
-5. The writer process reads `/proc`, `df`, `ps`, `uname`, and OS release files.
-6. Pure parser functions normalize raw system text into a JSON snapshot.
-7. The writer process stores samples in SQLite and serves current/history reads back to the dashboard.
-8. The frontend renders gauges, stat tiles, Apache ECharts live history charts, filesystem bars, pressure panels, and process rows.
+2. `public/app.js` reads browser-local theme and graph-mode settings from `localStorage`.
+3. The frontend requests `/api/history?limit=120&window_seconds=180` to hydrate Live History from SQLite.
+4. The frontend polls `/api/snapshot` every 1500 ms.
+5. `src/server.ts` proxies `/api/history` and `/api/snapshot` to the writer API.
+6. `src/collector-daemon.ts` collects telemetry on a timer and stores samples through `src/history-store.ts`.
+7. `src/history-store.ts` writes one row per sample into SQLite using prepared statements and a transaction.
+8. The frontend deduplicates samples by timestamp, updates gauges, and redraws ECharts views.
 
-## Boundaries
+## Modules
 
-- `src/parsers.ts` contains pure parsing and normalization logic.
-- `src/collector.ts` performs live filesystem and process reads.
-- `src/history-store.ts` owns SQLite schema setup, prepared statements, inserts, and timestamp-range reads.
-- `src/collector-daemon.ts` owns the writer HTTP API and scheduled collection loop.
-- `src/server.ts` owns public HTTP routing, static file serving, local ECharts browser bundle routing, and proxying dashboard reads to the writer process.
-- `public/` contains code-native UI assets and the app shell that uses Apache ECharts from `node_modules`.
+| Path | Responsibility |
+| --- | --- |
+| `src/parsers.ts` | Pure parsing and normalization for `/proc`, pressure, load, filesystems, and runtime detection |
+| `src/collector.ts` | Live host reads from Linux/WSL sources and `SystemSnapshot` construction |
+| `src/history-store.ts` | SQLite setup, pragmas, indexes, prepared inserts, latest reads, range reads |
+| `src/collector-daemon.ts` | Writer HTTP API, scheduled collection loop, SQLite ownership |
+| `src/server.ts` | Public HTTP server, static assets, ECharts bundle route, writer proxy |
+| `public/index.html` | App shell and semantic dashboard structure |
+| `public/styles.css` | Themes, layout, responsive behavior, dashboard styling |
+| `public/app.js` | Browser state, polling, history hydration, ECharts rendering, interactions |
+| `tests/` | Bun tests for parsers, snapshot building, server routes, and history storage |
+
+## Public Dashboard API
+
+The public dashboard process exposes:
+
+- `GET /health`
+- `GET /api/snapshot`
+- `GET /api/history?limit=&window_seconds=&since_ms=&until_ms=`
+- `GET /vendor/echarts.min.js`
+- static frontend assets: `/`, `/index.html`, `/styles.css`, `/app.js`
+
+See [docs/guides/API.md](docs/guides/API.md) for request and response details.
+
+## Writer API
+
+The writer process exposes:
+
+- `GET /health`
+- `GET /snapshot/latest`
+- `GET /snapshot/collect`
+- `GET /history?limit=&window_seconds=&since_ms=&until_ms=`
+
+The writer API is internal. It binds to loopback by default and should not be exposed publicly.
+
+## SQLite
+
+Default database path:
+
+```text
+~/.local/share/tinytop/history.sqlite
+```
+
+Override:
+
+```bash
+TINYTOP_HISTORY_DB=/path/to/history.sqlite bun run dev
+```
+
+SQLite pragmas:
+
+```sql
+PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA busy_timeout = 5000;
+PRAGMA foreign_keys = ON;
+```
+
+Current table:
+
+```sql
+CREATE TABLE IF NOT EXISTS metric_samples (
+  sample_id INTEGER PRIMARY KEY,
+  captured_at_ms INTEGER NOT NULL UNIQUE,
+  snapshot_timestamp TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  cpu_usage_percent REAL NOT NULL,
+  cpu_cores INTEGER NOT NULL,
+  memory_used_percent REAL NOT NULL,
+  memory_used_bytes INTEGER NOT NULL,
+  memory_total_bytes INTEGER NOT NULL,
+  swap_used_percent REAL NOT NULL,
+  swap_used_bytes INTEGER NOT NULL,
+  swap_total_bytes INTEGER NOT NULL,
+  load_one REAL NOT NULL,
+  load_five REAL NOT NULL,
+  load_fifteen REAL NOT NULL,
+  load_percent REAL NOT NULL,
+  runnable_threads INTEGER NOT NULL,
+  total_threads INTEGER NOT NULL,
+  root_used_percent REAL,
+  snapshot_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
+  ON metric_samples (captured_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
+  ON metric_samples (runtime_kind, captured_at_ms DESC);
+```
+
+The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. This supports refresh-safe chart hydration and selected-sample detail rendering. Normalized filesystem/process/pressure child tables and rollups are planned for future longer-range analytics.
 
 ## Frontend State
 
-Theme and history view mode are frontend-only preferences. The browser stores them in `localStorage` under the `wsl-status-dashboard.*` key prefix. The frontend keeps a rolling in-memory snapshot buffer hydrated from `/api/history` and updated by `/api/snapshot`. The timeline scrubber and ECharts history chart render older samples into the main gauges and label the selected sample with local datetime context. These controls affect CSS variables, chart rendering, and which already-collected sample is displayed; they do not affect collection, server routing, or host state.
+Browser-local settings:
 
-## Persistence
+- `tinytop.theme`
+- `tinytop.graphMode`
 
-The persistence architecture is documented in `docs/sqlite-history-architecture.md`. It uses a dedicated Bun collector/writer process as the only SQLite owner, with the dashboard process reading history through that writer process rather than opening the database directly.
+In-memory session state:
 
-The architecture decisions are recorded in `docs/adr/0001-sqlite-writer-process.md` and `docs/adr/0002-initial-snapshot-json-history.md`.
+- hydrated snapshots
+- selected timeline index
+- ECharts instance
+- pause/loading flags
 
-## Safety
-
-The app is read-only. It does not restart services, kill processes, change sysctl values, modify WSL configuration, or write system data. It binds to loopback by default.
+The browser keeps a rolling 120-sample window. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width. When the visible capacity is reached, the window rolls left: new samples appear on the right and older visible samples disappear on the left.
 
 ## Runtime Detection
 
-Runtime detection is explicit. The collector checks `/proc/sys/kernel/osrelease` and `/proc/version` for Microsoft/WSL markers. If those are absent, it checks `WSL_DISTRO_NAME` and `WSL_INTEROP`. If no WSL markers exist and Linux kernel metadata is present, the runtime is classified as real Linux.
+Runtime detection is explicit and conservative:
+
+1. Check kernel release/version text for Microsoft/WSL markers.
+2. Check `WSL_DISTRO_NAME` and `WSL_INTEROP`.
+3. If no WSL markers exist and Linux metadata is present, classify as real Linux.
+4. Otherwise classify as unknown.
+
+## Safety Boundaries
+
+The app is read-only with respect to the operating system:
+
+- It reads `/proc`, OS release files, `df`, `ps`, and `uname`.
+- It writes only to the configured SQLite history database.
+- It does not restart services, kill processes, change sysctl values, edit WSL config, or modify host state.
+- It binds to loopback by default.
+
+## Decisions
+
+Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
+
+- [0001 - SQLite Writer Process](docs/adr/0001-sqlite-writer-process.md)
+- [0002 - Initial Snapshot JSON History](docs/adr/0002-initial-snapshot-json-history.md)

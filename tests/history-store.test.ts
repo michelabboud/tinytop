@@ -14,7 +14,7 @@ afterEach(() => {
 });
 
 function tempDbPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "wsl-status-history-"));
+  const dir = mkdtempSync(join(tmpdir(), "tinytop-history-"));
   tempDirs.push(dir);
   return join(dir, "history.sqlite");
 }
