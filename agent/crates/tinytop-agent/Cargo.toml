@@ -1,0 +1,13 @@
+[package]
+name = "tinytop-agent"
+version = "0.1.12"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+tinytop-collectors = { path = "../tinytop-collectors" }
+tinytop-store = { path = "../tinytop-store" }
+tokio.workspace = true

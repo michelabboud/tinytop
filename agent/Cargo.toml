@@ -1,0 +1,23 @@
+[workspace]
+members = [
+  "crates/tinytop-agent",
+  "crates/tinytop-collectors",
+  "crates/tinytop-store",
+  "crates/tinytop-types",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/michelabboud/tinytop"
+
+[workspace.dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "json"] }
+sysinfo = { version = "=0.39.5", default-features = false, features = ["disk", "system"] }
+procfs = { version = "=0.18.0", default-features = false }
+time = { version = "=0.3.51", features = ["formatting"] }
+tokio = { version = "=1.52.3", features = ["macros", "rt-multi-thread"] }

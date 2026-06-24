@@ -20,6 +20,7 @@ Use the root command center first:
 - Bun matching the repo package manager line: `bun@1.3.11`
 - A shell with access to `/proc`
 - Loopback ports `4274` and `4276` available unless overridden
+- Optional for the Rust collector preview: Rust `1.95.0` or newer
 
 If Bun is missing, TinyTop can print or run the official installer:
 
@@ -55,7 +56,9 @@ cd /path/to/tinytop
 ./tinytop deps
 ```
 
-The only runtime dependency is Apache ECharts. The server serves the browser bundle from local `node_modules` through `/vendor/echarts.min.js`.
+The Bun dashboard runtime dependency is Apache ECharts. The server serves the browser bundle from local `node_modules` through `/vendor/echarts.min.js`.
+
+The optional Rust collector preview has its own Cargo workspace under `agent/`.
 
 ## Check Ports
 
@@ -161,6 +164,13 @@ Run the automated checks:
 ```bash
 ./tinytop check
 git diff --check
+```
+
+If Rust is installed, also run the Rust collector checks:
+
+```bash
+cargo test --manifest-path agent/Cargo.toml --workspace
+cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
 ```
 
 Check HTTP endpoints:

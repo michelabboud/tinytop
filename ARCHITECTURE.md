@@ -2,6 +2,8 @@
 
 TinyTop is a two-process local Bun application. The public process serves the browser dashboard. The internal writer process collects telemetry, owns SQLite, and serves current/history reads over loopback.
 
+An additive Rust collector preview lives under `agent/`. It does not replace the Bun collector or writer yet.
+
 ## Runtime Topology
 
 ```text
@@ -59,6 +61,24 @@ It works before Bun is installed for help and bootstrap, then hands off to
 | `public/styles.css` | Themes, layout, responsive behavior, dashboard styling |
 | `public/app.js` | Browser state, polling, history hydration, ECharts rendering, interactions |
 | `tests/` | Bun tests for parsers, snapshot building, server routes, and history storage |
+| `agent/crates/tinytop-types` | Rust snapshot structs serialized to the existing dashboard JSON contract |
+| `agent/crates/tinytop-collectors` | Rust platform collector crate; currently Linux/WSL only |
+| `agent/crates/tinytop-store` | SQLx-backed Rust history store using the current SQLite schema |
+| `agent/crates/tinytop-agent` | Rust CLI preview for collecting JSON and optional collect-and-store checks |
+
+## Rust Collector Preview
+
+The Rust workspace is intentionally additive. The existing Bun collector remains intact in `src/collector.ts`, and `src/collector-daemon.ts` is still the default writer used by `./tinytop start`.
+
+Current Rust preview commands:
+
+```bash
+cargo test --manifest-path agent/Cargo.toml --workspace
+cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
+cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json --sqlite sqlite::memory:
+```
+
+The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun collector while using Rust crates for host access. It uses `procfs` for Linux kernel metrics such as CPU ticks, memory, load, uptime, and pressure stall information, and `sysinfo` for disk, process, hostname, OS, and kernel metadata. It does not shell out to `df`, `ps`, or `uname`. The live collector keeps a reusable `sysinfo::System` across samples so process and CPU refreshes have previous state and avoid rebuilding all collector state on every interval. The Rust store uses SQLx with SQLite today, with SQL isolated in `tinytop-store` so future PostgreSQL/MySQL support does not leak into collector code.
 
 ## Public Dashboard API
 
@@ -187,3 +207,4 @@ Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
 - [0001 - SQLite Writer Process](docs/adr/0001-sqlite-writer-process.md)
 - [0002 - Initial Snapshot JSON History](docs/adr/0002-initial-snapshot-json-history.md)
 - [0003 - Bash Bootstrap Plus Bun Install Wizard](docs/adr/0003-bash-bootstrap-bun-install-wizard.md)
+- [0004 - Additive Rust Agent With SQLx Store](docs/adr/0004-rust-agent-sqlx-store.md)

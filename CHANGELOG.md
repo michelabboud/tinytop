@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.12 - 2026-06-24
+
+- Added an additive Rust workspace under `agent/` without removing or replacing the existing Bun collector.
+- Added shared Rust snapshot types that serialize to the current dashboard JSON contract.
+- Added a Rust Linux/WSL collector with parser, fixture, live-host, and no-shell-command tests.
+- Added a SQLx-backed SQLite history store proof point for the Rust agent path.
+- Added `tinytop-agent collect --json` and optional `--sqlite` collect-and-store mode.
+- Documented the Rust collector preview, SQLx decision, dependency vetting, crate-backed host collection, and Rust `1.95.0` requirement.
+
 ## 0.1.11 - 2026-06-24
 
 - Changed the project license from MIT to Apache License 2.0.

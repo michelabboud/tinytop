@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.11`
+- Version: `0.1.12`
 - Date: 2026-06-24
-- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, and private GitHub release preparation.
+- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, and an additive Rust Linux/WSL collector preview with SQLx store.
 
 ## Completed
 
@@ -109,6 +109,17 @@
 - [x] Added a NOTICE file.
 - [x] Prepared the docs for a private GitHub release review before public conversion.
 
+### 0.1.12 - Rust Linux Collector Preview
+
+- [x] Kept the existing Bun collector and writer intact.
+- [x] Added `agent/` as a Rust workspace.
+- [x] Added shared Rust snapshot types matching the existing JSON contract.
+- [x] Added a Linux/WSL Rust collector with fixture, live-host, and no-shell-command tests.
+- [x] Kept Rust host collection crate-backed through `procfs` and `sysinfo`, with a reusable live `sysinfo::System`.
+- [x] Added a SQLx-backed SQLite store crate for the Rust agent path.
+- [x] Added `tinytop-agent collect --json` and optional `--sqlite` storage mode.
+- [x] Documented the SQLx architecture decision and dependency vetting.
+
 ## Known Limitations
 
 - SQLite retention is not implemented yet. The writer stores recent samples indefinitely until the database is manually archived or reset.
@@ -116,6 +127,8 @@
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
 - The UI hydrates a 120-sample rolling window, not arbitrary long-range history browsing.
 - The app is designed for loopback/local use, not remote multi-user deployment.
+- The Rust agent is a preview and is not wired into the default `./tinytop start` runtime yet.
+- Native Windows and macOS collectors are planned but not implemented yet.
 
 ## Recommended Next Work
 
@@ -124,3 +137,7 @@
 - [ ] Add a dashboard setting for visible history duration and persisted sample count.
 - [ ] Add a writer health indicator in the UI when the internal writer API is unreachable.
 - [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
+- [ ] Add a Rust writer HTTP API compatible with the current Bun writer API.
+- [ ] Add a runtime switch so the dashboard can use the Rust writer when selected.
+- [ ] Add native Windows collector support.
+- [ ] Add native macOS collector support.
