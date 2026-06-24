@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 - 2026-06-24
+
+- Replaced the hand-rolled Live History canvas chart with Apache ECharts served from the local dependency tree.
+- Added ECharts-backed stacked area, stacked bar, heatmap, and treemap graph modes.
+- Added a local `/vendor/echarts.min.js` route and coverage for serving that bundle.
+- Kept visible-window sample counts, chart sample selection, and compact selected-sample metric chips.
+
 ## 0.1.3 - 2026-06-24
 
 - Restored the Live History bar graph mode.

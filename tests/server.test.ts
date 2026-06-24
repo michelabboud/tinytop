@@ -92,6 +92,20 @@ describe("createFetchHandler", () => {
     expect(body.cpu.usagePercent).toBe(42);
   });
 
+  test("serves the local ECharts browser bundle", async () => {
+    const handler = createFetchHandler({
+      publicDir: "/missing",
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+    });
+
+    const response = await handler(new Request("http://127.0.0.1:4274/vendor/echarts.min.js"));
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/javascript");
+    expect(body).toContain("echarts");
+  });
+
   test("returns 404 for unknown API routes", async () => {
     const handler = createFetchHandler({
       publicDir: "/missing",

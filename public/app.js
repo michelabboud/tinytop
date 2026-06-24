@@ -1,5 +1,6 @@
 const POLL_MS = 1500;
 const MAX_HISTORY = 120;
+const MAX_VISIBLE_HISTORY = 80;
 const STORAGE_KEYS = {
   theme: "wsl-status-dashboard.theme",
   graphMode: "wsl-status-dashboard.graphMode",
@@ -10,12 +11,20 @@ const GRAPH_MODES = {
   area: "Area graph",
   bar: "Bar graph",
   heatmap: "Heatmap",
+  treemap: "Treemap",
 };
+const HISTORY_METRICS = [
+  { key: "cpu", label: "CPU" },
+  { key: "ram", label: "RAM" },
+  { key: "swap", label: "SWAP" },
+  { key: "load", label: "LOAD" },
+];
 
 const state = {
   paused: false,
   loading: false,
   timer: null,
+  historyChartInstance: null,
   theme: "midnight",
   graphMode: "line",
   snapshots: [],
@@ -264,189 +273,311 @@ function drawSparkline(canvas, values, color) {
   context.stroke();
 }
 
-function drawHistoryChart() {
-  const canvas = elements.historyChart;
-  if (!canvas) return;
-  const context = canvas.getContext("2d");
-  const palette = chartPalette();
-  const ratio = window.devicePixelRatio || 1;
-  const width = canvas.clientWidth || canvas.width;
-  const height = canvas.clientHeight || canvas.height;
-  canvas.width = Math.floor(width * ratio);
-  canvas.height = Math.floor(height * ratio);
-  context.scale(ratio, ratio);
-  context.clearRect(0, 0, width, height);
+function visibleHistoryRange() {
+  const total = state.snapshots.length;
+  if (total === 0) return { start: 0, end: 0, total, visible: 0 };
 
-  context.strokeStyle = palette.grid;
-  context.globalAlpha = 0.4;
-  context.lineWidth = 1;
-  for (let line = 1; line < 5; line += 1) {
-    const y = (height / 5) * line;
-    context.beginPath();
-    context.moveTo(0, y);
-    context.lineTo(width, y);
-    context.stroke();
+  const visible = Math.min(total, MAX_VISIBLE_HISTORY);
+  if (total <= visible) return { start: 0, end: total, total, visible };
+
+  const liveStart = total - visible;
+  if (state.selectedSampleIndex === null) {
+    return { start: liveStart, end: total, total, visible };
   }
-  context.globalAlpha = 1;
 
-  const series = historySeries();
-  if (state.graphMode === "area") drawAreaHistory(context, width, height, series);
-  else if (state.graphMode === "bar") drawBarHistory(context, width, height, series);
-  else if (state.graphMode === "heatmap") drawHeatmapHistory(context, width, height, series, palette);
-  else drawLineHistory(context, width, height, series);
-
-  if (state.graphMode !== "heatmap") drawHistoryAxisLabels(context, width, height, palette);
-  drawHistoryLegend(context, series, palette);
-  drawHistoryMarker(context, width, height, palette);
+  const centeredStart = state.selectedSampleIndex - Math.floor(visible / 2);
+  const start = Math.max(0, Math.min(centeredStart, liveStart));
+  return { start, end: start + visible, total, visible };
 }
 
-function drawLineHistory(context, width, height, series) {
-  for (const item of series) {
-    if (item.values.length < 2) continue;
-    context.strokeStyle = item.color;
-    context.lineWidth = 2;
-    context.setLineDash(item.dashed ? [6, 5] : []);
-    context.beginPath();
-    const denominator = Math.max(1, item.values.length - 1);
-    item.values.forEach((value, index) => {
-      const x = (index / denominator) * width;
-      const y = height - (clampPercent(value) / 100) * height;
-      if (index === 0) context.moveTo(x, y);
-      else context.lineTo(x, y);
-    });
-    context.stroke();
-    context.setLineDash([]);
+function visibleHistorySeries(series, range) {
+  return series.map((item) => ({
+    ...item,
+    values: item.values.slice(range.start, range.end),
+  }));
+}
+
+function echartsApi() {
+  return window.echarts;
+}
+
+function historyChartInstance() {
+  const echarts = echartsApi();
+  if (!elements.historyChart || !echarts) return null;
+  if (!state.historyChartInstance) {
+    state.historyChartInstance = echarts.init(elements.historyChart, null, { renderer: "canvas" });
+    state.historyChartInstance.on("click", handleHistoryChartClick);
+    state.historyChartInstance.getZr().on("click", handleHistoryPlotClick);
   }
+  return state.historyChartInstance;
 }
 
-function drawAreaHistory(context, width, height, series) {
-  for (const item of series) {
-    if (item.values.length < 2) continue;
-    const gradient = context.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, item.color);
-    gradient.addColorStop(1, "transparent");
-    context.globalAlpha = item.label === "LOAD" ? 0.16 : 0.22;
-    context.fillStyle = gradient;
-    context.beginPath();
-    const denominator = Math.max(1, item.values.length - 1);
-    item.values.forEach((value, index) => {
-      const x = (index / denominator) * width;
-      const y = height - (clampPercent(value) / 100) * height;
-      if (index === 0) context.moveTo(x, y);
-      else context.lineTo(x, y);
-    });
-    context.lineTo(width, height);
-    context.lineTo(0, height);
-    context.closePath();
-    context.fill();
-    context.globalAlpha = 1;
-  }
-  drawLineHistory(context, width, height, series);
+function historyChartColors(palette) {
+  return [palette.cpu, palette.ram, palette.swap, palette.load];
 }
 
-function drawBarHistory(context, width, height, series) {
-  const topOffset = 36;
-  const bottomOffset = 8;
-  const plotHeight = Math.max(1, height - topOffset - bottomOffset);
-  const visibleCount = Math.min(Math.max(...series.map((item) => item.values.length), 1), 80);
-  const groupWidth = width / visibleCount;
-  const groupGap = Math.min(5, Math.max(1, groupWidth * 0.16));
-  const availableWidth = Math.max(1, groupWidth - groupGap * 2);
-  const barWidth = Math.max(1, availableWidth / series.length);
-
-  series.forEach((item, seriesIndex) => {
-    const values = item.values.slice(-visibleCount);
-    values.forEach((value, index) => {
-      const normalized = clampPercent(value) / 100;
-      const barHeight = normalized * plotHeight;
-      const x = index * groupWidth + groupGap + seriesIndex * barWidth;
-      const y = topOffset + plotHeight - barHeight;
-
-      context.fillStyle = item.color;
-      context.globalAlpha = item.label === "LOAD" ? 0.72 : 0.9;
-      context.fillRect(x, y, Math.max(1, barWidth - 1), Math.max(1, barHeight));
-    });
-  });
-  context.globalAlpha = 1;
+function historyCategories(range) {
+  return state.snapshots.slice(range.start, range.end).map((sample) => formatSampleTime(sample.capturedAt));
 }
 
-function drawHeatmapHistory(context, width, height, series, palette) {
-  const topOffset = 36;
-  const rowGap = 8;
-  const labelWidth = 54;
-  const valueWidth = 56;
-  const rowHeight = Math.max(20, (height - topOffset - rowGap * (series.length - 1) - 12) / series.length);
-  const visibleCount = Math.min(Math.max(...series.map((item) => item.values.length), 1), 80);
-  const cellAreaWidth = Math.max(1, width - labelWidth - valueWidth - 20);
-  const cellWidth = cellAreaWidth / visibleCount;
+function baseCartesianOption(palette, range) {
+  return {
+    animation: false,
+    color: historyChartColors(palette),
+    backgroundColor: "transparent",
+    grid: {
+      top: 42,
+      right: 18,
+      bottom: 28,
+      left: 52,
+      containLabel: false,
+    },
+    legend: {
+      top: 8,
+      left: 8,
+      itemWidth: 16,
+      itemHeight: 3,
+      textStyle: { color: palette.text },
+      data: HISTORY_METRICS.map((metric) => metric.label),
+    },
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      valueFormatter: (value) => formatPercent(Number(value)),
+      axisPointer: { type: state.graphMode === "bar" ? "shadow" : "line" },
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: state.graphMode === "bar",
+      data: historyCategories(range),
+      axisLine: { lineStyle: { color: palette.grid } },
+      axisTick: { show: false },
+      axisLabel: {
+        color: palette.muted,
+        hideOverlap: true,
+        maxInterval: Math.max(1, Math.floor(Math.max(1, range.visible) / 6)),
+      },
+    },
+    yAxis: {
+      type: "value",
+      min: 0,
+      axisLabel: {
+        color: palette.muted,
+        formatter: "{value}%",
+      },
+      splitLine: { lineStyle: { color: palette.grid } },
+    },
+  };
+}
 
-  context.font = "12px Inter, system-ui, sans-serif";
+function lineSeries(series) {
+  return series.map((item) => ({
+    name: item.label,
+    type: "line",
+    data: item.values.map(clampPercent),
+    showSymbol: false,
+    symbol: "circle",
+    symbolSize: 5,
+    smooth: false,
+    lineStyle: {
+      width: item.dashed ? 2 : 2.5,
+      type: item.dashed ? "dashed" : "solid",
+    },
+    emphasis: { focus: "series" },
+  }));
+}
+
+function areaSeries(series) {
+  return series.map((item) => ({
+    name: item.label,
+    type: "line",
+    stack: "total",
+    data: item.values.map(clampPercent),
+    showSymbol: false,
+    smooth: false,
+    areaStyle: { opacity: item.label === "LOAD" ? 0.42 : 0.55 },
+    lineStyle: { width: 1.8 },
+    emphasis: { focus: "series" },
+  }));
+}
+
+function barSeries(series) {
+  return series.map((item) => ({
+    name: item.label,
+    type: "bar",
+    stack: "total",
+    data: item.values.map(clampPercent),
+    barMaxWidth: 18,
+    emphasis: { focus: "series" },
+  }));
+}
+
+function buildLineOption(palette, range, series) {
+  return {
+    ...baseCartesianOption(palette, range),
+    yAxis: {
+      ...baseCartesianOption(palette, range).yAxis,
+      max: 100,
+    },
+    series: lineSeries(series),
+  };
+}
+
+function buildAreaOption(palette, range, series) {
+  return {
+    ...baseCartesianOption(palette, range),
+    tooltip: {
+      ...baseCartesianOption(palette, range).tooltip,
+      order: "seriesDesc",
+    },
+    series: areaSeries(series),
+  };
+}
+
+function buildBarOption(palette, range, series) {
+  return {
+    ...baseCartesianOption(palette, range),
+    series: barSeries(series),
+  };
+}
+
+function buildHeatmapOption(palette, range, series) {
+  const categories = historyCategories(range);
+  const data = [];
   series.forEach((item, rowIndex) => {
-    const y = topOffset + rowIndex * (rowHeight + rowGap);
-    const values = item.values.slice(-visibleCount);
-    const latestValue = values.at(-1);
-
-    context.fillStyle = item.color;
-    context.globalAlpha = 0.08;
-    context.fillRect(labelWidth, y, cellAreaWidth, rowHeight);
-    context.globalAlpha = 0.95;
-    context.fillText(item.label, 12, y + rowHeight * 0.62);
-
-    values.forEach((value, index) => {
-      const intensity = 0.08 + (clampPercent(value) / 100) * 0.82;
-      context.globalAlpha = intensity;
-      context.fillStyle = item.color;
-      context.fillRect(labelWidth + index * cellWidth, y, Math.max(1, cellWidth - 1), rowHeight);
+    item.values.forEach((value, index) => {
+      data.push([index, rowIndex, clampPercent(value)]);
     });
-
-    context.globalAlpha = 0.86;
-    context.fillStyle = palette.text;
-    context.fillText(Number.isFinite(latestValue) ? formatPercent(latestValue) : "-", width - valueWidth + 8, y + rowHeight * 0.62);
   });
-  context.globalAlpha = 1;
+
+  return {
+    animation: false,
+    backgroundColor: "transparent",
+    grid: {
+      top: 36,
+      right: 18,
+      bottom: 46,
+      left: 54,
+      containLabel: false,
+    },
+    tooltip: {
+      position: "top",
+      confine: true,
+      formatter: (params) => {
+        const [sampleIndex, metricIndex, value] = params.value;
+        return `${series[metricIndex]?.label ?? "Metric"}<br>${categories[sampleIndex]}: ${formatPercent(value)}`;
+      },
+    },
+    xAxis: {
+      type: "category",
+      data: categories,
+      splitArea: { show: true },
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: palette.grid } },
+      axisLabel: {
+        color: palette.muted,
+        hideOverlap: true,
+        maxInterval: Math.max(1, Math.floor(Math.max(1, range.visible) / 6)),
+      },
+    },
+    yAxis: {
+      type: "category",
+      data: series.map((item) => item.label),
+      axisTick: { show: false },
+      axisLine: { lineStyle: { color: palette.grid } },
+      axisLabel: { color: palette.text },
+    },
+    visualMap: {
+      min: 0,
+      max: 100,
+      calculable: false,
+      orient: "horizontal",
+      left: "center",
+      bottom: 8,
+      textStyle: { color: palette.muted },
+      inRange: {
+        color: ["#e0f2fe", "#38bdf8", "#22c55e", "#f59e0b", "#ef4444"],
+      },
+    },
+    series: [
+      {
+        name: "Usage",
+        type: "heatmap",
+        data,
+        label: { show: false },
+        emphasis: {
+          itemStyle: {
+            shadowBlur: 8,
+            shadowColor: "rgba(0, 0, 0, 0.22)",
+          },
+        },
+      },
+    ],
+  };
 }
 
-function drawHistoryLegend(context, series, palette) {
-  context.font = "12px Inter, system-ui, sans-serif";
-  series.forEach((item, seriesIndex) => {
-    const x = 16 + seriesIndex * 92;
-    context.fillStyle = item.color;
-    context.fillRect(x, 16, 16, 3);
-    context.fillStyle = palette.text;
-    context.globalAlpha = 0.82;
-    context.fillText(item.label, x + 22, 20);
-  });
-  context.globalAlpha = 1;
+function buildTreemapOption(palette) {
+  const sample = selectedSample();
+  const colors = historyChartColors(palette);
+  const data = sampleMetricValues(sample).map(([name, value], index) => ({
+    name,
+    value: Math.max(0.1, clampPercent(value)),
+    itemStyle: { color: colors[index] },
+    label: {
+      formatter: `${name}\n${formatPercent(value)}`,
+    },
+  }));
+
+  return {
+    animation: false,
+    backgroundColor: "transparent",
+    tooltip: {
+      confine: true,
+      formatter: (params) => `${params.name}: ${formatPercent(Number(params.value))}`,
+    },
+    series: [
+      {
+        type: "treemap",
+        roam: false,
+        nodeClick: false,
+        breadcrumb: { show: false },
+        top: 16,
+        bottom: 12,
+        left: 12,
+        right: 12,
+        label: {
+          show: true,
+          color: palette.text,
+          fontWeight: 800,
+          fontSize: 13,
+        },
+        upperLabel: { show: false },
+        itemStyle: {
+          borderColor: palette.grid,
+          borderWidth: 2,
+          gapWidth: 4,
+        },
+        data,
+      },
+    ],
+  };
 }
 
-function drawHistoryAxisLabels(context, width, height, palette) {
-  context.save();
-  context.font = "11px Inter, system-ui, sans-serif";
-  context.textAlign = "right";
-  context.fillStyle = palette.muted;
-  context.globalAlpha = 0.76;
-  for (let line = 1; line < 5; line += 1) {
-    const y = (height / 5) * line;
-    context.fillText(`${100 - line * 20}%`, width - 8, y - 4);
-  }
-  context.fillText("0%", width - 8, height - 7);
-  context.restore();
+function historyChartOption(palette, range, series) {
+  if (state.graphMode === "area") return buildAreaOption(palette, range, series);
+  if (state.graphMode === "bar") return buildBarOption(palette, range, series);
+  if (state.graphMode === "heatmap") return buildHeatmapOption(palette, range, series);
+  if (state.graphMode === "treemap") return buildTreemapOption(palette);
+  return buildLineOption(palette, range, series);
 }
 
-function drawHistoryMarker(context, width, height, palette) {
-  if (state.selectedSampleIndex === null || state.snapshots.length < 2) return;
-  const denominator = Math.max(1, state.snapshots.length - 1);
-  const x = (state.selectedSampleIndex / denominator) * width;
-  context.save();
-  context.strokeStyle = palette.text;
-  context.globalAlpha = 0.68;
-  context.lineWidth = 1.5;
-  context.setLineDash([4, 5]);
-  context.beginPath();
-  context.moveTo(x, 0);
-  context.lineTo(x, height);
-  context.stroke();
-  context.restore();
+function drawHistoryChart() {
+  const chart = historyChartInstance();
+  if (!chart) return;
+  const palette = chartPalette();
+  const range = visibleHistoryRange();
+  const series = visibleHistorySeries(historySeries(), range);
+  chart.setOption(historyChartOption(palette, range, series), true);
 }
 
 function selectedSample() {
@@ -485,6 +616,20 @@ function renderHistorySampleValues(sample) {
   );
 }
 
+function historySampleCountText(sampleCount, range) {
+  const base = `${sampleCount} ${sampleCount === 1 ? "sample" : "samples"}`;
+  if (sampleCount > range.visible && range.visible > 0) return `${base} / ${range.visible} shown`;
+  return base;
+}
+
+function updateHistoryChartTitle(sample) {
+  if (!elements.historyChart || !sample) return;
+  const metrics = sampleMetricValues(sample)
+    .map(([name, value]) => `${name} ${formatPercent(value)}`)
+    .join(", ");
+  elements.historyChart.title = `${formatSampleDateTime(sample.capturedAt)} - ${metrics}`;
+}
+
 function updateHistoryControls() {
   const sampleCount = state.snapshots.length;
   const lastIndex = Math.max(0, sampleCount - 1);
@@ -492,6 +637,7 @@ function updateHistoryControls() {
   const activeSample = selectedSample();
   const firstSample = state.snapshots[0];
   const latestSample = state.snapshots[lastIndex];
+  const range = visibleHistoryRange();
   const isLive = state.selectedSampleIndex === null;
   const positionText =
     activeSample && isLive
@@ -506,11 +652,12 @@ function updateHistoryControls() {
         ? `Sample ${activeIndex + 1} of ${sampleCount}, ${formatSampleDateTime(activeSample.capturedAt)}`
         : "Live";
 
-  setText(elements.sampleCount, `${sampleCount} ${sampleCount === 1 ? "sample" : "samples"}`);
+  setText(elements.sampleCount, historySampleCountText(sampleCount, range));
   setText(elements.historyPositionLabel, positionText);
   setText(elements.historyStartLabel, firstSample ? formatSampleDateTime(firstSample.capturedAt) : "-");
   setText(elements.historyEndLabel, latestSample ? `Live - ${formatSampleTime(latestSample.capturedAt)}` : "Live");
   renderHistorySampleValues(activeSample);
+  updateHistoryChartTitle(activeSample);
 
   if (elements.historyScrubber) {
     elements.historyScrubber.disabled = sampleCount < 2;
@@ -544,6 +691,59 @@ function returnToLiveHistory() {
   state.selectedSampleIndex = null;
   renderSelectedSample();
   redrawCharts();
+}
+
+function selectHistoryIndex(index) {
+  if (state.snapshots.length === 0) return;
+  const lastIndex = state.snapshots.length - 1;
+  const nextIndex = Math.max(0, Math.min(index, lastIndex));
+  if (nextIndex >= lastIndex) returnToLiveHistory();
+  else setHistorySelection(nextIndex);
+}
+
+function historySampleIndexFromChartParams(params) {
+  const range = visibleHistoryRange();
+  if (range.visible <= 0) return null;
+  if (state.graphMode === "treemap") return state.selectedSampleIndex ?? state.snapshots.length - 1;
+
+  const rawIndex = Array.isArray(params.value) ? params.value[0] : params.dataIndex;
+  const visibleIndex = Number(rawIndex);
+  if (!Number.isFinite(visibleIndex)) return null;
+  return Math.max(range.start, Math.min(range.start + visibleIndex, range.end - 1));
+}
+
+function handleHistoryChartClick(params) {
+  const index = historySampleIndexFromChartParams(params);
+  if (index === null) return;
+  selectHistoryIndex(index);
+}
+
+function handleHistoryPlotClick(event) {
+  const chart = state.historyChartInstance;
+  if (!chart || state.graphMode === "treemap") return;
+
+  const point = [event.offsetX, event.offsetY];
+  if (!chart.containPixel({ gridIndex: 0 }, point)) return;
+
+  const range = visibleHistoryRange();
+  const visibleCount = range.end - range.start;
+  if (visibleCount <= 0) return;
+
+  const [rawIndex] = chart.convertFromPixel({ gridIndex: 0 }, point);
+  const visibleIndex =
+    state.graphMode === "bar" || state.graphMode === "heatmap"
+      ? Math.floor(Number(rawIndex))
+      : Math.round(Number(rawIndex));
+  if (!Number.isFinite(visibleIndex)) return;
+
+  selectHistoryIndex(Math.max(range.start, Math.min(range.start + visibleIndex, range.end - 1)));
+}
+
+function moveHistorySelection(delta) {
+  if (state.snapshots.length === 0) return;
+  const lastIndex = state.snapshots.length - 1;
+  const currentIndex = state.selectedSampleIndex ?? lastIndex;
+  selectHistoryIndex(currentIndex + delta);
 }
 
 function renderFilesystems(filesystems) {
@@ -741,7 +941,24 @@ elements.liveButton?.addEventListener("click", () => {
   returnToLiveHistory();
 });
 
+elements.historyChart?.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    moveHistorySelection(-1);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    moveHistorySelection(1);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    selectHistoryIndex(0);
+  } else if (event.key === "End") {
+    event.preventDefault();
+    returnToLiveHistory();
+  }
+});
+
 window.addEventListener("resize", () => {
+  state.historyChartInstance?.resize();
   redrawCharts();
 });
 

@@ -27,3 +27,10 @@
 - [x] Moved graph type controls into the Live History top nav.
 - [x] Relocated the timeline below the chart with selected datetime context.
 - [x] Added numeric context to graph axes, timeline values, and heatmap lanes.
+
+## 0.1.4
+
+- [x] Replaced custom Live History chart rendering with Apache ECharts.
+- [x] Added stacked area, stacked bar, heatmap, and treemap modes.
+- [x] Served the ECharts browser bundle from a local dependency route.
+- [x] Verified chart selection, visible-window labeling, desktop layout, and mobile layout.

@@ -3,6 +3,7 @@ import { collectSnapshot, type SystemSnapshot } from "./collector";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4274;
 const PUBLIC_DIR = new URL("../public", import.meta.url).pathname;
+const ECHARTS_DIST = new URL("../node_modules/echarts/dist/echarts.min.js", import.meta.url).pathname;
 
 type SnapshotResult = {
   snapshot: SystemSnapshot;
@@ -37,6 +38,12 @@ function staticFileName(pathname: string): string | null {
   if (pathname === "/styles.css") return "styles.css";
   if (pathname === "/app.js") return "app.js";
   return null;
+}
+
+function staticFilePath(pathname: string, publicDir: string): string | null {
+  if (pathname === "/vendor/echarts.min.js") return ECHARTS_DIST;
+  const fileName = staticFileName(pathname);
+  return fileName ? `${publicDir}/${fileName}` : null;
 }
 
 export function createFetchHandler(options: FetchHandlerOptions): (request: Request) => Promise<Response> {
@@ -74,15 +81,14 @@ export function createFetchHandler(options: FetchHandlerOptions): (request: Requ
       return jsonError("API route not found", 404);
     }
 
-    const fileName = staticFileName(url.pathname);
-    if (!fileName) {
+    const filePath = staticFilePath(url.pathname, options.publicDir);
+    if (!filePath) {
       return new Response("Not found", { status: 404 });
     }
 
-    const filePath = `${options.publicDir}/${fileName}`;
     return new Response(Bun.file(filePath), {
       headers: {
-        "content-type": contentTypeFor(fileName),
+        "content-type": contentTypeFor(filePath),
         "cache-control": "no-store",
       },
     });

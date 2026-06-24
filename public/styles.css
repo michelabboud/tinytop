@@ -723,8 +723,8 @@ h1 {
 }
 
 .history-sample-values {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 0.45rem;
   min-width: 0;
 }
@@ -736,9 +736,9 @@ h1 {
   gap: 0.6rem;
   min-width: 0;
   border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
-  border-radius: 7px;
+  border-radius: 999px;
   background: color-mix(in srgb, var(--surface-2) 76%, transparent);
-  padding: 0.45rem 0.55rem;
+  padding: 0.32rem 0.55rem;
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 800;
@@ -882,6 +882,7 @@ h1 {
   margin-top: 1rem;
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg) 55%, transparent);
+  cursor: crosshair;
 }
 
 .table-wrap {
@@ -1006,10 +1007,6 @@ td {
 
   .history-scrubber-row {
     grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .history-sample-values {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .gauge {

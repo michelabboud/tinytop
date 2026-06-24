@@ -145,11 +145,17 @@
                 <button type="button" data-graph-mode="area" aria-pressed="false">Area</button>
                 <button type="button" data-graph-mode="bar" aria-pressed="false">Bar</button>
                 <button type="button" data-graph-mode="heatmap" aria-pressed="false">Heatmap</button>
+                <button type="button" data-graph-mode="treemap" aria-pressed="false">Treemap</button>
               </nav>
               <span class="mini-stat" id="sample-count">0 samples</span>
             </div>
           </div>
-          <canvas id="history-chart" class="history-chart" width="1280" height="300" aria-label="Live usage history"></canvas>
+          <div
+            id="history-chart"
+            class="history-chart"
+            tabindex="0"
+            aria-label="Live usage history. Select a point in the chart to inspect that sample."
+          ></div>
           <div class="history-scrubber" aria-label="Live history timeline">
             <div class="history-scrubber-meta">
               <span>Timeline</span>
@@ -248,6 +254,7 @@
       </main>
     </div>
 
+    <script src="/vendor/echarts.min.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>
