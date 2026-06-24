@@ -17,6 +17,10 @@ The dashboard is a single-process local Bun app. `Bun.serve()` hosts a static fr
 - `src/server.ts` owns HTTP routing and static file serving.
 - `public/` contains code-native UI assets only; there are no third-party frontend libraries.
 
+## Frontend State
+
+Theme and history graph mode are frontend-only preferences. The browser stores them in `localStorage` under the `wsl-status-dashboard.*` key prefix. They affect CSS variables and canvas rendering only; they do not affect collection, server routing, or host state.
+
 ## Safety
 
 The app is read-only. It does not restart services, kill processes, change sysctl values, modify WSL configuration, or write system data. It binds to loopback by default.

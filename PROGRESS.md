@@ -8,3 +8,9 @@
 - [x] Automatic WSL versus real Linux detection implemented.
 - [x] Polished dashboard UI implemented.
 - [x] Browser QA completed.
+
+## 0.1.1
+
+- [x] Added selectable themes.
+- [x] Added selectable history graph modes.
+- [x] Persisted display preferences locally in the browser.

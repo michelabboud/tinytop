@@ -6,7 +6,7 @@
     <title>WSL Status Dashboard</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body data-theme="midnight">
     <a class="skip-link" href="#main">Skip to dashboard</a>
     <div class="app-shell">
       <aside class="rail" aria-label="Dashboard sections">
@@ -74,6 +74,25 @@
             </button>
           </div>
         </header>
+
+        <section class="control-deck" aria-label="Display controls">
+          <fieldset class="segmented-control">
+            <legend>Theme</legend>
+            <button type="button" data-theme-option="midnight" aria-pressed="true">Midnight</button>
+            <button type="button" data-theme-option="matrix" aria-pressed="false">Matrix</button>
+            <button type="button" data-theme-option="aurora" aria-pressed="false">Aurora</button>
+            <button type="button" data-theme-option="solar" aria-pressed="false">Solar</button>
+            <button type="button" data-theme-option="ember" aria-pressed="false">Ember</button>
+          </fieldset>
+
+          <fieldset class="segmented-control">
+            <legend>Graph</legend>
+            <button type="button" data-graph-mode="line" aria-pressed="true">Line</button>
+            <button type="button" data-graph-mode="area" aria-pressed="false">Area</button>
+            <button type="button" data-graph-mode="bars" aria-pressed="false">Bars</button>
+            <button type="button" data-graph-mode="heatmap" aria-pressed="false">Heatmap</button>
+          </fieldset>
+        </section>
 
         <div class="alert" id="alert" role="status" hidden></div>
 
@@ -173,7 +192,10 @@
               <h2>Live History</h2>
               <p>Rolling local samples from the last few minutes.</p>
             </div>
-            <span class="mini-stat" id="sample-count">0 samples</span>
+            <div class="history-badges">
+              <span class="mini-stat" id="history-mode-label">Line graph</span>
+              <span class="mini-stat" id="sample-count">0 samples</span>
+            </div>
           </div>
           <canvas id="history-chart" class="history-chart" width="1280" height="300" aria-label="Live usage history"></canvas>
         </section>

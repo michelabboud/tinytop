@@ -1,10 +1,23 @@
 const POLL_MS = 1500;
 const MAX_HISTORY = 120;
+const STORAGE_KEYS = {
+  theme: "wsl-status-dashboard.theme",
+  graphMode: "wsl-status-dashboard.graphMode",
+};
+const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
+const GRAPH_MODES = {
+  line: "Line graph",
+  area: "Area graph",
+  bars: "Bar graph",
+  heatmap: "Heatmap",
+};
 
 const state = {
   paused: false,
   loading: false,
   timer: null,
+  theme: "midnight",
+  graphMode: "line",
   history: {
     cpu: [],
     ram: [],
@@ -51,7 +64,51 @@ const elements = {
   processRows: document.querySelector("#process-rows"),
   refreshButton: document.querySelector("#refresh-button"),
   pauseButton: document.querySelector("#pause-button"),
+  themeButtons: Array.from(document.querySelectorAll("[data-theme-option]")),
+  graphButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
+  historyModeLabel: document.querySelector("#history-mode-label"),
 };
+
+function readStoredValue(key, fallback, allowed) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value && allowed.has(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storeValue(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // localStorage can be disabled; the controls should still work for the current session.
+  }
+}
+
+function syncPressed(buttons, dataKey, activeValue) {
+  for (const button of buttons) {
+    button.setAttribute("aria-pressed", String(button.dataset[dataKey] === activeValue));
+  }
+}
+
+function applyTheme(theme) {
+  const nextTheme = THEMES.has(theme) ? theme : "midnight";
+  state.theme = nextTheme;
+  document.body.dataset.theme = nextTheme;
+  syncPressed(elements.themeButtons, "themeOption", nextTheme);
+  storeValue(STORAGE_KEYS.theme, nextTheme);
+  redrawCharts();
+}
+
+function setGraphMode(mode) {
+  const nextMode = Object.hasOwn(GRAPH_MODES, mode) ? mode : "line";
+  state.graphMode = nextMode;
+  syncPressed(elements.graphButtons, "graphMode", nextMode);
+  setText(elements.historyModeLabel, GRAPH_MODES[nextMode]);
+  storeValue(STORAGE_KEYS.graphMode, nextMode);
+  drawHistoryChart();
+}
 
 function clampPercent(value) {
   if (!Number.isFinite(value)) return 0;
@@ -91,6 +148,40 @@ function setGauge(node, value) {
   node?.style.setProperty("--value", String(clampPercent(value)));
 }
 
+function cssColor(name) {
+  return getComputedStyle(document.body).getPropertyValue(name).trim();
+}
+
+function chartPalette() {
+  return {
+    cpu: cssColor("--chart-cpu") || "#22c55e",
+    ram: cssColor("--chart-ram") || "#38bdf8",
+    swap: cssColor("--chart-swap") || "#a78bfa",
+    load: cssColor("--chart-load") || "#f59e0b",
+    grid: cssColor("--border") || "#263244",
+    text: cssColor("--text") || "#f8fafc",
+    muted: cssColor("--muted") || "#94a3b8",
+  };
+}
+
+function historySeries() {
+  const palette = chartPalette();
+  return [
+    { label: "CPU", values: state.history.cpu, color: palette.cpu, dashed: false },
+    { label: "RAM", values: state.history.ram, color: palette.ram, dashed: false },
+    { label: "SWAP", values: state.history.swap, color: palette.swap, dashed: false },
+    { label: "LOAD", values: state.history.load, color: palette.load, dashed: true },
+  ];
+}
+
+function redrawCharts() {
+  const palette = chartPalette();
+  drawSparkline(elements.cpuSpark, state.history.cpu, palette.cpu);
+  drawSparkline(elements.ramSpark, state.history.ram, palette.ram);
+  drawSparkline(elements.swapSpark, state.history.swap, palette.swap);
+  drawHistoryChart();
+}
+
 function pushHistory(snapshot) {
   state.history.cpu.push(snapshot.cpu.usagePercent);
   state.history.ram.push(snapshot.memory.usedPercent);
@@ -105,6 +196,7 @@ function pushHistory(snapshot) {
 function drawSparkline(canvas, values, color) {
   if (!canvas) return;
   const context = canvas.getContext("2d");
+  const palette = chartPalette();
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth || canvas.width;
   const height = canvas.clientHeight || canvas.height;
@@ -112,7 +204,8 @@ function drawSparkline(canvas, values, color) {
   canvas.height = Math.floor(height * ratio);
   context.scale(ratio, ratio);
   context.clearRect(0, 0, width, height);
-  context.strokeStyle = "rgba(148, 163, 184, 0.16)";
+  context.strokeStyle = palette.grid;
+  context.globalAlpha = 0.45;
   context.lineWidth = 1;
   for (let line = 1; line < 3; line += 1) {
     const y = (height / 3) * line;
@@ -121,6 +214,7 @@ function drawSparkline(canvas, values, color) {
     context.lineTo(width, y);
     context.stroke();
   }
+  context.globalAlpha = 1;
   if (values.length < 2) return;
   context.strokeStyle = color;
   context.lineWidth = 2;
@@ -138,6 +232,7 @@ function drawHistoryChart() {
   const canvas = elements.historyChart;
   if (!canvas) return;
   const context = canvas.getContext("2d");
+  const palette = chartPalette();
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth || canvas.width;
   const height = canvas.clientHeight || canvas.height;
@@ -146,7 +241,8 @@ function drawHistoryChart() {
   context.scale(ratio, ratio);
   context.clearRect(0, 0, width, height);
 
-  context.strokeStyle = "rgba(148, 163, 184, 0.12)";
+  context.strokeStyle = palette.grid;
+  context.globalAlpha = 0.4;
   context.lineWidth = 1;
   for (let line = 1; line < 5; line += 1) {
     const y = (height / 5) * line;
@@ -155,21 +251,25 @@ function drawHistoryChart() {
     context.lineTo(width, y);
     context.stroke();
   }
+  context.globalAlpha = 1;
 
-  const series = [
-    ["CPU", state.history.cpu, "#22c55e"],
-    ["RAM", state.history.ram, "#38bdf8"],
-    ["SWAP", state.history.swap, "#a78bfa"],
-    ["LOAD", state.history.load, "#f59e0b"],
-  ];
+  const series = historySeries();
+  if (state.graphMode === "area") drawAreaHistory(context, width, height, series);
+  else if (state.graphMode === "bars") drawBarHistory(context, width, height, series);
+  else if (state.graphMode === "heatmap") drawHeatmapHistory(context, width, height, series);
+  else drawLineHistory(context, width, height, series);
 
-  series.forEach(([label, values, color], seriesIndex) => {
-    if (values.length < 2) return;
-    context.strokeStyle = color;
+  drawHistoryLegend(context, series, palette);
+}
+
+function drawLineHistory(context, width, height, series) {
+  for (const item of series) {
+    if (item.values.length < 2) continue;
+    context.strokeStyle = item.color;
     context.lineWidth = 2;
-    context.setLineDash(label === "LOAD" ? [6, 5] : []);
+    context.setLineDash(item.dashed ? [6, 5] : []);
     context.beginPath();
-    values.forEach((value, index) => {
+    item.values.forEach((value, index) => {
       const x = (index / (MAX_HISTORY - 1)) * width;
       const y = height - (clampPercent(value) / 100) * height;
       if (index === 0) context.moveTo(x, y);
@@ -177,12 +277,90 @@ function drawHistoryChart() {
     });
     context.stroke();
     context.setLineDash([]);
-    context.fillStyle = color;
-    context.fillRect(16 + seriesIndex * 92, 16, 16, 3);
-    context.fillStyle = "#cbd5e1";
-    context.font = "12px Inter, system-ui, sans-serif";
-    context.fillText(label, 38 + seriesIndex * 92, 20);
+  }
+}
+
+function drawAreaHistory(context, width, height, series) {
+  for (const item of series) {
+    if (item.values.length < 2) continue;
+    const gradient = context.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, item.color);
+    gradient.addColorStop(1, "transparent");
+    context.globalAlpha = item.label === "LOAD" ? 0.16 : 0.22;
+    context.fillStyle = gradient;
+    context.beginPath();
+    item.values.forEach((value, index) => {
+      const x = (index / (MAX_HISTORY - 1)) * width;
+      const y = height - (clampPercent(value) / 100) * height;
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    context.lineTo(((item.values.length - 1) / (MAX_HISTORY - 1)) * width, height);
+    context.lineTo(0, height);
+    context.closePath();
+    context.fill();
+    context.globalAlpha = 1;
+  }
+  drawLineHistory(context, width, height, series);
+}
+
+function drawBarHistory(context, width, height, series) {
+  const sampleCount = Math.max(...series.map((item) => item.values.length), 1);
+  const visibleCount = Math.min(sampleCount, 64);
+  const slotWidth = width / visibleCount;
+  const barWidth = Math.max(1, slotWidth / (series.length + 1));
+
+  series.forEach((item, seriesIndex) => {
+    const values = item.values.slice(-visibleCount);
+    context.fillStyle = item.color;
+    values.forEach((value, index) => {
+      const barHeight = (clampPercent(value) / 100) * (height - 28);
+      const x = index * slotWidth + seriesIndex * barWidth + 1;
+      const y = height - barHeight;
+      context.globalAlpha = item.label === "LOAD" ? 0.58 : 0.82;
+      context.fillRect(x, y, Math.max(1, barWidth - 1), barHeight);
+    });
   });
+  context.globalAlpha = 1;
+}
+
+function drawHeatmapHistory(context, width, height, series) {
+  const topOffset = 34;
+  const rowGap = 8;
+  const labelWidth = 54;
+  const rowHeight = Math.max(20, (height - topOffset - rowGap * (series.length - 1) - 12) / series.length);
+  const visibleCount = Math.min(Math.max(...series.map((item) => item.values.length), 1), 80);
+  const cellWidth = (width - labelWidth - 16) / visibleCount;
+
+  context.font = "12px Inter, system-ui, sans-serif";
+  series.forEach((item, rowIndex) => {
+    const y = topOffset + rowIndex * (rowHeight + rowGap);
+    const values = item.values.slice(-visibleCount);
+    context.fillStyle = item.color;
+    context.globalAlpha = 0.95;
+    context.fillText(item.label, 12, y + rowHeight * 0.62);
+
+    values.forEach((value, index) => {
+      const intensity = Math.max(0.12, clampPercent(value) / 100);
+      context.globalAlpha = intensity;
+      context.fillStyle = item.color;
+      context.fillRect(labelWidth + index * cellWidth, y, Math.max(1, cellWidth - 1), rowHeight);
+    });
+  });
+  context.globalAlpha = 1;
+}
+
+function drawHistoryLegend(context, series, palette) {
+  context.font = "12px Inter, system-ui, sans-serif";
+  series.forEach((item, seriesIndex) => {
+    const x = 16 + seriesIndex * 92;
+    context.fillStyle = item.color;
+    context.fillRect(x, 16, 16, 3);
+    context.fillStyle = palette.text;
+    context.globalAlpha = 0.82;
+    context.fillText(item.label, x + 22, 20);
+  });
+  context.globalAlpha = 1;
 }
 
 function renderFilesystems(filesystems) {
@@ -289,10 +467,7 @@ function renderSnapshot(snapshot) {
 
   pushHistory(snapshot);
   setText(elements.sampleCount, `${state.history.cpu.length} samples`);
-  drawSparkline(elements.cpuSpark, state.history.cpu, "#22c55e");
-  drawSparkline(elements.ramSpark, state.history.ram, "#38bdf8");
-  drawSparkline(elements.swapSpark, state.history.swap, "#a78bfa");
-  drawHistoryChart();
+  redrawCharts();
   renderFilesystems(snapshot.filesystems.slice(0, 8));
   renderPressure(snapshot);
   renderProcesses(snapshot.processes);
@@ -360,12 +535,23 @@ elements.pauseButton.addEventListener("click", () => {
   setPaused(!state.paused);
 });
 
+for (const button of elements.themeButtons) {
+  button.addEventListener("click", () => {
+    applyTheme(button.dataset.themeOption);
+  });
+}
+
+for (const button of elements.graphButtons) {
+  button.addEventListener("click", () => {
+    setGraphMode(button.dataset.graphMode);
+  });
+}
+
 window.addEventListener("resize", () => {
-  drawSparkline(elements.cpuSpark, state.history.cpu, "#22c55e");
-  drawSparkline(elements.ramSpark, state.history.ram, "#38bdf8");
-  drawSparkline(elements.swapSpark, state.history.swap, "#a78bfa");
-  drawHistoryChart();
+  redrawCharts();
 });
 
+applyTheme(readStoredValue(STORAGE_KEYS.theme, "midnight", THEMES));
+setGraphMode(readStoredValue(STORAGE_KEYS.graphMode, "line", new Set(Object.keys(GRAPH_MODES))));
 fetchSnapshot();
 state.timer = window.setInterval(fetchSnapshot, POLL_MS);

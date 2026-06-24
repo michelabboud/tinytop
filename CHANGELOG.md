@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 - 2026-06-24
+
+- Added five selectable dashboard themes: Midnight, Matrix, Aurora, Solar, and Ember.
+- Added four live history graph modes: line, area, bars, and heatmap.
+- Persisted theme and graph preferences in browser-local storage.
+- Updated chart rendering so theme changes recolor canvas graphs immediately.
+
 ## 0.1.0 - 2026-06-24
 
 - Added the initial standalone Bun dashboard project.
