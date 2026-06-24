@@ -1,0 +1,13 @@
+{
+  "name": "wsl-status-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.11",
+  "scripts": {
+    "dev": "bun run src/server.ts",
+    "start": "bun run src/server.ts",
+    "test": "bun test",
+    "check": "bun test && bun run src/server.ts --check"
+  }
+}

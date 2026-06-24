@@ -1,0 +1,26 @@
+# Architecture
+
+The dashboard is a single-process local Bun app. `Bun.serve()` hosts a static frontend from `public/` and exposes `/api/snapshot` for live system telemetry collected from Linux/WSL sources.
+
+## Data Flow
+
+1. The browser loads `public/index.html`, `public/styles.css`, and `public/app.js`.
+2. The frontend polls `/api/snapshot` on a short interval.
+3. The Bun server reads `/proc`, `df`, `ps`, `uname`, and OS release files.
+4. Pure parser functions normalize raw system text into a JSON snapshot.
+5. The frontend renders gauges, stat tiles, live history charts, filesystem bars, pressure panels, and process rows.
+
+## Boundaries
+
+- `src/parsers.ts` contains pure parsing and normalization logic.
+- `src/collector.ts` performs live filesystem and process reads.
+- `src/server.ts` owns HTTP routing and static file serving.
+- `public/` contains code-native UI assets only; there are no third-party frontend libraries.
+
+## Safety
+
+The app is read-only. It does not restart services, kill processes, change sysctl values, modify WSL configuration, or write system data. It binds to loopback by default.
+
+## Runtime Detection
+
+Runtime detection is explicit. The collector checks `/proc/sys/kernel/osrelease` and `/proc/version` for Microsoft/WSL markers. If those are absent, it checks `WSL_DISTRO_NAME` and `WSL_INTEROP`. If no WSL markers exist and Linux kernel metadata is present, the runtime is classified as real Linux.

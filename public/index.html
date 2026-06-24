@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WSL Status Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to dashboard</a>
+    <div class="app-shell">
+      <aside class="rail" aria-label="Dashboard sections">
+        <div class="brand-block">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span>
+            <span></span>
+          </div>
+          <div>
+            <h1>WSL Status</h1>
+            <p id="runtime-summary">Detecting runtime</p>
+          </div>
+        </div>
+
+        <nav class="rail-nav">
+          <a href="#overview">Overview</a>
+          <a href="#filesystem">Filesystem</a>
+          <a href="#history">History</a>
+          <a href="#processes">Processes</a>
+        </nav>
+
+        <div class="rail-status" aria-live="polite">
+          <span class="status-dot" id="live-dot"></span>
+          <span id="live-label">Connecting</span>
+        </div>
+      </aside>
+
+      <main class="dashboard" id="main">
+        <header class="topbar">
+          <section class="identity-strip" aria-label="System identity">
+            <div>
+              <span class="label">Host</span>
+              <strong id="host-name">-</strong>
+            </div>
+            <div>
+              <span class="label">Kernel</span>
+              <strong id="kernel-name">-</strong>
+            </div>
+            <div>
+              <span class="label">Distro</span>
+              <strong id="distro-name">-</strong>
+            </div>
+            <div>
+              <span class="label">Uptime</span>
+              <strong id="uptime">-</strong>
+            </div>
+          </section>
+
+          <div class="actions">
+            <button class="icon-button" id="refresh-button" type="button" title="Refresh now">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 6v5h-5" />
+                <path d="M4 18v-5h5" />
+                <path d="M18.1 9A7 7 0 0 0 6.4 6.6L4 9" />
+                <path d="M5.9 15A7 7 0 0 0 17.6 17.4L20 15" />
+              </svg>
+              <span>Refresh</span>
+            </button>
+            <button class="icon-button secondary" id="pause-button" type="button" title="Pause live polling">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 5v14" />
+                <path d="M16 5v14" />
+              </svg>
+              <span>Pause</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="alert" id="alert" role="status" hidden></div>
+
+        <section class="overview-grid" id="overview" aria-label="System overview">
+          <article class="gauge-panel accent-green">
+            <div class="panel-heading">
+              <span>CPU</span>
+              <small id="cpu-cores">- cores</small>
+            </div>
+            <div class="gauge" id="cpu-gauge" role="img" aria-label="CPU usage">
+              <div>
+                <strong id="cpu-value">-</strong>
+                <span>usage</span>
+              </div>
+            </div>
+            <canvas id="cpu-spark" class="sparkline" width="320" height="72" aria-label="CPU history"></canvas>
+          </article>
+
+          <article class="gauge-panel accent-cyan">
+            <div class="panel-heading">
+              <span>RAM</span>
+              <small id="ram-total">-</small>
+            </div>
+            <div class="gauge" id="ram-gauge" role="img" aria-label="RAM usage">
+              <div>
+                <strong id="ram-value">-</strong>
+                <span>used</span>
+              </div>
+            </div>
+            <canvas id="ram-spark" class="sparkline" width="320" height="72" aria-label="RAM history"></canvas>
+          </article>
+
+          <article class="gauge-panel accent-violet">
+            <div class="panel-heading">
+              <span>SWAP</span>
+              <small id="swap-total">-</small>
+            </div>
+            <div class="gauge" id="swap-gauge" role="img" aria-label="Swap usage">
+              <div>
+                <strong id="swap-value">-</strong>
+                <span>used</span>
+              </div>
+            </div>
+            <canvas id="swap-spark" class="sparkline" width="320" height="72" aria-label="Swap history"></canvas>
+          </article>
+        </section>
+
+        <section class="metric-band" aria-label="Live metrics">
+          <article>
+            <span class="label">Load 1m</span>
+            <strong id="load-one">-</strong>
+            <span id="load-context">-</span>
+          </article>
+          <article>
+            <span class="label">Threads</span>
+            <strong id="thread-count">-</strong>
+            <span id="runnable-count">- runnable</span>
+          </article>
+          <article>
+            <span class="label">Root FS</span>
+            <strong id="root-used">-</strong>
+            <span id="root-mount">-</span>
+          </article>
+          <article>
+            <span class="label">Runtime</span>
+            <strong id="runtime-kind">-</strong>
+            <span id="runtime-confidence">-</span>
+          </article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel filesystem-panel" id="filesystem">
+            <div class="section-heading">
+              <div>
+                <h2>Filesystem</h2>
+                <p>Capacity and inode pressure by mount.</p>
+              </div>
+              <span class="mini-stat" id="filesystem-count">0 mounts</span>
+            </div>
+            <div class="filesystem-list" id="filesystem-list"></div>
+          </article>
+
+          <article class="panel pressure-panel">
+            <div class="section-heading">
+              <div>
+                <h2>Pressure</h2>
+                <p>Kernel pressure stall information.</p>
+              </div>
+            </div>
+            <div class="pressure-list" id="pressure-list"></div>
+          </article>
+        </section>
+
+        <section class="panel history-panel" id="history">
+          <div class="section-heading">
+            <div>
+              <h2>Live History</h2>
+              <p>Rolling local samples from the last few minutes.</p>
+            </div>
+            <span class="mini-stat" id="sample-count">0 samples</span>
+          </div>
+          <canvas id="history-chart" class="history-chart" width="1280" height="300" aria-label="Live usage history"></canvas>
+        </section>
+
+        <section class="panel process-panel" id="processes">
+          <div class="section-heading">
+            <div>
+              <h2>Processes</h2>
+              <p>Top local processes by CPU usage.</p>
+            </div>
+            <span class="mini-stat" id="process-count">0 rows</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">PID</th>
+                  <th scope="col">Command</th>
+                  <th scope="col">CPU</th>
+                  <th scope="col">RAM</th>
+                  <th scope="col">RSS</th>
+                </tr>
+              </thead>
+              <tbody id="process-rows"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

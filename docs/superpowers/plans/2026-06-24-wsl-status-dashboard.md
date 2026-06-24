@@ -1,0 +1,83 @@
+# WSL Status Dashboard Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build a standalone Bun dashboard that visualizes live WSL/Linux workstation health.
+
+**Architecture:** A single Bun process serves static assets and JSON telemetry. Pure parser modules normalize `/proc` and command output, while the frontend polls `/api/snapshot` and renders gauges, charts, bars, and tables.
+
+**Tech Stack:** Bun 1.3.11, TypeScript for server modules, vanilla HTML/CSS/JavaScript for the frontend, Bun test runner.
+
+## Global Constraints
+
+- Project path: `/home/michel/projects/wsl-status-dashboard`.
+- Bind address: `127.0.0.1`.
+- Port: `4274`.
+- No third-party package dependencies.
+- Read-only system access only.
+- Use real WSL/Linux data from local system files and commands.
+- Keep `the-operator` untouched.
+
+---
+
+### Task 1: Parser Test Cycle
+
+**Files:**
+- Create: `tests/parsers.test.ts`
+- Create: `src/parsers.ts`
+
+**Interfaces:**
+- Produces: `parseMeminfo(text: string)`, `parseLoadavg(text: string)`, `parseProcStat(text: string)`, `calculateCpuUsage(previous, current)`, `parsePressure(text: string)`, `parseDfBlocks(text: string)`, `detectLinuxRuntime(input)`.
+
+- [x] **Step 1: Write failing tests for parser behavior**
+- [x] **Step 2: Run `bun test` and verify parser module is missing**
+- [x] **Step 3: Implement parser functions**
+- [x] **Step 4: Run `bun test` and verify parser tests pass**
+
+### Task 2: Collector and Server
+
+**Files:**
+- Create: `src/collector.ts`
+- Create: `src/server.ts`
+- Test: `tests/snapshot.test.ts`
+
+**Interfaces:**
+- Consumes: parser functions from `src/parsers.ts`.
+- Produces: `/api/snapshot`, `/health`, and static file serving.
+
+- [x] **Step 1: Write failing snapshot-shape tests**
+- [x] **Step 2: Implement collector and server**
+- [x] **Step 3: Run `bun test`**
+- [x] **Step 4: Smoke test `/api/snapshot` with `curl`**
+
+### Task 3: Dashboard UI
+
+**Files:**
+- Create: `public/index.html`
+- Create: `public/styles.css`
+- Create: `public/app.js`
+
+**Interfaces:**
+- Consumes: `/api/snapshot`.
+- Produces: live gauges, stats, filesystem bars, history charts, and process table.
+
+- [x] **Step 1: Build code-native UI shell**
+- [x] **Step 2: Render live snapshot data**
+- [x] **Step 3: Add pause/resume and manual refresh**
+- [x] **Step 4: Verify browser desktop and mobile layout**
+
+### Task 4: Documentation and Closeout
+
+**Files:**
+- Modify: `README.md`
+- Modify: `ARCHITECTURE.md`
+- Modify: `CHANGELOG.md`
+- Modify: `PROGRESS.md`
+- Create: `docs/reports/2026-06-24-dependency-vetting.md`
+
+**Interfaces:**
+- Produces: contributor-facing docs and verification evidence.
+
+- [x] **Step 1: Document Bun runtime choice and dependency policy**
+- [x] **Step 2: Run tests, API smoke check, and browser QA**
+- [x] **Step 3: Commit and tag the standalone project**
