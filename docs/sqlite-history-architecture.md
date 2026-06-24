@@ -1,27 +1,26 @@
-# SQLite History Architecture Plan
+# SQLite History Architecture
 
 ## Goal
 
 Persist WSL/Linux dashboard history so the UI can reload with recent samples already available, while keeping data collection and SQLite ownership in one dedicated Bun process.
 
-## Recommendation
+## Current Architecture
 
 Use two local Bun processes:
 
-1. `collector-writer`: owns collection, SQLite writes, SQLite reads, retention, migrations, and query optimization.
+1. `collector-writer`: owns collection, SQLite writes, SQLite reads, migrations, and query optimization.
 2. `dashboard`: serves the browser UI and calls the writer process for current and historical data. It never opens the SQLite database directly.
 
 Browser-only settings such as theme, graph mode, and timeline position should stay in `localStorage`.
 
 ## Process Boundary
 
-The writer process should expose a local loopback API, for example on `127.0.0.1:4276`:
+The writer process exposes a local loopback API on `127.0.0.1:4276` by default:
 
 - `GET /health`
 - `GET /snapshot/latest`
-- `GET /history?since_ms=&until_ms=&limit=&resolution=raw`
-- `GET /processes/latest`
-- `GET /filesystems/latest`
+- `GET /snapshot/collect`
+- `GET /history?since_ms=&until_ms=&limit=&window_seconds=`
 
 The dashboard process keeps its public port on `127.0.0.1:4274` and proxies read requests to the writer. This keeps SQLite connection lifecycle, WAL checkpointing, migrations, and read/write concurrency in one process.
 
@@ -31,7 +30,7 @@ Use one main raw metrics table, not daily tables.
 
 SQLite B-tree indexes handle timestamp-range queries well, and a single table keeps the dashboard queries simple. Daily tables make retention and backups look attractive, but they complicate every query crossing midnight and add schema-management overhead. If history grows large, add rollup tables and retention instead of partitioning first.
 
-## Proposed Schema
+## Current Schema
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -58,68 +57,24 @@ CREATE TABLE IF NOT EXISTS metric_samples (
   load_percent REAL NOT NULL,
   runnable_threads INTEGER NOT NULL,
   total_threads INTEGER NOT NULL,
-  root_used_percent REAL
+  root_used_percent REAL,
+  snapshot_json TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
   ON metric_samples (captured_at_ms DESC);
 
-CREATE TABLE IF NOT EXISTS pressure_samples (
-  sample_id INTEGER PRIMARY KEY REFERENCES metric_samples(sample_id) ON DELETE CASCADE,
-  cpu_some_avg10 REAL,
-  memory_some_avg10 REAL,
-  io_some_avg10 REAL
-);
-
-CREATE TABLE IF NOT EXISTS filesystem_samples (
-  sample_id INTEGER NOT NULL REFERENCES metric_samples(sample_id) ON DELETE CASCADE,
-  mount TEXT NOT NULL,
-  filesystem TEXT NOT NULL,
-  fs_type TEXT NOT NULL,
-  used_percent REAL NOT NULL,
-  inode_used_percent REAL,
-  used_bytes INTEGER NOT NULL,
-  size_bytes INTEGER NOT NULL,
-  PRIMARY KEY (sample_id, mount)
-);
-
-CREATE TABLE IF NOT EXISTS process_samples (
-  sample_id INTEGER NOT NULL REFERENCES metric_samples(sample_id) ON DELETE CASCADE,
-  rank INTEGER NOT NULL,
-  pid INTEGER NOT NULL,
-  command TEXT NOT NULL,
-  cpu_percent REAL NOT NULL,
-  memory_percent REAL NOT NULL,
-  rss_bytes INTEGER NOT NULL,
-  PRIMARY KEY (sample_id, rank)
-);
-
-CREATE INDEX IF NOT EXISTS idx_process_samples_sample_cpu
-  ON process_samples (sample_id, cpu_percent DESC);
-
-CREATE TABLE IF NOT EXISTS metric_rollups_1m (
-  bucket_start_ms INTEGER PRIMARY KEY,
-  sample_count INTEGER NOT NULL,
-  cpu_avg REAL NOT NULL,
-  cpu_max REAL NOT NULL,
-  memory_avg REAL NOT NULL,
-  memory_max REAL NOT NULL,
-  swap_avg REAL NOT NULL,
-  swap_max REAL NOT NULL,
-  load_avg REAL NOT NULL,
-  load_max REAL NOT NULL
-);
+CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
+  ON metric_samples (runtime_kind, captured_at_ms DESC);
 ```
+
+The full `SystemSnapshot` is stored as `snapshot_json` so the browser can hydrate gauges, selected-sample details, filesystem cards, pressure panels, and process rows from the same persisted sample. Typed metric columns keep graph and future rollup queries index-friendly.
 
 ## Write Path
 
 - Collect every polling interval in the writer process.
 - Use prepared statements.
-- Write each sample in one transaction:
-  1. Insert `metric_samples`.
-  2. Insert pressure row.
-  3. Insert filesystem rows.
-  4. Insert top process rows.
+- Write each sample in one transaction with an upsert on `captured_at_ms`.
 - Keep the dashboard read API on the same process so there is no multi-process SQLite write contention.
 - Periodically call `PRAGMA optimize`.
 
@@ -131,9 +86,11 @@ Startup dashboard fill:
 SELECT *
 FROM metric_samples
 WHERE captured_at_ms >= ?
-ORDER BY captured_at_ms ASC
+ORDER BY captured_at_ms DESC
 LIMIT ?;
 ```
+
+The writer reverses this newest-window query before returning JSON so the browser receives samples oldest first.
 
 Live chart window:
 
@@ -143,8 +100,7 @@ Live chart window:
 
 Latest details:
 
-- `metric_samples` gives the main cards and graph.
-- `filesystem_samples` and `process_samples` are fetched for the currently selected `sample_id` or latest sample.
+- `metric_samples.snapshot_json` gives the main cards and graph for the currently selected sample or latest sample.
 
 ## Retention
 
@@ -154,18 +110,17 @@ Suggested defaults:
 - One-minute rollups: 30 days.
 - Longer rollups can be added only when needed.
 
-Retention should delete by `captured_at_ms` from `metric_samples`; child rows are removed through cascading foreign keys.
+Retention should delete by `captured_at_ms` from `metric_samples`. If future child tables are added, they should use cascading foreign keys.
 
-## Migration Path
+## Implemented Files
 
-1. Add `src/history/schema.ts` with migrations and pragmas.
-2. Add `src/history/writer.ts` for inserts and range reads.
-3. Add `src/collector-daemon.ts` as the writer process entry point.
-4. Change `src/server.ts` to read `/api/snapshot` and `/api/history` from the writer API.
-5. Update the frontend bootstrap to request the last configured window, for example `GET /api/history?window_seconds=300`.
+- `src/history-store.ts` contains SQLite setup, indexes, prepared statements, inserts, and range reads.
+- `src/collector-daemon.ts` contains the writer API and scheduled collection loop.
+- `src/server.ts` proxies `/api/snapshot` and `/api/history` to the writer process.
+- `public/app.js` hydrates history from `/api/history` before live polling.
 
 ## Open Questions
 
 - Exact raw retention duration: 24h, 72h, or user configurable.
-- Whether process history should store only top 10 rows or a wider configurable top N.
+- Whether future process history queries need normalized child tables or wider configurable top N.
 - Whether the writer API should use a second loopback port or a Unix socket on Linux/WSL.

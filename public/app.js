@@ -1,6 +1,7 @@
 const POLL_MS = 1500;
 const MAX_HISTORY = 120;
 const MAX_VISIBLE_HISTORY = 80;
+const HISTORY_WINDOW_SECONDS = Math.ceil((MAX_HISTORY * POLL_MS) / 1000);
 const MIN_VISIBLE_BAR_SAMPLES = 12;
 const MIN_STACKED_BAR_WIDTH = 12;
 const BAR_CHART_SIDE_PADDING = 70;
@@ -218,26 +219,84 @@ function redrawCharts() {
   drawHistoryChart();
 }
 
-function pushHistory(snapshot) {
-  state.history.cpu.push(snapshot.cpu.usagePercent);
-  state.history.ram.push(snapshot.memory.usedPercent);
-  state.history.swap.push(snapshot.swap.usedPercent);
-  state.history.load.push(Math.min(100, (snapshot.load.one / Math.max(1, snapshot.cpu.cores)) * 100));
-  state.snapshots.push({
-    capturedAt: Date.now(),
-    snapshot,
-  });
+function snapshotCapturedAtMs(snapshot) {
+  const parsed = Date.parse(snapshot.timestamp);
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
 
-  for (const values of Object.values(state.history)) {
-    while (values.length > MAX_HISTORY) values.shift();
-  }
+function snapshotMetricValues(snapshot) {
+  return {
+    cpu: snapshot.cpu.usagePercent,
+    ram: snapshot.memory.usedPercent,
+    swap: snapshot.swap.usedPercent,
+    load: Math.min(100, (snapshot.load.one / Math.max(1, snapshot.cpu.cores)) * 100),
+  };
+}
 
+function setHistoryValues(index, snapshot) {
+  const values = snapshotMetricValues(snapshot);
+  state.history.cpu[index] = values.cpu;
+  state.history.ram[index] = values.ram;
+  state.history.swap[index] = values.swap;
+  state.history.load[index] = values.load;
+}
+
+function resetHistory() {
+  state.snapshots = [];
+  state.history.cpu = [];
+  state.history.ram = [];
+  state.history.swap = [];
+  state.history.load = [];
+  state.selectedSampleIndex = null;
+}
+
+function trimHistory() {
   while (state.snapshots.length > MAX_HISTORY) {
     state.snapshots.shift();
+    state.history.cpu.shift();
+    state.history.ram.shift();
+    state.history.swap.shift();
+    state.history.load.shift();
     if (state.selectedSampleIndex !== null) {
       state.selectedSampleIndex = Math.max(0, state.selectedSampleIndex - 1);
     }
   }
+}
+
+function pushHistory(snapshot, capturedAtMs = snapshotCapturedAtMs(snapshot)) {
+  const capturedAt = Number.isFinite(Number(capturedAtMs)) ? Number(capturedAtMs) : snapshotCapturedAtMs(snapshot);
+  const existingIndex = state.snapshots.findIndex((sample) => sample.capturedAt === capturedAt);
+
+  if (existingIndex !== -1) {
+    state.snapshots[existingIndex] = { capturedAt, snapshot };
+    setHistoryValues(existingIndex, snapshot);
+    return;
+  }
+
+  state.snapshots.push({ capturedAt, snapshot });
+  setHistoryValues(state.snapshots.length - 1, snapshot);
+  trimHistory();
+}
+
+function hydrateHistory(samples) {
+  if (!Array.isArray(samples) || samples.length === 0) return;
+  resetHistory();
+
+  samples
+    .filter((sample) => sample && sample.snapshot)
+    .map((sample) => ({
+      capturedAtMs: Number.isFinite(Number(sample.capturedAtMs))
+        ? Number(sample.capturedAtMs)
+        : snapshotCapturedAtMs(sample.snapshot),
+      snapshot: sample.snapshot,
+    }))
+    .sort((left, right) => left.capturedAtMs - right.capturedAtMs)
+    .forEach((sample) => {
+      pushHistory(sample.snapshot, sample.capturedAtMs);
+    });
+
+  renderSelectedSample();
+  redrawCharts();
 }
 
 function drawSparkline(canvas, values, color) {
@@ -896,6 +955,19 @@ async function fetchSnapshot() {
   }
 }
 
+async function fetchHistory() {
+  try {
+    const response = await fetch(`/api/history?limit=${MAX_HISTORY}&window_seconds=${HISTORY_WINDOW_SECONDS}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) return;
+    const body = await response.json();
+    hydrateHistory(body.samples);
+  } catch {
+    // Live polling still gives the dashboard useful data when history is unavailable.
+  }
+}
+
 function setPaused(paused) {
   state.paused = paused;
   if (paused) {
@@ -977,5 +1049,11 @@ window.addEventListener("resize", () => {
 
 applyTheme(readStoredValue(STORAGE_KEYS.theme, "midnight", THEMES));
 setGraphMode(readStoredValue(STORAGE_KEYS.graphMode, "line", new Set(Object.keys(GRAPH_MODES))));
-fetchSnapshot();
-state.timer = window.setInterval(fetchSnapshot, POLL_MS);
+
+async function startDashboard() {
+  await fetchHistory();
+  await fetchSnapshot();
+  state.timer = window.setInterval(fetchSnapshot, POLL_MS);
+}
+
+startDashboard();

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createFetchHandler } from "../src/server";
 import type { SystemSnapshot } from "../src/collector";
+import { makeSnapshot } from "./fixtures";
 
 const snapshot: SystemSnapshot = {
   timestamp: "2026-06-24T12:00:00.000Z",
@@ -90,6 +91,23 @@ describe("createFetchHandler", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
     expect(body.identity.runtime.kind).toBe("WSL");
     expect(body.cpu.usagePercent).toBe(42);
+  });
+
+  test("serves persisted history samples for dashboard hydration", async () => {
+    const persisted = makeSnapshot({ timestamp: "2026-06-24T12:00:01.500Z" });
+    const handler = createFetchHandler({
+      publicDir: "/missing",
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+      readHistory: async () => [{ capturedAtMs: Date.parse(persisted.timestamp), snapshot: persisted }],
+    });
+
+    const response = await handler(new Request("http://127.0.0.1:4274/api/history?limit=20&window_seconds=300"));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.samples).toHaveLength(1);
+    expect(body.samples[0].capturedAtMs).toBe(Date.parse(persisted.timestamp));
+    expect(body.samples[0].snapshot.timestamp).toBe(persisted.timestamp);
   });
 
   test("serves the local ECharts browser bundle", async () => {

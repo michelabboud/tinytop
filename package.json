@@ -1,14 +1,16 @@
 {
   "name": "wsl-status-dashboard",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.11",
   "scripts": {
     "dev": "bun run src/server.ts",
     "start": "bun run src/server.ts",
+    "writer": "bun run src/collector-daemon.ts",
+    "writer:check": "bun run src/collector-daemon.ts --check",
     "test": "bun test",
-    "check": "bun test && bun run src/server.ts --check"
+    "check": "bun test && bun run src/server.ts --check && bun run src/collector-daemon.ts --check"
   },
   "dependencies": {
     "echarts": "^6.1.0"

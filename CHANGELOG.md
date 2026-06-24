@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 - 2026-06-24
+
+- Implemented SQLite-backed recent history through a dedicated Bun collector/writer process on `127.0.0.1:4276`.
+- Added `/api/history` hydration so refreshing the dashboard refills the Live History chart instead of starting from scratch.
+- Made frontend history insertion timestamp-aware so repeated latest samples update in place rather than duplicating bars.
+- Added tests for persistent history storage and the dashboard history API.
+
 ## 0.1.5 - 2026-06-24
 
 - Made stacked bar history use a viewport-derived visible sample count so bars keep a minimum width and the live window rolls left.

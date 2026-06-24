@@ -40,3 +40,10 @@
 - [x] Added responsive stacked bar visible-window sizing.
 - [x] Documented the SQLite history persistence architecture and ADR.
 - [x] Kept display settings scoped to browser-local storage.
+
+## 0.1.6
+
+- [x] Implemented the Bun collector/writer process.
+- [x] Added SQLite-backed recent history storage and `/api/history`.
+- [x] Hydrated Live History from persisted samples on dashboard refresh.
+- [x] Prevented duplicate bars when polling returns the same latest sample.

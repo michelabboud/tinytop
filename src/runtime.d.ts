@@ -15,9 +15,17 @@ declare module "node:os" {
 declare const Bun: {
   file(path: string): BodyInit & { text(): Promise<string> };
   sleep(milliseconds: number): Promise<void>;
-  spawn(command: string[], options: { stdout: "pipe"; stderr: "pipe" }): {
+  spawn(
+    command: string[],
+    options: {
+      stdout: "pipe" | "inherit";
+      stderr: "pipe" | "inherit";
+      env?: Record<string, string | undefined>;
+    },
+  ): {
     stdout: ReadableStream<Uint8Array>;
     exited: Promise<number>;
+    kill(): void;
   };
   serve(options: {
     hostname?: string;
