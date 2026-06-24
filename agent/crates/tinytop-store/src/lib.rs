@@ -1,10 +1,25 @@
-use sqlx::{Row, SqlitePool, sqlite::SqlitePoolOptions};
+use std::str::FromStr;
+
+use serde::{Deserialize, Serialize};
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 use tinytop_types::SystemSnapshot;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HistorySample {
     pub captured_at_ms: i64,
     pub snapshot: SystemSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreStats {
+    pub sample_count: i64,
+    pub oldest_captured_at_ms: Option<i64>,
+    pub newest_captured_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -21,9 +36,10 @@ pub struct SqliteHistoryStore {
 
 impl SqliteHistoryStore {
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
+        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect(database_url)
+            .connect_with(options)
             .await?;
         let store = Self { pool };
         store.apply_schema().await?;
@@ -159,6 +175,38 @@ impl SqliteHistoryStore {
             .collect::<Result<Vec<_>, _>>()?;
         samples.reverse();
         Ok(samples)
+    }
+
+    pub async fn stats(&self) -> Result<StoreStats, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+              COUNT(*) AS sample_count,
+              MIN(captured_at_ms) AS oldest_captured_at_ms,
+              MAX(captured_at_ms) AS newest_captured_at_ms
+            FROM metric_samples
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(StoreStats {
+            sample_count: row.try_get::<i64, _>("sample_count")?,
+            oldest_captured_at_ms: row.try_get::<Option<i64>, _>("oldest_captured_at_ms")?,
+            newest_captured_at_ms: row.try_get::<Option<i64>, _>("newest_captured_at_ms")?,
+        })
+    }
+
+    pub async fn integrity_check(&self) -> Result<String, StoreError> {
+        let row = sqlx::query("PRAGMA integrity_check")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.try_get::<String, _>(0)?)
+    }
+
+    pub async fn vacuum(&self) -> Result<(), StoreError> {
+        sqlx::query("VACUUM").execute(&self.pool).await?;
+        Ok(())
     }
 
     async fn apply_schema(&self) -> Result<(), StoreError> {

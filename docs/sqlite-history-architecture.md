@@ -1,23 +1,37 @@
 # SQLite History Architecture
 
-This document describes the implemented SQLite history architecture for TinyTop. The design goal is refresh-safe recent history without allowing the browser-facing dashboard process to own database lifecycle or writes.
+This document describes the implemented SQLite history architecture for TinyTop. The design goal is refresh-safe recent history with a single local process owning database lifecycle and writes.
 
 ## Summary
 
-- SQLite owner: `src/collector-daemon.ts`
-- Store module: `src/history-store.ts`
-- Public dashboard API: `src/server.ts`
+- Default SQLite owner: `tinytop-agent serve`
+- Legacy Bun SQLite owner: `src/collector-daemon.ts`
+- Rust store module: `agent/crates/tinytop-store`
+- Legacy Bun store module: `src/history-store.ts`
+- Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
 - Current history shape: one `metric_samples` table with indexed metric columns and full snapshot JSON
 
 ## Process Boundary
 
-The dashboard uses two local Bun processes:
+The default runtime uses one Rust process:
+
+1. `tinytop-agent serve` on `127.0.0.1:4274`
+   - Serves static frontend assets from `public/`.
+   - Serves vendored Apache ECharts from `public/vendor/echarts.min.js`.
+   - Serves `/api/snapshot` and `/api/history`.
+   - Exposes writer-compatible routes on the same port.
+   - Collects local telemetry.
+   - Owns the SQLite connection.
+   - Applies SQLite pragmas and schema setup.
+   - Writes samples.
+
+The legacy Bun development runtime uses two local processes:
 
 1. `dashboard` on `127.0.0.1:4274`
    - Serves static frontend assets.
-   - Serves `/vendor/echarts.min.js` from local `node_modules`.
+   - Serves `/vendor/echarts.min.js` from `public/vendor/`.
    - Proxies `/api/snapshot` and `/api/history` to the writer process.
    - Never opens SQLite.
 
@@ -28,7 +42,7 @@ The dashboard uses two local Bun processes:
    - Writes samples.
    - Answers current and historical reads.
 
-This avoids accidental multi-process writes and keeps WAL behavior, migrations, pragmas, and future retention policy in one process.
+Both runtimes avoid accidental multi-process writes and keep WAL behavior, migrations, pragmas, and future retention policy in one process.
 
 ## Writer API
 
@@ -48,7 +62,7 @@ This avoids accidental multi-process writes and keeps WAL behavior, migrations, 
 | `since_ms` | Inclusive Unix epoch millisecond lower bound |
 | `until_ms` | Inclusive Unix epoch millisecond upper bound |
 
-The writer returns history oldest first so charts and timeline controls can render naturally.
+The Rust daemon and legacy writer return history oldest first so charts and timeline controls can render naturally.
 
 ## SQLite Pragmas
 
@@ -59,7 +73,7 @@ PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 ```
 
-`WAL` gives the writer process better read/write behavior. `NORMAL` sync is the pragmatic local-dashboard setting. `busy_timeout` prevents avoidable transient lock failures. `foreign_keys` is enabled now so future child tables can rely on cascading behavior.
+`WAL` gives the SQLite owner better read/write behavior. `NORMAL` sync is the pragmatic local-dashboard setting. `busy_timeout` prevents avoidable transient lock failures. `foreign_keys` is enabled now so future child tables can rely on cascading behavior.
 
 ## Current Schema
 
@@ -103,9 +117,9 @@ Typed columns are still stored for graph values and future rollups, so history i
 
 ## Write Path
 
-1. The writer timer calls `/snapshot/collect` every `HISTORY_POLL_MS` milliseconds.
-2. `collectSnapshot()` reads local Linux/WSL sources.
-3. `openHistoryStore().insertSnapshot()` writes the sample in a SQLite transaction.
+1. The Rust daemon collection loop runs every `HISTORY_POLL_MS` milliseconds. In legacy Bun mode, the writer timer calls `/snapshot/collect`.
+2. The collector reads local Linux/WSL sources.
+3. `tinytop-store` or `openHistoryStore().insertSnapshot()` writes the sample in SQLite.
 4. The insert uses `captured_at_ms` as a unique timestamp key.
 5. If a sample with the same timestamp exists, the row is updated.
 
@@ -131,7 +145,7 @@ ORDER BY captured_at_ms DESC
 LIMIT ?;
 ```
 
-The writer reverses the selected rows before returning them so the browser receives oldest-to-newest samples.
+The SQLite owner reverses the selected rows before returning them so the browser receives oldest-to-newest samples.
 
 ## Frontend Hydration
 
@@ -180,6 +194,6 @@ SQLite may create sidecar files beside the database:
 - `history.sqlite-wal`
 - `history.sqlite-shm`
 
-Back up all three when the writer is running, or stop the writer before copying only `history.sqlite`.
+Back up all three when the Rust daemon or legacy writer is running, or stop the SQLite owner before copying only `history.sqlite`.
 
 See [docs/guides/OPERATIONS.md](guides/OPERATIONS.md) for inspection, backup, and reset commands.

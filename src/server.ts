@@ -6,7 +6,7 @@ const DEFAULT_PORT = 4274;
 const DEFAULT_WRITER_HOST = "127.0.0.1";
 const DEFAULT_WRITER_PORT = 4276;
 const PUBLIC_DIR = new URL("../public", import.meta.url).pathname;
-const ECHARTS_DIST = new URL("../node_modules/echarts/dist/echarts.min.js", import.meta.url).pathname;
+const ECHARTS_VENDOR = new URL("../public/vendor/echarts.min.js", import.meta.url).pathname;
 
 type SnapshotResult = {
   snapshot: SystemSnapshot;
@@ -46,7 +46,9 @@ function staticFileName(pathname: string): string | null {
 }
 
 function staticFilePath(pathname: string, publicDir: string): string | null {
-  if (pathname === "/vendor/echarts.min.js") return ECHARTS_DIST;
+  if (pathname === "/vendor/echarts.min.js") {
+    return ECHARTS_VENDOR;
+  }
   const fileName = staticFileName(pathname);
   return fileName ? `${publicDir}/${fileName}` : null;
 }

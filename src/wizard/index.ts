@@ -4,6 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { resolveHistoryDbPath } from "../ops";
 
 export type WizardMode = "foreground" | "split" | "systemd" | "skip";
+export type RustBinarySource = "release" | "compile";
 export type WizardCommand = string[];
 
 export type CommandResult = {
@@ -31,6 +32,7 @@ export type SetupSummary = {
   mode: WizardMode;
   runChecks: boolean;
   startServices: boolean;
+  rustBinarySource: RustBinarySource;
 };
 
 type ParsedArgs = {
@@ -38,9 +40,11 @@ type ParsedArgs = {
   runChecks: boolean;
   mode: WizardMode;
   startServices: boolean;
+  rustBinarySource: RustBinarySource;
 };
 
 const MODES = new Set<WizardMode>(["foreground", "split", "systemd", "skip"]);
+const RUST_BINARY_SOURCES = new Set<RustBinarySource>(["release", "compile"]);
 
 function dashboardUrl(env: Record<string, string | undefined>): string {
   return `http://${env.HOST ?? "127.0.0.1"}:${env.PORT ?? "4274"}`;
@@ -56,6 +60,7 @@ function parseArgs(args: string[]): ParsedArgs {
     runChecks: true,
     mode: "foreground",
     startServices: false,
+    rustBinarySource: "release",
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -65,6 +70,14 @@ function parseArgs(args: string[]): ParsedArgs {
     else if (arg === "--skip-checks") parsed.runChecks = false;
     else if (arg === "--start-services") parsed.startServices = true;
     else if (arg === "--skip-start") parsed.startServices = false;
+    else if (arg === "--rust-binary-source") {
+      const value = args[index + 1] as RustBinarySource | undefined;
+      if (!value || !RUST_BINARY_SOURCES.has(value)) {
+        throw new Error(`Invalid --rust-binary-source value: ${value ?? "<missing>"}`);
+      }
+      parsed.rustBinarySource = value;
+      index += 1;
+    }
     else if (arg === "--mode") {
       const value = args[index + 1] as WizardMode | undefined;
       if (!value || !MODES.has(value)) {
@@ -88,6 +101,7 @@ export function buildSetupSummary(summary: SetupSummary): string {
     `Writer: ${summary.writerUrl}`,
     `SQLite: ${summary.dbPath}`,
     `Verification: ${summary.runChecks ? "bun run check" : "skipped"}`,
+    `Rust agent: ${summary.rustBinarySource === "release" ? "GitHub release binary" : "local Cargo compile"}`,
     `Start services: ${summary.startServices ? "yes" : "no"}`,
   ].join("\n");
 }
@@ -118,6 +132,13 @@ async function promptForInteractiveArgs(parsed: ParsedArgs, out: (line: string) 
     parsed.runChecks = checksAnswer === "" || checksAnswer === "y" || checksAnswer === "yes";
 
     if (parsed.mode === "systemd") {
+      out("Choose Rust agent install method: release or compile");
+      const sourceAnswer = (await rl.question(`Rust agent [${parsed.rustBinarySource}]: `)).trim();
+      if (sourceAnswer) {
+        if (!RUST_BINARY_SOURCES.has(sourceAnswer as RustBinarySource)) throw new Error(`Invalid Rust agent install method: ${sourceAnswer}`);
+        parsed.rustBinarySource = sourceAnswer as RustBinarySource;
+      }
+
       const startAnswer = (await rl.question(`Start systemd services now? [y/N]: `)).trim().toLowerCase();
       parsed.startServices = startAnswer === "y" || startAnswer === "yes";
     }
@@ -180,6 +201,7 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardResu
       mode: parsed.mode,
       runChecks: parsed.runChecks,
       startServices: parsed.startServices,
+      rustBinarySource: parsed.rustBinarySource,
     }),
   );
 
@@ -200,7 +222,12 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardResu
   }
 
   if (parsed.mode === "systemd") {
-    if (!(await runStep("systemd install", ["./tinytop", "systemd", "install"], runCommand, cwd, env, out, err))) {
+    const rustSetupCommand: WizardCommand =
+      parsed.rustBinarySource === "release" ? ["./tinytop", "rust", "install-binary"] : ["./tinytop", "rust", "build"];
+    if (!(await runStep("Rust agent", rustSetupCommand, runCommand, cwd, env, out, err))) {
+      return { exitCode: 1 };
+    }
+    if (!(await runStep("systemd install", ["./tinytop", "systemd", "install", "--rust"], runCommand, cwd, env, out, err))) {
       return { exitCode: 1 };
     }
     if (parsed.startServices) {

@@ -19,6 +19,7 @@ describe("TinyTop setup wizard", () => {
       mode: "systemd",
       runChecks: true,
       startServices: true,
+      rustBinarySource: "release",
     });
 
     expect(summary).toContain("Runtime mode: systemd");
@@ -26,6 +27,7 @@ describe("TinyTop setup wizard", () => {
     expect(summary).toContain("Writer: http://127.0.0.1:4276");
     expect(summary).toContain("SQLite: /home/demo/.local/share/tinytop/history.sqlite");
     expect(summary).toContain("Verification: bun run check");
+    expect(summary).toContain("Rust agent: GitHub release binary");
   });
 
   test("noninteractive setup skips dependency install when node_modules exists", async () => {
@@ -93,7 +95,7 @@ describe("TinyTop setup wizard", () => {
     try {
       const result = await runWizard({
         cwd: repo,
-        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--start-services"],
+        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--rust-binary-source", "compile", "--start-services"],
         stdout: () => {},
         stderr: () => {},
         runCommand: async (command) => {
@@ -107,9 +109,41 @@ describe("TinyTop setup wizard", () => {
 
       expect(result.exitCode).toBe(0);
       expect(commands).toEqual([
-        ["./tinytop", "systemd", "install"],
+        ["./tinytop", "rust", "build"],
+        ["./tinytop", "systemd", "install", "--rust"],
         ["./tinytop", "systemd", "start"],
       ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("systemd mode can request a GitHub release binary before installing services", async () => {
+    const repo = tempRepo(true);
+    const commands: WizardCommand[] = [];
+    const output: string[] = [];
+
+    try {
+      const result = await runWizard({
+        cwd: repo,
+        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--rust-binary-source", "release"],
+        stdout: (line) => output.push(line),
+        stderr: (line) => output.push(line),
+        runCommand: async (command) => {
+          commands.push(command);
+          return { ok: true, code: 0 };
+        },
+        env: {
+          HOME: "/home/demo",
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(commands).toEqual([
+        ["./tinytop", "rust", "install-binary"],
+        ["./tinytop", "systemd", "install", "--rust"],
+      ]);
+      expect(output.join("\n")).toContain("Rust agent: GitHub release binary");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }

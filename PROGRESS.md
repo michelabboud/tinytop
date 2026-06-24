@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.12`
-- Date: 2026-06-24
-- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, and an additive Rust Linux/WSL collector preview with SQLx store.
+- Version: `0.1.13`
+- Date: 2026-06-25
+- Status: Local dashboard with SQLite-backed recent history, Rust single-daemon persistent runtime, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, and Bun development/fallback runtime.
 
 ## Completed
 
@@ -120,6 +120,20 @@
 - [x] Added `tinytop-agent collect --json` and optional `--sqlite` storage mode.
 - [x] Documented the SQLx architecture decision and dependency vetting.
 
+### 0.1.13 - Rust Single-Daemon Runtime
+
+- [x] Added `tinytop-agent serve` as a Rust dashboard daemon on `127.0.0.1:4274`.
+- [x] Exposed public `/api/snapshot` and `/api/history` routes from the Rust daemon.
+- [x] Exposed writer-compatible `/snapshot/latest`, `/snapshot/collect`, and `/history` routes from the Rust daemon.
+- [x] Added interval collection and SQLx-backed SQLite writes in the Rust daemon.
+- [x] Updated `./tinytop systemd install` to default to a single Rust `tinytop.service`.
+- [x] Kept the legacy Bun split services available with `./tinytop systemd install --bun`.
+- [x] Added `./tinytop rust install-binary`, `build`, `serve`, `serve-writer`, `collect`, `test`, and `check`.
+- [x] Added Rust-backed DB stats, integrity check, and vacuum support for the command center.
+- [x] Updated the setup wizard to ask for GitHub release binary vs local Cargo compile.
+- [x] Vendored Apache ECharts under `public/vendor/` with upstream license and notice files for no-Bun runtime use.
+- [x] Added ADR 0005 and dependency/provenance reports for Axum and vendored ECharts.
+
 ## Known Limitations
 
 - SQLite retention is not implemented yet. The writer stores recent samples indefinitely until the database is manually archived or reset.
@@ -127,7 +141,7 @@
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
 - The UI hydrates a 120-sample rolling window, not arbitrary long-range history browsing.
 - The app is designed for loopback/local use, not remote multi-user deployment.
-- The Rust agent is a preview and is not wired into the default `./tinytop start` runtime yet.
+- `./tinytop start` still runs the Bun development runtime; persistent installs default to the Rust daemon.
 - Native Windows and macOS collectors are planned but not implemented yet.
 
 ## Recommended Next Work
@@ -137,7 +151,5 @@
 - [ ] Add a dashboard setting for visible history duration and persisted sample count.
 - [ ] Add a writer health indicator in the UI when the internal writer API is unreachable.
 - [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
-- [ ] Add a Rust writer HTTP API compatible with the current Bun writer API.
-- [ ] Add a runtime switch so the dashboard can use the Rust writer when selected.
 - [ ] Add native Windows collector support.
 - [ ] Add native macOS collector support.

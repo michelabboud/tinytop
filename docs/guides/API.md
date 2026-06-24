@@ -6,10 +6,10 @@ This guide documents the local HTTP APIs used by TinyTop.
 
 | Process | URL | Audience |
 | --- | --- | --- |
-| Dashboard | `http://127.0.0.1:4274` | Browser and local user |
-| Writer | `http://127.0.0.1:4276` | Internal dashboard process |
+| Rust daemon | `http://127.0.0.1:4274` | Browser, local user, and writer-compatible API clients |
+| Legacy writer | `http://127.0.0.1:4276` | Internal dashboard process when using Bun split mode |
 
-Both processes support only `GET` requests. Other methods return JSON errors with HTTP `405`.
+TinyTop APIs support only `GET` requests. Other methods return JSON errors with HTTP `405`.
 
 ## Public Dashboard API
 
@@ -25,7 +25,7 @@ ok
 
 ### GET /api/snapshot
 
-Returns the latest `SystemSnapshot`. In normal runtime this proxies to writer `/snapshot/latest`.
+Returns the latest `SystemSnapshot`. In the Rust daemon this is handled in-process. In Bun split mode it proxies to writer `/snapshot/latest`.
 
 Example:
 
@@ -90,7 +90,7 @@ The example above is shortened. Real responses include full CPU times, filesyste
 
 ### GET /api/history
 
-Returns persisted recent history from the writer process.
+Returns persisted recent history from the Rust daemon or legacy writer process.
 
 Query parameters:
 
@@ -126,7 +126,7 @@ Samples are returned oldest first.
 
 ### GET /vendor/echarts.min.js
 
-Returns the locally installed Apache ECharts browser bundle.
+Returns the vendored Apache ECharts browser bundle from `public/vendor/echarts.min.js`.
 
 ### Static Assets
 
@@ -137,11 +137,11 @@ Returns the locally installed Apache ECharts browser bundle.
 | `/styles.css` | `public/styles.css` |
 | `/app.js` | `public/app.js` |
 
-## Internal Writer API
+## Writer-Compatible API
 
 ### GET /health
 
-Health check for the writer process.
+Health check for the Rust daemon or legacy writer process.
 
 Response:
 
@@ -160,6 +160,10 @@ Collects a new live snapshot, stores it in SQLite, and returns it. The writer ti
 ### GET /history
 
 Returns persisted samples from SQLite. Query parameters match dashboard `/api/history`.
+
+In the default Rust daemon, these writer-compatible routes are available on
+`http://127.0.0.1:4274`. In legacy Bun split mode they are available on
+`http://127.0.0.1:4276`.
 
 ## Error Responses
 

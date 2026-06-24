@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.13 - 2026-06-25
+
+- Added `tinytop-agent serve`, a Rust daemon that serves the dashboard, owns SQLite, collects on an interval, and exposes both public `/api/*` and writer-compatible routes.
+- Updated systemd defaults to install a single Rust `tinytop.service`; kept the legacy Bun split services behind `./tinytop systemd install --bun`.
+- Added `./tinytop rust` commands for release-binary install, local build, collect, serve, serve-writer, test, and check.
+- Updated the setup wizard to ask whether the Rust agent should come from a GitHub release binary or a local Cargo compile.
+- Added Rust-backed DB `stats`, `check`, and `vacuum` paths so the command center can manage SQLite without Bun when a Rust agent or Cargo is available.
+- Vendored the Apache ECharts browser bundle under `public/vendor/` with upstream license and notice files so the Rust daemon can run without `node_modules`.
+- Added Axum-based daemon tests, Rust history JSON contract tests, SQLite file-creation regression coverage, and Bash command-center tests for the Rust systemd path.
+- Documented the Rust single-daemon runtime, Axum dependency decision, vendored asset provenance, and no-Bun install path.
+
 ## 0.1.12 - 2026-06-24
 
 - Added an additive Rust workspace under `agent/` without removing or replacing the existing Bun collector.

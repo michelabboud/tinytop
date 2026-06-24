@@ -2,7 +2,7 @@
 
 ## Summary
 
-The Bun dashboard uses the installed Bun runtime (`bun 1.3.11`) as the server, package runner, and test runner. The browser chart dependency is Apache ECharts. The optional Rust collector preview has separate dependency vetting in [2026-06-24-rust-agent-dependency-vetting.md](2026-06-24-rust-agent-dependency-vetting.md).
+The Bun dashboard uses the installed Bun runtime (`bun 1.3.11`) as the development server, package runner, and test runner. The browser chart dependency is Apache ECharts. Rust dependency vetting lives in [2026-06-24-rust-agent-dependency-vetting.md](2026-06-24-rust-agent-dependency-vetting.md) and [2026-06-25-rust-daemon-dependency-vetting.md](2026-06-25-rust-daemon-dependency-vetting.md).
 
 ## Bun
 
@@ -19,7 +19,7 @@ Playwright was used only as an external temporary QA runner through `/tmp/tinyto
 
 - Version pinned by `package.json`: `^6.1.0`
 - Purpose: renders Live History line, stacked area, stacked bar, heatmap, and treemap chart modes.
-- Serving model: local `node_modules` bundle exposed through `/vendor/echarts.min.js`.
+- Serving model: vendored local bundle at `public/vendor/echarts.min.js`, exposed through `/vendor/echarts.min.js`.
 
 ## Alternatives
 

@@ -2,14 +2,14 @@
 
 ![TinyTop dashboard hero](docs/assets/tinytop-hero.png)
 
-A standalone Bun-powered dashboard for live WSL/Linux workstation status. It runs locally, reads host telemetry from Linux/WSL sources, stores recent history in SQLite, and renders a dense browser dashboard with Apache ECharts.
+A standalone local dashboard for live WSL/Linux workstation status. The default persistent runtime is a single Rust daemon that serves the dashboard, collects host telemetry, stores recent history in SQLite, and renders a dense browser UI with Apache ECharts.
 
 ## Current Status
 
-- Version: `0.1.12`
-- Runtime: Bun
+- Version: `0.1.13`
+- Runtime: Rust daemon for persistent installs; Bun remains available for development and fallback
 - Public UI: `http://127.0.0.1:4274`
-- Internal writer API: `http://127.0.0.1:4276`
+- Legacy writer API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
 - Network exposure: loopback only by default
 
@@ -18,13 +18,30 @@ A standalone Bun-powered dashboard for live WSL/Linux workstation status. It run
 ```bash
 git clone <repo-url> tinytop
 cd tinytop
-./tinytop setup
-./tinytop start
+./tinytop rust install-binary
+./tinytop systemd install --rust
+./tinytop systemd start
 ```
 
 Open <http://127.0.0.1:4274>.
 
-`./tinytop setup` is the Telecode-style installer. The Bash command center works before Bun is installed, can print or run the official Bun installer, installs dependencies when needed, and then launches the Bun setup wizard with `bun run setup`.
+For persistent installs without Bun, use the Rust agent:
+
+```bash
+./tinytop rust install-binary
+./tinytop systemd install --rust
+./tinytop systemd start
+```
+
+If a release binary is not available for your platform, compile locally:
+
+```bash
+./tinytop install-rust --print-only
+./tinytop rust build
+./tinytop systemd install --rust
+```
+
+`./tinytop setup` is the Telecode-style Bun wizard for source/development installs. It asks whether systemd should use a GitHub release binary or a local Cargo compile.
 
 For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day usage, see [GUIDE.md](GUIDE.md).
 
@@ -44,39 +61,52 @@ For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day u
    ./tinytop doctor
    ```
 
-3. Install Bun if the doctor says it is missing:
+3. Install the Rust agent. Prefer a release binary:
+
+   ```bash
+   ./tinytop rust install-binary
+   ```
+
+   Or compile locally:
+
+   ```bash
+   ./tinytop install-rust --print-only
+   ./tinytop rust build
+   ```
+
+4. Install persistent user-space systemd service:
+
+   ```bash
+   ./tinytop systemd install --rust
+   ./tinytop systemd start
+   ```
+
+5. Open the dashboard:
+
+   ```text
+   http://127.0.0.1:4274
+   ```
+
+6. Install Bun only if you want the Bun setup wizard or TypeScript development:
 
    ```bash
    ./tinytop install-bun --print-only
    ./tinytop install-bun --yes
    ```
 
-4. Run the setup wizard:
+7. Optional source setup wizard:
 
    ```bash
    ./tinytop setup
    ```
 
-5. Start TinyTop in the foreground:
+8. Optional foreground Bun development runtime:
 
    ```bash
    ./tinytop start
    ```
 
-6. Open the dashboard:
-
-   ```text
-   http://127.0.0.1:4274
-   ```
-
-7. For persistent background services:
-
-   ```bash
-   ./tinytop systemd install
-   ./tinytop systemd start
-   ```
-
-8. Useful maintenance commands:
+9. Useful maintenance commands:
 
    ```bash
    ./tinytop status
@@ -93,9 +123,11 @@ The root `./tinytop` command is the supported operator entrypoint:
 ```bash
 ./tinytop help
 ./tinytop doctor
+./tinytop rust install-binary
+./tinytop rust build
 ./tinytop install-bun --print-only
 ./tinytop setup
-./tinytop systemd install
+./tinytop systemd install --rust
 ./tinytop db stats
 ./tinytop db backup
 ```
@@ -103,7 +135,7 @@ The root `./tinytop` command is the supported operator entrypoint:
 For persistent background collection, install user-space systemd services:
 
 ```bash
-./tinytop systemd install
+./tinytop systemd install --rust
 ./tinytop systemd start
 ```
 
@@ -121,42 +153,45 @@ For persistent background collection, install user-space systemd services:
 - SQLite-backed recent history so browser refreshes refill Live History instead of starting empty
 - Timeline scrubber with selected datetime context, compact metric values, and a return-to-live control
 - Browser-local display preferences for theme and graph mode
-- Experimental Rust Linux/WSL collector workspace under `agent/`, with shared snapshot types and a SQLx-backed SQLite store path
+- Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, and a no-Bun systemd path
 
 ## Common Commands
 
 ```bash
 ./tinytop setup
+./tinytop rust install-binary
+./tinytop rust build
+./tinytop rust serve
+./tinytop systemd render
 ./tinytop start
 ./tinytop start:split
-./tinytop systemd render
 ./tinytop db stats
 bun run dev
 bun run writer
 bun test
 bun run check
 bun run rust:test
-bun run rust:collect
+bun run rust:serve
 bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
 ```
 
-## Rust Collector Preview
+## Rust Daemon
 
-The existing Bun collector remains the default production collector. The additive Rust workspace lives under `agent/` and currently provides a Linux/WSL collector plus a SQLx SQLite history store proof point:
+The Rust workspace lives under `agent/` and provides the default persistent runtime:
 
 ```bash
 cargo test --manifest-path agent/Cargo.toml --workspace
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
-cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json --sqlite sqlite::memory:
+cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve --public-dir public
 ```
 
-The Rust agent is not wired into `./tinytop start` yet.
+The Rust daemon serves the dashboard and APIs on `127.0.0.1:4274`. The older Bun dashboard/writer split is still available with `./tinytop start`, `./tinytop start:split`, and `./tinytop systemd install --bun`.
 
 Implementation notes:
 
 - The Rust Linux collector uses `procfs` and `sysinfo`; it does not shell out to `df`, `ps`, or `uname`.
 - The live collector keeps a reusable `sysinfo::System` so repeated samples avoid rebuilding all collector state from scratch.
-- The Rust preview requires Rust `1.95.0` or newer because the pinned `sysinfo` release uses that MSRV.
+- Local Rust builds require Rust `1.95.0` or newer because the pinned `sysinfo` release uses that MSRV.
 
 ## Documentation Map
 
@@ -171,6 +206,7 @@ Implementation notes:
 | [docs/guides/OPERATIONS.md](docs/guides/OPERATIONS.md) | Runtime checks, SQLite inspection, backup/reset, troubleshooting |
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
 | [docs/reports/2026-06-24-rust-agent-dependency-vetting.md](docs/reports/2026-06-24-rust-agent-dependency-vetting.md) | Rust agent dependency and SQLx vetting |
+| [docs/reports/2026-06-25-rust-daemon-dependency-vetting.md](docs/reports/2026-06-25-rust-daemon-dependency-vetting.md) | Rust daemon and vendored dashboard asset dependency vetting |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
@@ -184,23 +220,24 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Public dashboard bind host |
 | `PORT` | `4274` | Public dashboard port |
-| `HISTORY_WRITER_HOST` | `127.0.0.1` | Internal writer bind host |
-| `HISTORY_WRITER_PORT` | `4276` | Internal writer port |
+| `HISTORY_WRITER_HOST` | `127.0.0.1` | Legacy writer bind host |
+| `HISTORY_WRITER_PORT` | `4276` | Legacy writer port |
 | `HISTORY_WRITER_URL` | unset | Existing writer URL; when set, dashboard does not spawn a writer |
 | `HISTORY_POLL_MS` | `1500` | Writer collection interval |
 | `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the writer separately |
+| `TINYTOP_PUBLIC_DIR` | `./public` | Static dashboard asset directory for the Rust daemon |
 
 ## Ports
 
 The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 - `127.0.0.1:4274` - public dashboard UI
-- `127.0.0.1:4276` - internal collector/writer API
+- `127.0.0.1:4276` - legacy/internal collector-writer API for split mode
 
 ## Persistence
 
-Recent history is stored in SQLite by the writer process. The dashboard process never opens SQLite directly; it reads `/api/snapshot` and `/api/history` through the writer process. The browser hydrates up to 120 recent samples on startup, then continues polling live samples.
+Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the writer process owns SQLite and the dashboard process reads through the writer API. The browser hydrates up to 120 recent samples on startup, then continues polling live samples.
 
 The current SQLite implementation stores indexed metric columns plus the complete snapshot JSON. Retention and rollup tables are planned but not implemented yet, so the database grows until manually archived or reset.
 
@@ -215,4 +252,4 @@ git diff --check
 
 ## Safety
 
-The dashboard is read-only with respect to the operating system. It reads `/proc`, `df`, `ps`, `uname`, and OS release files, but it does not restart services, kill processes, modify WSL configuration, or change system state. SQLite writes are limited to the configured dashboard history database.
+The dashboard is read-only with respect to the operating system. The Rust collector uses `procfs` and `sysinfo` instead of shelling out to `df`, `ps`, or `uname`. SQLite writes are limited to the configured dashboard history database.

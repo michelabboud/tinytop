@@ -40,7 +40,9 @@ describe("tinytop command center", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("TinyTop");
     expect(result.stdout).toContain("./tinytop setup");
+    expect(result.stdout).toContain("./tinytop rust collect");
     expect(result.stdout).toContain("./tinytop systemd install");
+    expect(result.stdout).toContain("./tinytop systemd render [--rust|--bun]");
     expect(result.stdout).toContain("./tinytop db backup");
     expect(result.stdout).toContain("bun run setup");
   });
@@ -61,6 +63,8 @@ describe("tinytop command center", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Bun: missing");
     expect(result.stdout).toContain("./tinytop install-bun --yes");
+    expect(result.stdout).toContain("Rust/Cargo: missing");
+    expect(result.stdout).toContain("rustup.rs");
   });
 
   test("setup stops with clear Bun guidance when Bun is missing", async () => {
@@ -80,17 +84,36 @@ describe("tinytop command center", () => {
     expect(result.stderr).toContain("Refusing to reset history without --yes");
   });
 
-  test("systemd render emits split user services for writer and dashboard", async () => {
+  test("rust build reports missing Cargo with install guidance", async () => {
+    const result = await runTinytop(["rust", "build"], {
+      PATH: "/usr/bin:/bin",
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Rust/Cargo is required");
+    expect(result.stderr).toContain("https://rustup.rs");
+  });
+
+  test("systemd render emits a single Rust dashboard daemon by default", async () => {
     const result = await runTinytop(["systemd", "render"]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("tinytop-writer.service");
-    expect(result.stdout).toContain("tinytop-dashboard.service");
+    expect(result.stdout).toContain("tinytop.service");
     expect(result.stdout).toContain("ExecStart=");
-    expect(result.stdout).toContain("run src/collector-daemon.ts");
-    expect(result.stdout).toContain("run src/server.ts");
-    expect(result.stdout).toContain("Requires=tinytop-writer.service");
-    expect(result.stdout).toContain("Environment=TINYTOP_DISABLE_WRITER_SPAWN=1");
+    expect(result.stdout).toContain("tinytop-agent serve");
+    expect(result.stdout).toContain("--public-dir");
+    expect(result.stdout).not.toContain("tinytop-writer.service");
+    expect(result.stdout).not.toContain("tinytop-dashboard.service");
+    expect(result.stdout).not.toContain("run src/collector-daemon.ts");
+    expect(result.stdout).not.toContain("run src/server.ts");
     expect(result.stdout).not.toContain("User=");
+  });
+
+  test("systemd render can still emit the legacy Bun writer", async () => {
+    const result = await runTinytop(["systemd", "render", "--bun"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("run src/collector-daemon.ts");
+    expect(result.stdout).not.toContain("tinytop-agent serve");
   });
 });

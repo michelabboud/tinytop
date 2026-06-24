@@ -15,12 +15,17 @@ Use `./tinytop` for day-to-day operations:
 ./tinytop stats
 ```
 
-The command center can bootstrap Bun, run the setup wizard, manage user-space
-systemd services, and perform SQLite backup/check/reset operations.
+The command center can install or build the Rust agent, bootstrap Bun for
+development, run the setup wizard, manage user-space systemd services, and
+perform SQLite backup/check/reset operations.
 
 ## Runtime Processes
 
-Default `bun run dev` starts two processes:
+Default persistent mode runs one Rust daemon:
+
+- Rust dashboard daemon: `tinytop-agent serve` on `127.0.0.1:4274`
+
+Legacy Bun development mode starts two processes:
 
 - public dashboard: `src/server.ts` on `127.0.0.1:4274`
 - internal writer: `src/collector-daemon.ts` on `127.0.0.1:4276`
@@ -35,18 +40,23 @@ Check health:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/health
-curl -fsS http://127.0.0.1:4276/health
 ```
 
 ## Start And Stop
 
-Start:
+Start the Rust foreground daemon:
 
 ```bash
-./tinytop start
+./tinytop rust serve
 ```
 
-Start split:
+Start Bun development mode:
+
+```bash
+./tinytop rust serve
+```
+
+Start Bun split mode:
 
 ```bash
 ./tinytop start:split
@@ -72,6 +82,7 @@ Expected `bun run check` behavior:
 1. Runs all Bun tests.
 2. Runs `src/server.ts --check`.
 3. Runs `src/collector-daemon.ts --check`, including an in-memory SQLite write/read.
+4. Runs the Rust workspace tests through Cargo.
 
 ## SQLite Path
 
@@ -91,12 +102,12 @@ history.sqlite-shm
 Override:
 
 ```bash
-TINYTOP_HISTORY_DB=/path/to/history.sqlite bun run dev
+TINYTOP_HISTORY_DB=/path/to/history.sqlite ./tinytop rust serve
 ```
 
 ## Inspect SQLite
 
-Using Bun:
+Using the command center:
 
 ```bash
 ./tinytop db stats
@@ -108,9 +119,12 @@ Integrity check:
 ./tinytop db check
 ```
 
+`./tinytop db stats|check|vacuum` uses the Rust agent first, falls back to Cargo
+when a release binary is unavailable, and uses Bun only as the final fallback.
+
 ## Backup History
 
-Best option: stop the dashboard and writer, then use:
+Best option: stop the daemon, dashboard, or writer, then use:
 
 ```bash
 ./tinytop db backup
@@ -120,7 +134,7 @@ When the writer is running, include `history.sqlite-wal` and `history.sqlite-shm
 
 ## Reset History
 
-Stop the dashboard and writer first. Move current files aside:
+Stop the daemon, dashboard, or writer first. Move current files aside:
 
 ```bash
 ./tinytop db backup
@@ -130,10 +144,10 @@ Stop the dashboard and writer first. Move current files aside:
 Start the app again:
 
 ```bash
-./tinytop start
+./tinytop rust serve
 ```
 
-The writer will create a fresh database.
+The Rust daemon or legacy writer will create a fresh database.
 
 ## Port Conflicts
 
@@ -151,21 +165,21 @@ ss -ltnp '( sport = :4274 or sport = :4276 )'
 
 Fix:
 
-- Stop the stale dashboard/writer process if it belongs to this project.
+- Stop the stale daemon, dashboard, or writer process if it belongs to this project.
 - Or run with alternate ports:
 
 ```bash
-PORT=4284 HISTORY_WRITER_PORT=4286 bun run dev
+PORT=4284 ./tinytop rust serve
 ```
 
 If changing standing ports, update `~/.config/fleet/ports/tinytop.toml` and README documentation.
 
 ## Dashboard Starts But History Is Empty
 
-Check writer health:
+Check daemon health:
 
 ```bash
-curl -fsS http://127.0.0.1:4276/health
+curl -fsS http://127.0.0.1:4274/health
 ```
 
 Check public history proxy:
@@ -180,10 +194,10 @@ Check the database:
 ./tinytop db stats
 ```
 
-If the writer is healthy but the count is zero, wait a few seconds or call:
+If the daemon is healthy but the count is zero, wait a few seconds or call:
 
 ```bash
-curl -fsS http://127.0.0.1:4276/snapshot/collect
+curl -fsS http://127.0.0.1:4274/snapshot/collect
 ```
 
 ## Browser Shows Old UI
@@ -196,7 +210,7 @@ Try:
 - switch theme or graph mode to confirm JS is live
 - inspect `/app.js` response timestamp through browser dev tools if needed
 
-## Writer Fails To Start
+## Daemon Fails To Start
 
 Check:
 
@@ -206,7 +220,8 @@ Check:
 
 Common causes:
 
-- port `4276` already in use
+- port `4274` already in use
+- legacy split mode: port `4276` already in use
 - SQLite directory not writable
 - invalid `TINYTOP_HISTORY_DB` path
 

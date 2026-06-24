@@ -2,7 +2,7 @@
 
 ## Summary
 
-The Rust collector preview adds a Cargo workspace under `agent/`. The existing Bun collector remains intact and remains the default runtime path.
+The Rust collector preview added a Cargo workspace under `agent/`. As of `0.1.13`, the Rust agent also has a daemon runtime; see [2026-06-25-rust-daemon-dependency-vetting.md](2026-06-25-rust-daemon-dependency-vetting.md) for the Axum and vendored-dashboard-asset decision.
 
 ## Dependency Decisions
 
@@ -44,7 +44,8 @@ The Rust collector preview adds a Cargo workspace under `agent/`. The existing B
 - License: `MIT`
 - Minimum Rust version: `1.71`
 - Source checked: crates.io metadata via `cargo info tokio`
-- Features enabled: `macros`, `rt-multi-thread`
+- Features enabled originally: `macros`, `rt-multi-thread`
+- Features added by the Rust daemon: `net`, `signal`, `sync`, `time`
 - Reason selected: SQLx async pool operations need an async runtime; Tokio is the most common SQLx runtime choice.
 
 ### Serde
@@ -74,7 +75,7 @@ The Rust collector preview adds a Cargo workspace under `agent/`. The existing B
 
 ## Effective Rust Requirement
 
-The preview workspace requires Rust `1.95.0` or newer. SQLx itself requires Rust `1.94.0`, but the selected `sysinfo` release requires Rust `1.95`.
+The Rust workspace requires Rust `1.95.0` or newer for local builds. SQLx itself requires Rust `1.94.0`, but the selected `sysinfo` release requires Rust `1.95`.
 
 ## Alternatives Considered
 
@@ -82,7 +83,7 @@ The preview workspace requires Rust `1.95.0` or newer. SQLx itself requires Rust
 - shelling out to `df`, `ps`, or `uname`: rejected for the Rust collector because the requested direction is lean crate-backed host collection, and external commands add process-spawn overhead and platform-specific parsing drift.
 - `inferno` `0.12.6`: considered after implementation as a possible Rust crate addition. It is a strong flamegraph/profiling toolkit, not a host-metrics collector. It can be useful later as an optional developer profiling workflow for TinyTop itself, but it does not belong in the runtime collector or SQLx store path. It is also CDDL-1.0 licensed, so adding it as a linked library would need a deliberate license/provenance review instead of casual inclusion.
 - compile-time SQLx macros: deferred because they require build-time database metadata or offline preparation. Runtime queries are simpler for a public preview and still keep SQL isolated.
-- adding an HTTP framework now: deferred. The current slice proves collection, JSON contract, and SQLx persistence without replacing the Bun writer.
+- adding an HTTP framework in `0.1.12`: deferred at the time. Superseded by `0.1.13`, which adds Axum for the Rust daemon.
 
 ## Current Verification
 

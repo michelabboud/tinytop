@@ -11,13 +11,13 @@ http://127.0.0.1:4274
 Start TinyTop:
 
 ```bash
-./tinytop start
+./tinytop rust serve
 ```
 
 Use persistent user services:
 
 ```bash
-./tinytop systemd install
+./tinytop systemd install --rust
 ./tinytop systemd start
 ```
 
@@ -45,7 +45,7 @@ The rail status shows the polling state:
 ## Refresh And Pause
 
 - `Refresh` requests a fresh snapshot immediately.
-- `Pause` stops browser polling. The writer process can still continue collecting samples in the background.
+- `Pause` stops browser polling. The Rust daemon or legacy writer can still continue collecting samples in the background.
 - `Resume` restarts browser polling and returns the UI to live updates.
 
 ## Themes
@@ -135,8 +135,8 @@ Not persisted:
 - RAM and swap come from `/proc/meminfo`.
 - Load percent is derived from 1-minute load divided by CPU core count, capped to 100 for chart display.
 - Pressure values come from `/proc/pressure/*` when available.
-- Filesystem capacity comes from `df`.
-- Process rows come from `ps`, sorted by CPU.
+- In the Rust daemon, filesystem and process data come from Rust crates instead of shelling out.
+- In legacy Bun mode, filesystem capacity comes from `df` and process rows come from `ps`.
 
 ## Refresh Behavior
 

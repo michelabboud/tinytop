@@ -5,6 +5,29 @@ use tinytop_types::{
     RuntimeKind, SwapSnapshot, SystemSnapshot,
 };
 
+#[tokio::test]
+async fn sqlite_store_creates_missing_database_file() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time should be after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("tinytop-store-{stamp}"));
+    std::fs::create_dir_all(&dir).expect("temp dir should be created");
+    let db_path = dir.join("history.sqlite");
+    let database_url = format!("sqlite://{}", db_path.display());
+
+    let store = SqliteHistoryStore::connect(&database_url)
+        .await
+        .expect("store should create a missing SQLite file");
+    store
+        .insert_snapshot(1_000, &snapshot("2026-06-24T12:00:01Z", 10.0))
+        .await
+        .expect("insert should work after file creation");
+
+    assert!(db_path.exists());
+    std::fs::remove_dir_all(dir).ok();
+}
+
 fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
     SystemSnapshot {
         timestamp: timestamp.to_string(),
@@ -91,6 +114,14 @@ async fn sqlite_store_inserts_latest_and_reads_history_oldest_first() {
     let latest = store.latest_snapshot().await.expect("latest").expect("row");
     assert_eq!(latest.captured_at_ms, 2_000);
     assert_eq!(latest.snapshot.cpu.usage_percent, 20.0);
+
+    let stats = store.stats().await.expect("stats");
+    assert_eq!(stats.sample_count, 2);
+    assert_eq!(stats.oldest_captured_at_ms, Some(1_000));
+    assert_eq!(stats.newest_captured_at_ms, Some(2_000));
+
+    let integrity = store.integrity_check().await.expect("integrity check");
+    assert_eq!(integrity, "ok");
 
     let history = store
         .read_history(HistoryQuery {
