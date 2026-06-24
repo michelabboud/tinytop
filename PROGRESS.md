@@ -34,3 +34,9 @@
 - [x] Added stacked area, stacked bar, heatmap, and treemap modes.
 - [x] Served the ECharts browser bundle from a local dependency route.
 - [x] Verified chart selection, visible-window labeling, desktop layout, and mobile layout.
+
+## 0.1.5
+
+- [x] Added responsive stacked bar visible-window sizing.
+- [x] Documented the SQLite history persistence architecture and ADR.
+- [x] Kept display settings scoped to browser-local storage.

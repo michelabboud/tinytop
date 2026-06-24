@@ -1,6 +1,9 @@
 const POLL_MS = 1500;
 const MAX_HISTORY = 120;
 const MAX_VISIBLE_HISTORY = 80;
+const MIN_VISIBLE_BAR_SAMPLES = 12;
+const MIN_STACKED_BAR_WIDTH = 12;
+const BAR_CHART_SIDE_PADDING = 70;
 const STORAGE_KEYS = {
   theme: "wsl-status-dashboard.theme",
   graphMode: "wsl-status-dashboard.graphMode",
@@ -277,7 +280,7 @@ function visibleHistoryRange() {
   const total = state.snapshots.length;
   if (total === 0) return { start: 0, end: 0, total, visible: 0 };
 
-  const visible = Math.min(total, MAX_VISIBLE_HISTORY);
+  const visible = Math.min(total, visibleHistoryCapacity());
   if (total <= visible) return { start: 0, end: total, total, visible };
 
   const liveStart = total - visible;
@@ -288,6 +291,15 @@ function visibleHistoryRange() {
   const centeredStart = state.selectedSampleIndex - Math.floor(visible / 2);
   const start = Math.max(0, Math.min(centeredStart, liveStart));
   return { start, end: start + visible, total, visible };
+}
+
+function visibleHistoryCapacity() {
+  if (state.graphMode !== "bar") return MAX_VISIBLE_HISTORY;
+  const width = elements.historyChart?.clientWidth ?? 0;
+  if (width <= 0) return MAX_VISIBLE_HISTORY;
+  const plotWidth = Math.max(MIN_STACKED_BAR_WIDTH, width - BAR_CHART_SIDE_PADDING);
+  const capacity = Math.floor(plotWidth / MIN_STACKED_BAR_WIDTH);
+  return Math.max(MIN_VISIBLE_BAR_SAMPLES, Math.min(MAX_HISTORY, capacity));
 }
 
 function visibleHistorySeries(series, range) {
@@ -407,7 +419,8 @@ function barSeries(series) {
     type: "bar",
     stack: "total",
     data: item.values.map(clampPercent),
-    barMaxWidth: 18,
+    barMinWidth: MIN_STACKED_BAR_WIDTH,
+    barMaxWidth: 28,
     emphasis: { focus: "series" },
   }));
 }

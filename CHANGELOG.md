@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.5 - 2026-06-24
+
+- Made stacked bar history use a viewport-derived visible sample count so bars keep a minimum width and the live window rolls left.
+- Added a SQLite history architecture plan and ADR for a dedicated collector/writer process and dashboard read path.
+- Kept dashboard display settings as browser-local preferences.
+
 ## 0.1.4 - 2026-06-24
 
 - Replaced the hand-rolled Live History canvas chart with Apache ECharts served from the local dependency tree.

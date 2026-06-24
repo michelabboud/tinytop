@@ -21,6 +21,12 @@ The dashboard is a single-process local Bun app. `Bun.serve()` hosts a static fr
 
 Theme and history view mode are frontend-only preferences. The browser stores them in `localStorage` under the `wsl-status-dashboard.*` key prefix. The frontend also keeps a rolling in-memory snapshot buffer for the current session so the timeline scrubber and ECharts history chart can render older samples into the main gauges and label the selected sample with local datetime context. These controls affect CSS variables, chart rendering, and which already-collected sample is displayed; they do not affect collection, server routing, or host state.
 
+## Planned Persistence
+
+The planned persistence architecture is documented in `docs/sqlite-history-architecture.md`. It uses a dedicated Bun collector/writer process as the only SQLite owner, with the dashboard process reading history through that writer process rather than opening the database directly.
+
+The architecture decision is recorded in `docs/adr/0001-sqlite-writer-process.md`.
+
 ## Safety
 
 The app is read-only. It does not restart services, kill processes, change sysctl values, modify WSL configuration, or write system data. It binds to loopback by default.
