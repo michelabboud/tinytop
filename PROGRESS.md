@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.10`
+- Version: `0.1.11`
 - Date: 2026-06-24
-- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, and public-ready README/docs.
+- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, and private GitHub release preparation.
 
 ## Completed
 
@@ -101,6 +101,13 @@
 - [x] Removed hardcoded local home paths from public docs.
 - [x] Replaced host-specific examples with generic examples.
 - [x] Removed the old generated UI concept image with host-like demo strings.
+
+### 0.1.11 - Apache License And Private Release Prep
+
+- [x] Switched the project license to Apache License 2.0.
+- [x] Added Apache-2.0 package metadata.
+- [x] Added a NOTICE file.
+- [x] Prepared the docs for a private GitHub release review before public conversion.
 
 ## Known Limitations
 

@@ -6,7 +6,7 @@ A standalone Bun-powered dashboard for live WSL/Linux workstation status. It run
 
 ## Current Status
 
-- Version: `0.1.10`
+- Version: `0.1.11`
 - Runtime: Bun
 - Public UI: `http://127.0.0.1:4274`
 - Internal writer API: `http://127.0.0.1:4276`
@@ -151,6 +151,10 @@ bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
+
+## License
+
+TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Configuration Summary
 

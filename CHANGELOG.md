@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.11 - 2026-06-24
+
+- Changed the project license from MIT to Apache License 2.0.
+- Added package license metadata and a NOTICE file for Apache-2.0 attribution.
+- Prepared the repository for a private GitHub release before public conversion.
+
 ## 0.1.10 - 2026-06-24
 
 - Added a README hero image and inline new-user install guide.
