@@ -4,7 +4,7 @@ A standalone Bun-powered dashboard for live WSL/Linux workstation status. It run
 
 ## Current Status
 
-- Version: `0.1.7`
+- Version: `0.1.8`
 - Runtime: Bun
 - Public UI: `http://127.0.0.1:4274`
 - Internal writer API: `http://127.0.0.1:4276`
@@ -23,6 +23,17 @@ Open <http://127.0.0.1:4274>.
 `bun run dev` starts the public dashboard process and an internal collector/writer process. The dashboard serves the browser UI on `127.0.0.1:4274`; the writer owns SQLite and exposes its local read API on `127.0.0.1:4276`.
 
 For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day usage, see [GUIDE.md](GUIDE.md).
+
+## Install Wizard Status
+
+The current release still uses the manual Bun quick start above. The approved
+Telecode-style installer design is recorded in
+[docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md).
+
+The planned installer has a zero-dependency `./tinytop` Bash command center for
+fresh-machine help, Bun bootstrap, systemd user services, logs, status, and
+SQLite maintenance. When Bun is available, `./tinytop setup` launches the richer
+`bun run setup` wizard.
 
 ## What It Shows
 
@@ -61,6 +72,7 @@ bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
 | [docs/guides/API.md](docs/guides/API.md) | Public dashboard API and internal writer API |
 | [docs/guides/OPERATIONS.md](docs/guides/OPERATIONS.md) | Runtime checks, SQLite inspection, backup/reset, troubleshooting |
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
+| [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Approved install wizard and systemd command-center design |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
 ## Configuration Summary

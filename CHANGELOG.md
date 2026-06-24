@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8 - 2026-06-24
+
+- Recorded the approved Telecode-style install wizard design for TinyTop.
+- Chose a two-layer installer: a zero-dependency `./tinytop` Bash command center that can bootstrap Bun, then a richer `bun run setup` wizard once Bun exists.
+- Added ADR 0003 for the Bash bootstrap plus Bun wizard architecture.
+- Documented the planned command surface for setup, start, restart, stop, status, logs, monitor, stats, SQLite maintenance, backups, and systemd user services.
+
 ## 0.1.7 - 2026-06-24
 
 - Renamed the project to TinyTop, including package name, app title, default SQLite data directory, browser storage keys, documentation, and local port claim.

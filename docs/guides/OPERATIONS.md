@@ -2,6 +2,14 @@
 
 This guide covers day-to-day runtime checks, process management, SQLite inspection, backup, reset, and troubleshooting.
 
+## Command Center Status
+
+The current release documents manual operations. The approved next operations
+surface is a root `./tinytop` Bash command center that will wrap start, stop,
+restart, status, logs, monitor, stats, SQLite backup/reset, Bun bootstrap, and
+systemd user-service management. See
+[../superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](../superpowers/specs/2026-06-24-tinytop-install-wizard-design.md).
+
 ## Runtime Processes
 
 Default `bun run dev` starts two processes:

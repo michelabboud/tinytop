@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.7`
+- Version: `0.1.8`
 - Date: 2026-06-24
-- Status: Local dashboard with SQLite-backed recent history and complete root documentation.
+- Status: Local dashboard with SQLite-backed recent history, complete root documentation, and approved install-wizard architecture captured for implementation.
 
 ## Completed
 
@@ -74,6 +74,16 @@
 - [x] Added `docs/guides/OPERATIONS.md`.
 - [x] Updated `docs/sqlite-history-architecture.md`.
 
+### 0.1.8 - Install Wizard Design
+
+- [x] Reviewed the Telecode install wizard pattern.
+- [x] Approved TinyTop's two-layer installer direction.
+- [x] Documented the zero-dependency `./tinytop` Bash command center.
+- [x] Documented the Bash-to-Bun handoff for `./tinytop setup` -> `bun run setup`.
+- [x] Documented planned systemd user services for the writer and dashboard.
+- [x] Documented planned SQLite stats, check, backup, vacuum, and reset operations.
+- [x] Added ADR 0003 for the Bash bootstrap plus Bun wizard decision.
+
 ## Known Limitations
 
 - SQLite retention is not implemented yet. The writer stores recent samples indefinitely until the database is manually archived or reset.
@@ -81,12 +91,16 @@
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
 - The UI hydrates a 120-sample rolling window, not arbitrary long-range history browsing.
 - The app is designed for loopback/local use, not remote multi-user deployment.
+- The Telecode-style install wizard and `./tinytop` command center are designed but not implemented yet.
 
 ## Recommended Next Work
 
+- [ ] Implement the root `./tinytop` Bash command center.
+- [ ] Implement `bun run setup` and connect `./tinytop setup` to it.
+- [ ] Add user-space systemd services for the writer and dashboard.
+- [ ] Add command-center SQLite stats, integrity check, backup, vacuum, and guarded reset.
 - [ ] Add raw history retention, defaulting to a configurable 24 to 72 hour window.
 - [ ] Add one-minute rollups for longer history ranges.
 - [ ] Add a dashboard setting for visible history duration and persisted sample count.
 - [ ] Add a writer health indicator in the UI when the internal writer API is unreachable.
 - [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
-- [ ] Add packaged service examples for systemd user services or another supervisor.

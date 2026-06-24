@@ -175,3 +175,4 @@ Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
 
 - [0001 - SQLite Writer Process](docs/adr/0001-sqlite-writer-process.md)
 - [0002 - Initial Snapshot JSON History](docs/adr/0002-initial-snapshot-json-history.md)
+- [0003 - Bash Bootstrap Plus Bun Install Wizard](docs/adr/0003-bash-bootstrap-bun-install-wizard.md)

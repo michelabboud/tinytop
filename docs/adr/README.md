@@ -6,3 +6,4 @@ This directory tracks architectural decisions that are expensive to reverse or l
 | --- | --- | --- |
 | [0001](0001-sqlite-writer-process.md) | Accepted | Use a dedicated Bun writer process as the only SQLite owner. |
 | [0002](0002-initial-snapshot-json-history.md) | Accepted | Store initial history as indexed metric columns plus full snapshot JSON. |
+| [0003](0003-bash-bootstrap-bun-install-wizard.md) | Accepted | Use a Bash bootstrap command center that launches a Bun setup wizard after Bun is available. |

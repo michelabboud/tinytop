@@ -2,6 +2,14 @@
 
 This guide covers local installation, configuration, startup, verification, upgrade, and uninstall for TinyTop.
 
+## Installer Status
+
+This release still uses the manual Bun install flow below. The approved next
+installer is documented in
+[docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md):
+a zero-dependency `./tinytop` Bash command center that can help install Bun,
+then launch `bun run setup` for the richer interactive wizard.
+
 ## Requirements
 
 - Linux or WSL2
