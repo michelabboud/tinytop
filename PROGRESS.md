@@ -14,3 +14,9 @@
 - [x] Added selectable themes.
 - [x] Added selectable history graph modes.
 - [x] Persisted display preferences locally in the browser.
+
+## 0.1.2
+
+- [x] Moved Live History directly under the main gauges.
+- [x] Removed duplicate bar graph mode.
+- [x] Added history scrubbing for gauge values with a return-to-live control.

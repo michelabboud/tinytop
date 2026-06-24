@@ -19,7 +19,7 @@ The dashboard is a single-process local Bun app. `Bun.serve()` hosts a static fr
 
 ## Frontend State
 
-Theme and history graph mode are frontend-only preferences. The browser stores them in `localStorage` under the `wsl-status-dashboard.*` key prefix. They affect CSS variables and canvas rendering only; they do not affect collection, server routing, or host state.
+Theme and history view mode are frontend-only preferences. The browser stores them in `localStorage` under the `wsl-status-dashboard.*` key prefix. The frontend also keeps a rolling in-memory snapshot buffer for the current session so the timeline scrubber can render older samples into the main gauges. These controls affect CSS variables, canvas rendering, and which already-collected sample is displayed; they do not affect collection, server routing, or host state.
 
 ## Safety
 

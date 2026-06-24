@@ -18,9 +18,10 @@ Open <http://127.0.0.1:4274>.
 - Filesystem capacity and inode pressure
 - CPU, memory, and I/O pressure from `/proc/pressure/*` when available
 - Top processes by CPU and memory
-- Live gauges, sparklines, history charts, status strips, and stat tiles
+- Live gauges, sparklines, a first-screen history chart, status strips, and stat tiles
 - Theme controls: Midnight, Matrix, Aurora, Solar, and Ember
-- Graph controls: line, area, bar, and heatmap history views
+- History view controls: line, area, and heatmap views
+- Timeline scrubber that inspects older local samples in the main gauges and returns to live mode
 
 ## Port
 
@@ -39,4 +40,4 @@ The backend classifies the host as `WSL`, `Linux`, or `Unknown`. It checks kerne
 
 ## Display Controls
 
-Theme and graph selections are browser-local preferences stored in `localStorage`. They do not change the system data collection path or write to WSL/Linux configuration.
+Theme and history-view selections are browser-local preferences stored in `localStorage`. The timeline scrubber uses only the current browser session's rolling samples. These controls do not change the system data collection path or write to WSL/Linux configuration.

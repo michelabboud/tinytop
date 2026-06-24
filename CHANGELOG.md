@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 - 2026-06-24
+
+- Moved Live History directly below the CPU, RAM, and swap gauges.
+- Removed the duplicate bar history mode.
+- Added a timeline scrubber that lets the main gauges inspect older local samples.
+- Added a Live control that returns the gauges to the newest sample.
+
 ## 0.1.1 - 2026-06-24
 
 - Added five selectable dashboard themes: Midnight, Matrix, Aurora, Solar, and Ember.
