@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 - 2026-06-24
+
+- Restored the Live History bar graph mode.
+- Moved graph-type controls into the Live History top nav.
+- Moved the timeline into its own row under the chart with selected datetime context.
+- Added selected-sample metric values and percent-axis labels so bar, line, and area modes have numeric context.
+- Added latest-value labels to heatmap lanes so the view has numeric context.
+- Kept area mode as a filled-under-line chart for the independent CPU, RAM, swap, and load series.
+
 ## 0.1.2 - 2026-06-24
 
 - Moved Live History directly below the CPU, RAM, and swap gauges.

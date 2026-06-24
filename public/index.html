@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>WSL Status Dashboard</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body data-theme="midnight">
@@ -84,13 +85,6 @@
             <button type="button" data-theme-option="solar" aria-pressed="false">Solar</button>
             <button type="button" data-theme-option="ember" aria-pressed="false">Ember</button>
           </fieldset>
-
-          <fieldset class="segmented-control">
-            <legend>History view</legend>
-            <button type="button" data-graph-mode="line" aria-pressed="true">Line</button>
-            <button type="button" data-graph-mode="area" aria-pressed="false">Area</button>
-            <button type="button" data-graph-mode="heatmap" aria-pressed="false">Heatmap</button>
-          </fieldset>
         </section>
 
         <div class="alert" id="alert" role="status" hidden></div>
@@ -146,19 +140,40 @@
               <p>Rolling local samples from the last few minutes.</p>
             </div>
             <div class="history-badges">
-              <span class="mini-stat" id="history-mode-label">Line graph</span>
+              <nav class="history-graph-nav" aria-label="Live history graph type">
+                <button type="button" data-graph-mode="line" aria-pressed="true">Line</button>
+                <button type="button" data-graph-mode="area" aria-pressed="false">Area</button>
+                <button type="button" data-graph-mode="bar" aria-pressed="false">Bar</button>
+                <button type="button" data-graph-mode="heatmap" aria-pressed="false">Heatmap</button>
+              </nav>
               <span class="mini-stat" id="sample-count">0 samples</span>
-            </div>
-            <div class="history-scrubber">
-              <label for="history-scrubber">
-                <span>Timeline</span>
-                <strong id="history-position-label">Live</strong>
-              </label>
-              <input id="history-scrubber" type="range" min="0" max="0" value="0" step="1" disabled />
-              <button class="mini-button" id="live-button" type="button" disabled>Live</button>
             </div>
           </div>
           <canvas id="history-chart" class="history-chart" width="1280" height="300" aria-label="Live usage history"></canvas>
+          <div class="history-scrubber" aria-label="Live history timeline">
+            <div class="history-scrubber-meta">
+              <span>Timeline</span>
+              <strong id="history-position-label">Live</strong>
+            </div>
+            <div class="history-scrubber-row">
+              <input
+                id="history-scrubber"
+                type="range"
+                min="0"
+                max="0"
+                value="0"
+                step="1"
+                aria-label="Browse live history samples"
+                disabled
+              />
+              <button class="mini-button" id="live-button" type="button" disabled>Live</button>
+            </div>
+            <div class="history-scrubber-scale" aria-hidden="true">
+              <span id="history-start-label">-</span>
+              <span id="history-end-label">Live</span>
+            </div>
+            <div class="history-sample-values" id="history-sample-values" aria-label="Selected sample values"></div>
+          </div>
         </section>
 
         <section class="metric-band" aria-label="Live metrics">

@@ -8,6 +8,7 @@ const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
 const GRAPH_MODES = {
   line: "Line graph",
   area: "Area graph",
+  bar: "Bar graph",
   heatmap: "Heatmap",
 };
 
@@ -67,9 +68,11 @@ const elements = {
   pauseButton: document.querySelector("#pause-button"),
   themeButtons: Array.from(document.querySelectorAll("[data-theme-option]")),
   graphButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
-  historyModeLabel: document.querySelector("#history-mode-label"),
   historyScrubber: document.querySelector("#history-scrubber"),
   historyPositionLabel: document.querySelector("#history-position-label"),
+  historyStartLabel: document.querySelector("#history-start-label"),
+  historyEndLabel: document.querySelector("#history-end-label"),
+  historySampleValues: document.querySelector("#history-sample-values"),
   liveButton: document.querySelector("#live-button"),
 };
 
@@ -109,7 +112,6 @@ function setGraphMode(mode) {
   const nextMode = Object.hasOwn(GRAPH_MODES, mode) ? mode : "line";
   state.graphMode = nextMode;
   syncPressed(elements.graphButtons, "graphMode", nextMode);
-  setText(elements.historyModeLabel, GRAPH_MODES[nextMode]);
   storeValue(STORAGE_KEYS.graphMode, nextMode);
   drawHistoryChart();
 }
@@ -146,6 +148,16 @@ function formatUptime(seconds) {
 
 function formatSampleTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function formatSampleDateTime(timestamp) {
+  return new Date(timestamp).toLocaleString([], {
+    month: "short",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -279,9 +291,11 @@ function drawHistoryChart() {
 
   const series = historySeries();
   if (state.graphMode === "area") drawAreaHistory(context, width, height, series);
-  else if (state.graphMode === "heatmap") drawHeatmapHistory(context, width, height, series);
+  else if (state.graphMode === "bar") drawBarHistory(context, width, height, series);
+  else if (state.graphMode === "heatmap") drawHeatmapHistory(context, width, height, series, palette);
   else drawLineHistory(context, width, height, series);
 
+  if (state.graphMode !== "heatmap") drawHistoryAxisLabels(context, width, height, palette);
   drawHistoryLegend(context, series, palette);
   drawHistoryMarker(context, width, height, palette);
 }
@@ -330,28 +344,64 @@ function drawAreaHistory(context, width, height, series) {
   drawLineHistory(context, width, height, series);
 }
 
-function drawHeatmapHistory(context, width, height, series) {
-  const topOffset = 34;
+function drawBarHistory(context, width, height, series) {
+  const topOffset = 36;
+  const bottomOffset = 8;
+  const plotHeight = Math.max(1, height - topOffset - bottomOffset);
+  const visibleCount = Math.min(Math.max(...series.map((item) => item.values.length), 1), 80);
+  const groupWidth = width / visibleCount;
+  const groupGap = Math.min(5, Math.max(1, groupWidth * 0.16));
+  const availableWidth = Math.max(1, groupWidth - groupGap * 2);
+  const barWidth = Math.max(1, availableWidth / series.length);
+
+  series.forEach((item, seriesIndex) => {
+    const values = item.values.slice(-visibleCount);
+    values.forEach((value, index) => {
+      const normalized = clampPercent(value) / 100;
+      const barHeight = normalized * plotHeight;
+      const x = index * groupWidth + groupGap + seriesIndex * barWidth;
+      const y = topOffset + plotHeight - barHeight;
+
+      context.fillStyle = item.color;
+      context.globalAlpha = item.label === "LOAD" ? 0.72 : 0.9;
+      context.fillRect(x, y, Math.max(1, barWidth - 1), Math.max(1, barHeight));
+    });
+  });
+  context.globalAlpha = 1;
+}
+
+function drawHeatmapHistory(context, width, height, series, palette) {
+  const topOffset = 36;
   const rowGap = 8;
   const labelWidth = 54;
+  const valueWidth = 56;
   const rowHeight = Math.max(20, (height - topOffset - rowGap * (series.length - 1) - 12) / series.length);
   const visibleCount = Math.min(Math.max(...series.map((item) => item.values.length), 1), 80);
-  const cellWidth = (width - labelWidth - 16) / visibleCount;
+  const cellAreaWidth = Math.max(1, width - labelWidth - valueWidth - 20);
+  const cellWidth = cellAreaWidth / visibleCount;
 
   context.font = "12px Inter, system-ui, sans-serif";
   series.forEach((item, rowIndex) => {
     const y = topOffset + rowIndex * (rowHeight + rowGap);
     const values = item.values.slice(-visibleCount);
+    const latestValue = values.at(-1);
+
     context.fillStyle = item.color;
+    context.globalAlpha = 0.08;
+    context.fillRect(labelWidth, y, cellAreaWidth, rowHeight);
     context.globalAlpha = 0.95;
     context.fillText(item.label, 12, y + rowHeight * 0.62);
 
     values.forEach((value, index) => {
-      const intensity = Math.max(0.12, clampPercent(value) / 100);
+      const intensity = 0.08 + (clampPercent(value) / 100) * 0.82;
       context.globalAlpha = intensity;
       context.fillStyle = item.color;
       context.fillRect(labelWidth + index * cellWidth, y, Math.max(1, cellWidth - 1), rowHeight);
     });
+
+    context.globalAlpha = 0.86;
+    context.fillStyle = palette.text;
+    context.fillText(Number.isFinite(latestValue) ? formatPercent(latestValue) : "-", width - valueWidth + 8, y + rowHeight * 0.62);
   });
   context.globalAlpha = 1;
 }
@@ -367,6 +417,20 @@ function drawHistoryLegend(context, series, palette) {
     context.fillText(item.label, x + 22, 20);
   });
   context.globalAlpha = 1;
+}
+
+function drawHistoryAxisLabels(context, width, height, palette) {
+  context.save();
+  context.font = "11px Inter, system-ui, sans-serif";
+  context.textAlign = "right";
+  context.fillStyle = palette.muted;
+  context.globalAlpha = 0.76;
+  for (let line = 1; line < 5; line += 1) {
+    const y = (height / 5) * line;
+    context.fillText(`${100 - line * 20}%`, width - 8, y - 4);
+  }
+  context.fillText("0%", width - 8, height - 7);
+  context.restore();
 }
 
 function drawHistoryMarker(context, width, height, palette) {
@@ -392,22 +456,68 @@ function selectedSample() {
   return state.snapshots[Math.max(0, Math.min(index, fallbackIndex))];
 }
 
+function sampleMetricValues(sample) {
+  if (!sample) return [];
+  const snapshot = sample.snapshot;
+  const loadPercent = Math.min(100, (snapshot.load.one / Math.max(1, snapshot.cpu.cores)) * 100);
+  return [
+    ["CPU", snapshot.cpu.usagePercent],
+    ["RAM", snapshot.memory.usedPercent],
+    ["SWAP", snapshot.swap.usedPercent],
+    ["LOAD", loadPercent],
+  ];
+}
+
+function renderHistorySampleValues(sample) {
+  if (!elements.historySampleValues) return;
+  const metrics = sampleMetricValues(sample);
+  elements.historySampleValues.replaceChildren(
+    ...metrics.map(([name, value]) => {
+      const item = document.createElement("span");
+      item.className = "history-sample-value";
+      const label = document.createElement("span");
+      const strong = document.createElement("strong");
+      label.textContent = name;
+      strong.textContent = formatPercent(value);
+      item.append(label, strong);
+      return item;
+    }),
+  );
+}
+
 function updateHistoryControls() {
   const sampleCount = state.snapshots.length;
   const lastIndex = Math.max(0, sampleCount - 1);
   const activeIndex = state.selectedSampleIndex ?? lastIndex;
   const activeSample = selectedSample();
+  const firstSample = state.snapshots[0];
+  const latestSample = state.snapshots[lastIndex];
   const isLive = state.selectedSampleIndex === null;
+  const positionText =
+    activeSample && isLive
+      ? `Live - ${formatSampleDateTime(activeSample.capturedAt)}`
+      : activeSample
+        ? `Viewing ${formatSampleDateTime(activeSample.capturedAt)}`
+        : "Live";
+  const ariaValueText =
+    activeSample && isLive
+      ? `Live, latest sample ${formatSampleDateTime(activeSample.capturedAt)}`
+      : activeSample
+        ? `Sample ${activeIndex + 1} of ${sampleCount}, ${formatSampleDateTime(activeSample.capturedAt)}`
+        : "Live";
 
   setText(elements.sampleCount, `${sampleCount} ${sampleCount === 1 ? "sample" : "samples"}`);
-  setText(elements.historyPositionLabel, isLive ? "Live" : activeSample ? formatSampleTime(activeSample.capturedAt) : "Live");
+  setText(elements.historyPositionLabel, positionText);
+  setText(elements.historyStartLabel, firstSample ? formatSampleDateTime(firstSample.capturedAt) : "-");
+  setText(elements.historyEndLabel, latestSample ? `Live - ${formatSampleTime(latestSample.capturedAt)}` : "Live");
+  renderHistorySampleValues(activeSample);
 
   if (elements.historyScrubber) {
     elements.historyScrubber.disabled = sampleCount < 2;
     elements.historyScrubber.min = "0";
     elements.historyScrubber.max = String(lastIndex);
     elements.historyScrubber.value = String(activeIndex);
-    elements.historyScrubber.setAttribute("aria-valuetext", isLive ? "Live" : `Sample ${activeIndex + 1} of ${sampleCount}`);
+    elements.historyScrubber.setAttribute("aria-valuetext", ariaValueText);
   }
 
   if (elements.liveButton) {

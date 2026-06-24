@@ -20,3 +20,10 @@
 - [x] Moved Live History directly under the main gauges.
 - [x] Removed duplicate bar graph mode.
 - [x] Added history scrubbing for gauge values with a return-to-live control.
+
+## 0.1.3
+
+- [x] Restored the bar graph mode in Live History.
+- [x] Moved graph type controls into the Live History top nav.
+- [x] Relocated the timeline below the chart with selected datetime context.
+- [x] Added numeric context to graph axes, timeline values, and heatmap lanes.
