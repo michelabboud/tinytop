@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.9`
+- Version: `0.1.10`
 - Date: 2026-06-24
-- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, and SQLite operations.
+- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, and public-ready README/docs.
 
 ## Completed
 
@@ -93,6 +93,14 @@
 - [x] Added user-space systemd service rendering and management.
 - [x] Added SQLite stats, integrity check, backup, vacuum, and guarded reset commands.
 - [x] Added command-center, wizard, systemd, and SQLite operation tests.
+
+### 0.1.10 - Public README And Privacy Cleanup
+
+- [x] Added README hero image.
+- [x] Added inline README install and usage guide for new users.
+- [x] Removed hardcoded local home paths from public docs.
+- [x] Replaced host-specific examples with generic examples.
+- [x] Removed the old generated UI concept image with host-like demo strings.
 
 ## Known Limitations
 

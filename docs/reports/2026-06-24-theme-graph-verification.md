@@ -25,7 +25,7 @@ Result: 14 passed, 0 failed.
 bun run src/server.ts --check
 ```
 
-Result: live snapshot returned `status: ok`, runtime `WSL`, host `WizAI`.
+Result: live snapshot returned `status: ok` and runtime `WSL`.
 
 ```bash
 curl -fsS http://127.0.0.1:4274/health

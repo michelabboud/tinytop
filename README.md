@@ -1,19 +1,23 @@
 # TinyTop
 
+![TinyTop dashboard hero](docs/assets/tinytop-hero.png)
+
 A standalone Bun-powered dashboard for live WSL/Linux workstation status. It runs locally, reads host telemetry from Linux/WSL sources, stores recent history in SQLite, and renders a dense browser dashboard with Apache ECharts.
 
 ## Current Status
 
-- Version: `0.1.9`
+- Version: `0.1.10`
 - Runtime: Bun
 - Public UI: `http://127.0.0.1:4274`
 - Internal writer API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
 - Network exposure: loopback only by default
 
-## Quick Start
+## Install And Run
 
 ```bash
+git clone <repo-url> tinytop
+cd tinytop
 ./tinytop setup
 ./tinytop start
 ```
@@ -23,6 +27,64 @@ Open <http://127.0.0.1:4274>.
 `./tinytop setup` is the Telecode-style installer. The Bash command center works before Bun is installed, can print or run the official Bun installer, installs dependencies when needed, and then launches the Bun setup wizard with `bun run setup`.
 
 For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day usage, see [GUIDE.md](GUIDE.md).
+
+## New User Guide
+
+1. Clone the repo and enter it:
+
+   ```bash
+   git clone <repo-url> tinytop
+   cd tinytop
+   ```
+
+2. Inspect the command center:
+
+   ```bash
+   ./tinytop help
+   ./tinytop doctor
+   ```
+
+3. Install Bun if the doctor says it is missing:
+
+   ```bash
+   ./tinytop install-bun --print-only
+   ./tinytop install-bun --yes
+   ```
+
+4. Run the setup wizard:
+
+   ```bash
+   ./tinytop setup
+   ```
+
+5. Start TinyTop in the foreground:
+
+   ```bash
+   ./tinytop start
+   ```
+
+6. Open the dashboard:
+
+   ```text
+   http://127.0.0.1:4274
+   ```
+
+7. For persistent background services:
+
+   ```bash
+   ./tinytop systemd install
+   ./tinytop systemd start
+   ```
+
+8. Useful maintenance commands:
+
+   ```bash
+   ./tinytop status
+   ./tinytop logs
+   ./tinytop db stats
+   ./tinytop db backup
+   ./tinytop db check
+   ```
 
 ## Command Center
 
@@ -119,8 +181,7 @@ The current SQLite implementation stores indexed metric columns plus the complet
 ## Verification
 
 ```bash
-bun run check
-bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
+./tinytop check
 ./tinytop help
 ./tinytop doctor
 git diff --check

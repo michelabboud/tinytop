@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10 - 2026-06-24
+
+- Added a README hero image and inline new-user install guide.
+- Removed public-doc references to local home paths, host names, and personalized implementation notes.
+- Removed the old generated UI concept image that contained host-like demo strings.
+
 ## 0.1.9 - 2026-06-24
 
 - Implemented the root `./tinytop` Bash command center with help, Bun install guidance, doctor/status, dependency install, verification, foreground start, split start, logs, monitor, and restart/stop wrappers.

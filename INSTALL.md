@@ -43,10 +43,10 @@ git clone <repo-url> tinytop
 cd tinytop
 ```
 
-For a local checkout that already exists on this machine:
+For an existing local checkout:
 
 ```bash
-cd /home/michel/projects/tinytop
+cd /path/to/tinytop
 ```
 
 ## Install Dependencies
@@ -138,7 +138,7 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 Default:
 
 ```text
-/home/michel/.local/share/tinytop/history.sqlite
+~/.local/share/tinytop/history.sqlite
 ```
 
 Override:

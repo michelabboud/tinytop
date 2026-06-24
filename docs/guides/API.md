@@ -39,7 +39,7 @@ Response shape:
 {
   "timestamp": "2026-06-24T10:15:46.568Z",
   "identity": {
-    "hostname": "WizAI",
+    "hostname": "devbox",
     "platform": "linux",
     "arch": "x64",
     "distro": "Ubuntu 24.04.4 LTS",

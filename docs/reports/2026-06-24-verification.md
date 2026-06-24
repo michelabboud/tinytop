@@ -13,7 +13,7 @@ bunx playwright test tinytop.qa.spec.js --reporter=line
 ## Results
 
 - Bun unit tests: 14 passed, 0 failed.
-- Live snapshot check: returned `status: ok`, runtime `WSL`, host `WizAI`.
+- Live snapshot check: returned `status: ok` and runtime `WSL`.
 - Health endpoint: returned `ok`.
 - Snapshot endpoint: returned runtime `WSL`, CPU, memory, filesystem count, and process count.
 - Playwright rendered QA: 2 passed, 0 failed.
