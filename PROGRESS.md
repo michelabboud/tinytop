@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.8`
+- Version: `0.1.9`
 - Date: 2026-06-24
-- Status: Local dashboard with SQLite-backed recent history, complete root documentation, and approved install-wizard architecture captured for implementation.
+- Status: Local dashboard with SQLite-backed recent history, Telecode-style install wizard, Bash command center, systemd user services, and SQLite operations.
 
 ## Completed
 
@@ -84,6 +84,16 @@
 - [x] Documented planned SQLite stats, check, backup, vacuum, and reset operations.
 - [x] Added ADR 0003 for the Bash bootstrap plus Bun wizard decision.
 
+### 0.1.9 - Install Wizard Implementation
+
+- [x] Added root `./tinytop` Bash command center.
+- [x] Added Bun install guidance and `./tinytop install-bun`.
+- [x] Added `./tinytop setup` handoff to `bun run setup`.
+- [x] Added `src/wizard/index.ts` setup wizard with noninteractive automation flags.
+- [x] Added user-space systemd service rendering and management.
+- [x] Added SQLite stats, integrity check, backup, vacuum, and guarded reset commands.
+- [x] Added command-center, wizard, systemd, and SQLite operation tests.
+
 ## Known Limitations
 
 - SQLite retention is not implemented yet. The writer stores recent samples indefinitely until the database is manually archived or reset.
@@ -91,14 +101,9 @@
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
 - The UI hydrates a 120-sample rolling window, not arbitrary long-range history browsing.
 - The app is designed for loopback/local use, not remote multi-user deployment.
-- The Telecode-style install wizard and `./tinytop` command center are designed but not implemented yet.
 
 ## Recommended Next Work
 
-- [ ] Implement the root `./tinytop` Bash command center.
-- [ ] Implement `bun run setup` and connect `./tinytop setup` to it.
-- [ ] Add user-space systemd services for the writer and dashboard.
-- [ ] Add command-center SQLite stats, integrity check, backup, vacuum, and guarded reset.
 - [ ] Add raw history retention, defaulting to a configurable 24 to 72 hour window.
 - [ ] Add one-minute rollups for longer history ranges.
 - [ ] Add a dashboard setting for visible history duration and persisted sample count.

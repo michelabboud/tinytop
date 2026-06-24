@@ -4,7 +4,7 @@ A standalone Bun-powered dashboard for live WSL/Linux workstation status. It run
 
 ## Current Status
 
-- Version: `0.1.8`
+- Version: `0.1.9`
 - Runtime: Bun
 - Public UI: `http://127.0.0.1:4274`
 - Internal writer API: `http://127.0.0.1:4276`
@@ -14,26 +14,36 @@ A standalone Bun-powered dashboard for live WSL/Linux workstation status. It run
 ## Quick Start
 
 ```bash
-bun install
-bun run dev
+./tinytop setup
+./tinytop start
 ```
 
 Open <http://127.0.0.1:4274>.
 
-`bun run dev` starts the public dashboard process and an internal collector/writer process. The dashboard serves the browser UI on `127.0.0.1:4274`; the writer owns SQLite and exposes its local read API on `127.0.0.1:4276`.
+`./tinytop setup` is the Telecode-style installer. The Bash command center works before Bun is installed, can print or run the official Bun installer, installs dependencies when needed, and then launches the Bun setup wizard with `bun run setup`.
 
 For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day usage, see [GUIDE.md](GUIDE.md).
 
-## Install Wizard Status
+## Command Center
 
-The current release still uses the manual Bun quick start above. The approved
-Telecode-style installer design is recorded in
-[docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md).
+The root `./tinytop` command is the supported operator entrypoint:
 
-The planned installer has a zero-dependency `./tinytop` Bash command center for
-fresh-machine help, Bun bootstrap, systemd user services, logs, status, and
-SQLite maintenance. When Bun is available, `./tinytop setup` launches the richer
-`bun run setup` wizard.
+```bash
+./tinytop help
+./tinytop doctor
+./tinytop install-bun --print-only
+./tinytop setup
+./tinytop systemd install
+./tinytop db stats
+./tinytop db backup
+```
+
+For persistent background collection, install user-space systemd services:
+
+```bash
+./tinytop systemd install
+./tinytop systemd start
+```
 
 ## What It Shows
 
@@ -53,6 +63,11 @@ SQLite maintenance. When Bun is available, `./tinytop setup` launches the richer
 ## Common Commands
 
 ```bash
+./tinytop setup
+./tinytop start
+./tinytop start:split
+./tinytop systemd render
+./tinytop db stats
 bun run dev
 bun run writer
 bun test
@@ -72,7 +87,7 @@ bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
 | [docs/guides/API.md](docs/guides/API.md) | Public dashboard API and internal writer API |
 | [docs/guides/OPERATIONS.md](docs/guides/OPERATIONS.md) | Runtime checks, SQLite inspection, backup/reset, troubleshooting |
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
-| [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Approved install wizard and systemd command-center design |
+| [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
 ## Configuration Summary
@@ -106,6 +121,8 @@ The current SQLite implementation stores indexed metric columns plus the complet
 ```bash
 bun run check
 bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
+./tinytop help
+./tinytop doctor
 git diff --check
 ```
 

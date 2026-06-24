@@ -2,13 +2,17 @@
 
 This guide covers local installation, configuration, startup, verification, upgrade, and uninstall for TinyTop.
 
-## Installer Status
+## Recommended Install
 
-This release still uses the manual Bun install flow below. The approved next
-installer is documented in
-[docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md):
-a zero-dependency `./tinytop` Bash command center that can help install Bun,
-then launch `bun run setup` for the richer interactive wizard.
+Use the root command center first:
+
+```bash
+./tinytop help
+./tinytop doctor
+./tinytop setup
+```
+
+`./tinytop setup` checks for Bun, runs `bun install` when dependencies are missing, and then launches the Bun setup wizard with `bun run setup`.
 
 ## Requirements
 
@@ -17,13 +21,14 @@ then launch `bun run setup` for the richer interactive wizard.
 - A shell with access to `/proc`
 - Loopback ports `4274` and `4276` available unless overridden
 
-Check Bun:
+If Bun is missing, TinyTop can print or run the official installer:
 
 ```bash
-bun --version
+./tinytop install-bun --print-only
+./tinytop install-bun --yes
 ```
 
-Install Bun from the official instructions when it is missing:
+Official Bun install docs:
 
 ```text
 https://bun.sh/docs/installation
@@ -47,7 +52,7 @@ cd /home/michel/projects/tinytop
 ## Install Dependencies
 
 ```bash
-bun install
+./tinytop deps
 ```
 
 The only runtime dependency is Apache ECharts. The server serves the browser bundle from local `node_modules` through `/vendor/echarts.min.js`.
@@ -76,7 +81,7 @@ cat ~/.config/fleet/ports/tinytop.toml
 The standard command is:
 
 ```bash
-bun run dev
+./tinytop start
 ```
 
 This starts:
@@ -92,15 +97,17 @@ http://127.0.0.1:4274
 
 ## Start Processes Separately
 
-Use this when a process supervisor should manage each process independently.
+Use this when you want the writer and dashboard supervised as separate foreground processes from one wrapper:
 
-Terminal 1:
+```bash
+./tinytop start:split
+```
+
+Or run the underlying commands manually in two terminals:
 
 ```bash
 bun run writer
 ```
-
-Terminal 2:
 
 ```bash
 TINYTOP_DISABLE_WRITER_SPAWN=1 bun run dev
@@ -152,8 +159,7 @@ history.sqlite-shm
 Run the automated checks:
 
 ```bash
-bun run check
-bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
+./tinytop check
 git diff --check
 ```
 
@@ -175,9 +181,9 @@ ok
 
 1. Stop running dashboard and writer processes.
 2. Pull or apply the new code.
-3. Run `bun install`.
-4. Run `bun run check`.
-5. Start `bun run dev`.
+3. Run `./tinytop deps`.
+4. Run `./tinytop check`.
+5. Start `./tinytop start`.
 6. Open the dashboard and confirm Live History hydrates after a browser refresh.
 
 The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. There is no explicit migration table yet.
@@ -187,18 +193,41 @@ The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are 
 Stop the dashboard and writer first, then move the database files aside:
 
 ```bash
-mkdir -p ~/.local/share/tinytop/archive
-mv ~/.local/share/tinytop/history.sqlite* ~/.local/share/tinytop/archive/
+./tinytop db backup
+./tinytop db reset --yes
 ```
 
-Start `bun run dev` again. The writer will create a fresh database.
+Start TinyTop again. The writer will create a fresh database.
+
+## systemd User Services
+
+Install persistent user services:
+
+```bash
+./tinytop systemd install
+./tinytop systemd start
+```
+
+Check or follow them:
+
+```bash
+./tinytop systemd status
+./tinytop systemd logs
+```
+
+Remove them:
+
+```bash
+./tinytop systemd uninstall
+```
 
 ## Uninstall
 
 1. Stop running processes.
-2. Remove or archive the project directory.
-3. Archive the SQLite database if you no longer need history.
-4. Remove the port claim only when this project is no longer using those ports:
+2. Remove user services if installed: `./tinytop systemd uninstall`.
+3. Remove or archive the project directory.
+4. Archive the SQLite database if you no longer need history.
+5. Remove the port claim only when this project is no longer using those ports:
 
 ```bash
 mv ~/.config/fleet/ports/tinytop.toml ~/.config/fleet/ports/tinytop.toml.archived

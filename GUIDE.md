@@ -8,6 +8,19 @@ Open the dashboard:
 http://127.0.0.1:4274
 ```
 
+Start TinyTop:
+
+```bash
+./tinytop start
+```
+
+Use persistent user services:
+
+```bash
+./tinytop systemd install
+./tinytop systemd start
+```
+
 ## Layout
 
 The dashboard is organized for quick scanning:

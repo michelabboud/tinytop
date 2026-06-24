@@ -1,0 +1,531 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+TINYTOP_VERSION="0.1.9"
+INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PLAIN=0
+if [[ "${NO_COLOR:-}" != "" ]]; then PLAIN=1; fi
+if [[ "${1:-}" == "--plain" ]]; then PLAIN=1; shift; fi
+
+if [[ "$PLAIN" -eq 0 && -t 1 ]]; then
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_RED=$'\033[31m'
+  C_BLUE=$'\033[34m'
+else
+  C_RESET=""
+  C_BOLD=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_RED=""
+  C_BLUE=""
+fi
+
+command_name="${1:-help}"
+if [[ "$#" -gt 0 ]]; then shift; fi
+
+say() { printf '%s\n' "$*"; }
+info() { printf '%s%s%s\n' "$C_BLUE" "$*" "$C_RESET"; }
+ok() { printf '%s%s%s\n' "$C_GREEN" "$*" "$C_RESET"; }
+warn() { printf '%s%s%s\n' "$C_YELLOW" "$*" "$C_RESET" >&2; }
+fail() { printf '%s%s%s\n' "$C_RED" "$*" "$C_RESET" >&2; }
+die() { fail "$*"; exit 1; }
+
+bun_path() {
+  command -v bun 2>/dev/null || true
+}
+
+require_bun() {
+  if [[ -z "$(bun_path)" ]]; then
+    die "Bun is required for this command. Run: ./tinytop install-bun --yes"
+  fi
+}
+
+history_db_path() {
+  if [[ -n "${TINYTOP_HISTORY_DB:-}" ]]; then
+    printf '%s\n' "$TINYTOP_HISTORY_DB"
+    return
+  fi
+  local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+  printf '%s\n' "$data_home/tinytop/history.sqlite"
+}
+
+backup_dir_path() {
+  local data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+  date +"$data_home/tinytop/backups/%Y%m%d-%H%M%S"
+}
+
+dashboard_url() {
+  printf 'http://%s:%s\n' "${HOST:-127.0.0.1}" "${PORT:-4274}"
+}
+
+writer_url() {
+  printf 'http://%s:%s\n' "${HISTORY_WRITER_HOST:-127.0.0.1}" "${HISTORY_WRITER_PORT:-4276}"
+}
+
+print_banner() {
+  say "${C_BOLD}TinyTop${C_RESET} ${TINYTOP_VERSION}"
+  say "Tiny local WSL/Linux status dashboard"
+}
+
+print_help() {
+  print_banner
+  cat <<'EOF'
+
+Usage:
+  ./tinytop help
+  ./tinytop setup
+  ./tinytop install-bun [--print-only|--yes]
+  ./tinytop doctor
+  ./tinytop deps
+  ./tinytop check
+  ./tinytop start
+  ./tinytop start:split
+  ./tinytop restart
+  ./tinytop stop
+  ./tinytop status
+  ./tinytop logs
+  ./tinytop monitor [seconds]
+  ./tinytop stats
+  ./tinytop db stats|check|backup|vacuum|reset [--yes]
+  ./tinytop systemd render|install|uninstall|start|stop|restart|status|logs
+
+Common operations:
+  ./tinytop systemd install
+  ./tinytop db backup
+
+Fresh install:
+  ./tinytop install-bun --yes
+  ./tinytop setup
+
+The Bash command center works before Bun is installed. Once Bun exists,
+./tinytop setup runs the richer Bun wizard with:
+
+  bun run setup
+
+Default URLs:
+  Dashboard: http://127.0.0.1:4274
+  Writer:    http://127.0.0.1:4276
+
+Default SQLite:
+  ~/.local/share/tinytop/history.sqlite
+EOF
+}
+
+print_bun_help() {
+  cat <<EOF
+Install Bun before running TinyTop runtime commands:
+  $INSTALL_BUN_COMMAND
+  bun --version
+
+Official links:
+  Website/docs: https://bun.sh
+  Installation docs: https://bun.sh/docs/installation
+  GitHub repository: https://github.com/oven-sh/bun
+EOF
+}
+
+cmd_install_bun() {
+  case "${1:-}" in
+    --help|-h)
+      print_bun_help
+      ;;
+    --print-only)
+      say "$INSTALL_BUN_COMMAND"
+      ;;
+    --yes)
+      if [[ -n "$(bun_path)" ]]; then
+        ok "Bun is already installed: $(bun --version)"
+        return 0
+      fi
+      command -v curl >/dev/null 2>&1 || die "curl is required to install Bun. Install curl first, then rerun ./tinytop install-bun --yes"
+      info "Installing Bun with the official installer:"
+      say "  $INSTALL_BUN_COMMAND"
+      curl -fsSL https://bun.com/install | bash
+      say
+      say "Restart your shell or run:"
+      say '  export BUN_INSTALL="$HOME/.bun"'
+      say '  export PATH="$BUN_INSTALL/bin:$PATH"'
+      say "  bun --version"
+      ;;
+    "")
+      print_bun_help
+      say
+      say "Use --yes to run the installer, or --print-only to inspect the command."
+      ;;
+    *)
+      die "Unknown install-bun option: $1"
+      ;;
+  esac
+}
+
+status_line() {
+  local label="$1"
+  local value="$2"
+  printf '%s: %s\n' "$label" "$value"
+}
+
+port_status() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn "( sport = :$port )" 2>/dev/null | tail -n +2 | grep -q .; then
+      printf 'listening'
+    else
+      printf 'free'
+    fi
+  else
+    printf 'unknown (ss missing)'
+  fi
+}
+
+systemd_user_available() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
+}
+
+unit_path() {
+  printf '%s/.config/systemd/user/%s\n' "$HOME" "$1"
+}
+
+unit_installed() {
+  [[ -f "$(unit_path "$1")" ]]
+}
+
+cmd_doctor() {
+  print_banner
+  say
+  local bun_bin
+  bun_bin="$(bun_path)"
+  if [[ -n "$bun_bin" ]]; then
+    status_line "Bun" "ok ($("$bun_bin" --version) at $bun_bin)"
+  else
+    status_line "Bun" "missing"
+    say "  Install with: ./tinytop install-bun --yes"
+  fi
+
+  if [[ -d "$ROOT_DIR/node_modules" ]]; then
+    status_line "Dependencies" "installed"
+  else
+    status_line "Dependencies" "missing (run ./tinytop deps)"
+  fi
+
+  status_line "Dashboard URL" "$(dashboard_url)"
+  status_line "Writer URL" "$(writer_url)"
+  status_line "Dashboard port" "$(port_status "${PORT:-4274}")"
+  status_line "Writer port" "$(port_status "${HISTORY_WRITER_PORT:-4276}")"
+  status_line "SQLite DB" "$(history_db_path)"
+
+  if systemd_user_available; then
+    status_line "systemd user" "available"
+  else
+    status_line "systemd user" "unavailable"
+  fi
+
+  local writer_state="not installed"
+  local dashboard_state="not installed"
+  unit_installed "tinytop-writer.service" && writer_state="installed"
+  unit_installed "tinytop-dashboard.service" && dashboard_state="installed"
+  status_line "writer service" "$writer_state"
+  status_line "dashboard service" "$dashboard_state"
+}
+
+cmd_setup() {
+  local bun_bin
+  bun_bin="$(bun_path)"
+  if [[ -z "$bun_bin" ]]; then
+    fail "Bun is required before the Bun setup wizard can run."
+    fail "Run: ./tinytop install-bun --yes"
+    return 1
+  fi
+
+  cd "$ROOT_DIR"
+  if [[ ! -d "$ROOT_DIR/node_modules" ]]; then
+    info "Dependencies are missing; running bun install first."
+    "$bun_bin" install
+  fi
+
+  exec "$bun_bin" run setup "$@"
+}
+
+cmd_deps() {
+  require_bun
+  cd "$ROOT_DIR"
+  bun install
+}
+
+cmd_check() {
+  require_bun
+  cd "$ROOT_DIR"
+  bun run check
+  bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
+}
+
+cmd_start() {
+  require_bun
+  cd "$ROOT_DIR"
+  exec bun run dev "$@"
+}
+
+cmd_start_split() {
+  require_bun
+  cd "$ROOT_DIR"
+  info "Starting TinyTop writer in the background."
+  bun run writer &
+  local writer_pid=$!
+  trap 'kill "$writer_pid" 2>/dev/null || true' EXIT INT TERM
+  info "Starting TinyTop dashboard with writer auto-spawn disabled."
+  TINYTOP_DISABLE_WRITER_SPAWN=1 bun run dev
+}
+
+systemd_bun_exec() {
+  local bun_bin
+  bun_bin="$(bun_path)"
+  if [[ -n "$bun_bin" ]]; then
+    printf '%s' "$bun_bin"
+  else
+    printf '/usr/bin/env bun'
+  fi
+}
+
+render_writer_unit() {
+  local bun_exec
+  bun_exec="$(systemd_bun_exec)"
+  cat <<EOF
+[Unit]
+Description=TinyTop collector writer
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT_DIR
+ExecStart=$bun_exec run src/collector-daemon.ts
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+render_dashboard_unit() {
+  local bun_exec
+  bun_exec="$(systemd_bun_exec)"
+  cat <<EOF
+[Unit]
+Description=TinyTop dashboard
+After=network-online.target tinytop-writer.service
+Requires=tinytop-writer.service
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT_DIR
+Environment=TINYTOP_DISABLE_WRITER_SPAWN=1
+ExecStart=$bun_exec run src/server.ts
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+cmd_systemd_render() {
+  say "# ~/.config/systemd/user/tinytop-writer.service"
+  render_writer_unit
+  say
+  say "# ~/.config/systemd/user/tinytop-dashboard.service"
+  render_dashboard_unit
+}
+
+cmd_systemd_install() {
+  require_bun
+  command -v systemctl >/dev/null 2>&1 || die "systemctl is not available."
+  local unit_dir="$HOME/.config/systemd/user"
+  mkdir -p "$unit_dir"
+  render_writer_unit > "$unit_dir/tinytop-writer.service"
+  render_dashboard_unit > "$unit_dir/tinytop-dashboard.service"
+  systemctl --user daemon-reload
+  systemctl --user enable tinytop-writer.service tinytop-dashboard.service
+  ok "Installed and enabled TinyTop user services."
+  if [[ "${1:-}" == "--now" ]]; then
+    systemctl --user start tinytop-writer.service tinytop-dashboard.service
+    ok "Started TinyTop user services."
+  else
+    say "Start with: ./tinytop systemd start"
+  fi
+}
+
+cmd_systemd_uninstall() {
+  command -v systemctl >/dev/null 2>&1 || die "systemctl is not available."
+  systemctl --user disable --now tinytop-dashboard.service tinytop-writer.service 2>/dev/null || true
+  rm -f "$(unit_path tinytop-dashboard.service)" "$(unit_path tinytop-writer.service)"
+  systemctl --user daemon-reload
+  ok "Removed TinyTop user services."
+}
+
+cmd_systemd_action() {
+  command -v systemctl >/dev/null 2>&1 || die "systemctl is not available."
+  local action="$1"
+  systemctl --user "$action" tinytop-writer.service tinytop-dashboard.service
+}
+
+cmd_systemd_logs() {
+  command -v journalctl >/dev/null 2>&1 || die "journalctl is not available."
+  journalctl --user -u tinytop-writer.service -u tinytop-dashboard.service -f
+}
+
+cmd_systemd() {
+  local sub="${1:-help}"
+  if [[ "$#" -gt 0 ]]; then shift; fi
+  case "$sub" in
+    render) cmd_systemd_render ;;
+    install) cmd_systemd_install "$@" ;;
+    uninstall) cmd_systemd_uninstall ;;
+    start|stop|restart|status) cmd_systemd_action "$sub" ;;
+    logs) cmd_systemd_logs ;;
+    help|-h|--help)
+      say "Usage: ./tinytop systemd render|install|uninstall|start|stop|restart|status|logs"
+      ;;
+    *) die "Unknown systemd command: $sub" ;;
+  esac
+}
+
+cmd_db_backup() {
+  local db
+  db="$(history_db_path)"
+  local destination
+  destination="$(backup_dir_path)"
+  mkdir -p "$destination"
+  shopt -s nullglob
+  local files=("$db" "$db-wal" "$db-shm")
+  local copied=0
+  for file in "${files[@]}"; do
+    if [[ -e "$file" ]]; then
+      cp -p "$file" "$destination/"
+      copied=$((copied + 1))
+    fi
+  done
+  if [[ "$copied" -eq 0 ]]; then
+    warn "No SQLite files found at $db"
+    rmdir "$destination" 2>/dev/null || true
+    return 1
+  fi
+  ok "Backed up $copied file(s) to $destination"
+}
+
+cmd_db_reset() {
+  local yes=0
+  for arg in "$@"; do
+    if [[ "$arg" == "--yes" ]]; then yes=1; fi
+  done
+  if [[ "$yes" -ne 1 ]]; then
+    die "Refusing to reset history without --yes. Back up first with: ./tinytop db backup"
+  fi
+  local db
+  db="$(history_db_path)"
+  local archive
+  archive="$(backup_dir_path)-reset"
+  mkdir -p "$archive"
+  shopt -s nullglob
+  local files=("$db" "$db-wal" "$db-shm")
+  local moved=0
+  for file in "${files[@]}"; do
+    if [[ -e "$file" ]]; then
+      mv "$file" "$archive/"
+      moved=$((moved + 1))
+    fi
+  done
+  ok "Moved $moved SQLite file(s) to $archive"
+}
+
+cmd_db() {
+  local sub="${1:-help}"
+  if [[ "$#" -gt 0 ]]; then shift; fi
+  case "$sub" in
+    backup) cmd_db_backup ;;
+    reset) cmd_db_reset "$@" ;;
+    stats|check|vacuum)
+      require_bun
+      cd "$ROOT_DIR"
+      bun run src/ops.ts db "$sub" "$@"
+      ;;
+    help|-h|--help)
+      say "Usage: ./tinytop db stats|check|backup|vacuum|reset [--yes]"
+      ;;
+    *) die "Unknown db command: $sub" ;;
+  esac
+}
+
+cmd_stats() {
+  require_bun
+  cd "$ROOT_DIR"
+  bun run src/ops.ts stats "$@"
+}
+
+cmd_logs() {
+  if unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
+    cmd_systemd_logs
+  else
+    say "No TinyTop systemd units installed."
+    say "Foreground logs appear in the terminal running ./tinytop start or ./tinytop start:split."
+  fi
+}
+
+cmd_restart() {
+  if unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
+    cmd_systemd_action restart
+  else
+    say "No TinyTop systemd units installed. Use Ctrl-C in foreground mode, then run ./tinytop start."
+  fi
+}
+
+cmd_stop() {
+  if unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
+    cmd_systemd_action stop
+  else
+    say "No TinyTop systemd units installed. Stop foreground TinyTop processes with Ctrl-C."
+    if command -v pgrep >/dev/null 2>&1; then
+      pgrep -af 'src/(server|collector-daemon)\.ts' || true
+    fi
+  fi
+}
+
+cmd_monitor() {
+  local interval="${1:-2}"
+  while true; do
+    clear 2>/dev/null || true
+    cmd_doctor
+    say
+    if [[ -n "$(bun_path)" ]]; then
+      cmd_stats || true
+    fi
+    sleep "$interval"
+  done
+}
+
+case "$command_name" in
+  help|-h|--help) print_help ;;
+  setup) cmd_setup "$@" ;;
+  install-bun) cmd_install_bun "$@" ;;
+  doctor|status) cmd_doctor ;;
+  deps) cmd_deps ;;
+  check) cmd_check ;;
+  start) cmd_start "$@" ;;
+  start:split) cmd_start_split "$@" ;;
+  restart) cmd_restart ;;
+  stop) cmd_stop ;;
+  logs) cmd_logs ;;
+  monitor) cmd_monitor "$@" ;;
+  stats) cmd_stats "$@" ;;
+  db) cmd_db "$@" ;;
+  systemd) cmd_systemd "$@" ;;
+  *)
+    fail "Unknown command: $command_name"
+    say
+    print_help >&2
+    exit 1
+    ;;
+esac

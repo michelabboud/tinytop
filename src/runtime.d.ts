@@ -18,6 +18,8 @@ declare const Bun: {
   spawn(
     command: string[],
     options: {
+      cwd?: string;
+      stdin?: "pipe" | "inherit";
       stdout: "pipe" | "inherit";
       stderr: "pipe" | "inherit";
       env?: Record<string, string | undefined>;
@@ -37,4 +39,6 @@ declare const Bun: {
 declare const process: {
   env: Record<string, string | undefined>;
   argv: string[];
+  cwd(): string;
+  exit(code?: number): never;
 };

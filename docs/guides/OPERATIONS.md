@@ -2,13 +2,21 @@
 
 This guide covers day-to-day runtime checks, process management, SQLite inspection, backup, reset, and troubleshooting.
 
-## Command Center Status
+## Command Center
 
-The current release documents manual operations. The approved next operations
-surface is a root `./tinytop` Bash command center that will wrap start, stop,
-restart, status, logs, monitor, stats, SQLite backup/reset, Bun bootstrap, and
-systemd user-service management. See
-[../superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](../superpowers/specs/2026-06-24-tinytop-install-wizard-design.md).
+Use `./tinytop` for day-to-day operations:
+
+```bash
+./tinytop help
+./tinytop doctor
+./tinytop status
+./tinytop logs
+./tinytop monitor
+./tinytop stats
+```
+
+The command center can bootstrap Bun, run the setup wizard, manage user-space
+systemd services, and perform SQLite backup/check/reset operations.
 
 ## Runtime Processes
 
@@ -35,29 +43,27 @@ curl -fsS http://127.0.0.1:4276/health
 Start:
 
 ```bash
-bun run dev
+./tinytop start
 ```
 
 Start split:
 
 ```bash
-bun run writer
-TINYTOP_DISABLE_WRITER_SPAWN=1 bun run dev
+./tinytop start:split
 ```
 
 Stop foreground processes with `Ctrl-C`.
 
-Stop known PIDs:
+Stop systemd services when installed:
 
 ```bash
-kill <dashboard-pid> <writer-pid>
+./tinytop systemd stop
 ```
 
 ## Verification Commands
 
 ```bash
-bun run check
-bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
+./tinytop check
 git diff --check
 ```
 
@@ -93,22 +99,21 @@ TINYTOP_HISTORY_DB=/path/to/history.sqlite bun run dev
 Using Bun:
 
 ```bash
-bun -e 'import { Database } from "bun:sqlite"; const db = new Database(process.env.HOME + "/.local/share/tinytop/history.sqlite"); console.log(db.query("select count(*) as samples from metric_samples").get()); db.close();'
+./tinytop db stats
 ```
 
-Recent rows:
+Integrity check:
 
 ```bash
-bun -e 'import { Database } from "bun:sqlite"; const db = new Database(process.env.HOME + "/.local/share/tinytop/history.sqlite"); console.log(db.query("select captured_at_ms, cpu_usage_percent, memory_used_percent from metric_samples order by captured_at_ms desc limit 5").all()); db.close();'
+./tinytop db check
 ```
 
 ## Backup History
 
-Best option: stop the dashboard and writer, then copy the database files.
+Best option: stop the dashboard and writer, then use:
 
 ```bash
-mkdir -p ~/.local/share/tinytop/backups
-cp ~/.local/share/tinytop/history.sqlite* ~/.local/share/tinytop/backups/
+./tinytop db backup
 ```
 
 When the writer is running, include `history.sqlite-wal` and `history.sqlite-shm` in the backup.
@@ -118,14 +123,14 @@ When the writer is running, include `history.sqlite-wal` and `history.sqlite-shm
 Stop the dashboard and writer first. Move current files aside:
 
 ```bash
-mkdir -p ~/.local/share/tinytop/archive
-mv ~/.local/share/tinytop/history.sqlite* ~/.local/share/tinytop/archive/
+./tinytop db backup
+./tinytop db reset --yes
 ```
 
 Start the app again:
 
 ```bash
-bun run dev
+./tinytop start
 ```
 
 The writer will create a fresh database.
@@ -172,7 +177,7 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=3&window_seconds=300'
 Check the database:
 
 ```bash
-bun -e 'import { Database } from "bun:sqlite"; const db = new Database(process.env.HOME + "/.local/share/tinytop/history.sqlite"); console.log(db.query("select count(*) as samples from metric_samples").get()); db.close();'
+./tinytop db stats
 ```
 
 If the writer is healthy but the count is zero, wait a few seconds or call:
@@ -196,7 +201,7 @@ Try:
 Check:
 
 ```bash
-bun run writer:check
+./tinytop check
 ```
 
 Common causes:
@@ -210,7 +215,7 @@ Common causes:
 Retention is not implemented yet. Monitor database size:
 
 ```bash
-du -h ~/.local/share/tinytop/history.sqlite*
+./tinytop db stats
 ```
 
 Archive or reset history when needed until retention lands.

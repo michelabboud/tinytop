@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.9 - 2026-06-24
+
+- Implemented the root `./tinytop` Bash command center with help, Bun install guidance, doctor/status, dependency install, verification, foreground start, split start, logs, monitor, and restart/stop wrappers.
+- Added `bun run setup` as a real Bun setup wizard launched by `./tinytop setup`, with noninteractive automation flags and systemd mode.
+- Added user-space systemd rendering and management for `tinytop-writer.service` and `tinytop-dashboard.service`.
+- Added SQLite operations for stats, integrity check, backup, vacuum, and guarded reset.
+- Added tests for the Bash command center, setup wizard, systemd unit rendering, and SQLite operations.
+
 ## 0.1.8 - 2026-06-24
 
 - Recorded the approved Telecode-style install wizard design for TinyTop.

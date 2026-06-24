@@ -28,6 +28,10 @@ SQLite: ~/.local/share/tinytop/history.sqlite
 
 By default, `bun run dev` starts `src/server.ts`, and that process spawns `src/collector-daemon.ts`. For split supervision, start the writer separately with `bun run writer`, then start the dashboard with `TINYTOP_DISABLE_WRITER_SPAWN=1`.
 
+The supported operator entrypoint is the root `./tinytop` Bash command center.
+It works before Bun is installed for help and bootstrap, then hands off to
+`bun run setup` for the richer setup wizard.
+
 ## Data Flow
 
 1. The browser loads `public/index.html`, `public/styles.css`, `/vendor/echarts.min.js`, and `public/app.js`.
@@ -48,6 +52,9 @@ By default, `bun run dev` starts `src/server.ts`, and that process spawns `src/c
 | `src/history-store.ts` | SQLite setup, pragmas, indexes, prepared inserts, latest reads, range reads |
 | `src/collector-daemon.ts` | Writer HTTP API, scheduled collection loop, SQLite ownership |
 | `src/server.ts` | Public HTTP server, static assets, ECharts bundle route, writer proxy |
+| `src/ops.ts` | SQLite maintenance helpers for stats, integrity checks, and vacuum |
+| `src/wizard/index.ts` | Bun setup wizard launched by `./tinytop setup` |
+| `tinytop` | Bash command center for setup, Bun bootstrap, systemd services, logs, status, and DB operations |
 | `public/index.html` | App shell and semantic dashboard structure |
 | `public/styles.css` | Themes, layout, responsive behavior, dashboard styling |
 | `public/app.js` | Browser state, polling, history hydration, ECharts rendering, interactions |
@@ -168,6 +175,10 @@ The app is read-only with respect to the operating system:
 - It writes only to the configured SQLite history database.
 - It does not restart services, kill processes, change sysctl values, edit WSL config, or modify host state.
 - It binds to loopback by default.
+
+Systemd integration uses user services under `~/.config/systemd/user/`.
+The dashboard service depends on the writer service and sets
+`TINYTOP_DISABLE_WRITER_SPAWN=1` so SQLite ownership stays with the writer.
 
 ## Decisions
 
