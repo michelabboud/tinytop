@@ -40,13 +40,19 @@ The rail status shows the polling state:
 
 - `Live` - polling and rendering current samples.
 - `Paused` - polling paused by the user.
-- `Error` - latest fetch failed; the alert text explains the failure.
+- `Error` - latest fetch failed; the inline status message explains the failure.
 
 ## Refresh And Pause
 
 - `Refresh` requests a fresh snapshot immediately.
 - `Pause` stops browser polling. The Rust daemon or legacy writer can still continue collecting samples in the background.
 - `Resume` restarts browser polling and returns the UI to live updates.
+
+## Confirmation Windows
+
+TinyTop uses in-app confirmation windows for browser UI actions that discard local state. It does not use native browser `alert`, `confirm`, or `prompt` dialogs.
+
+The Live History `Clear` button asks for confirmation before clearing the samples currently loaded in the browser tab. This does not delete SQLite history, stop the daemon, or change system data.
 
 ## Themes
 
@@ -101,6 +107,7 @@ The timeline row sits below the chart.
 - The main gauges and detail panels update to the selected sample.
 - The position label shows the selected local datetime.
 - Click `Live` to return to the newest sample.
+- Click `Clear` to empty the current tab's session buffer after confirming.
 
 Keyboard controls on the chart:
 

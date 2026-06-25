@@ -28,6 +28,8 @@ const state = {
   paused: false,
   loading: false,
   timer: null,
+  activeConfirmation: null,
+  confirmationReturnFocus: null,
   historyChartInstance: null,
   theme: "midnight",
   graphMode: "line",
@@ -42,7 +44,7 @@ const state = {
 };
 
 const elements = {
-  alert: document.querySelector("#alert"),
+  statusMessage: document.querySelector("#status-message"),
   liveDot: document.querySelector("#live-dot"),
   liveLabel: document.querySelector("#live-label"),
   runtimeSummary: document.querySelector("#runtime-summary"),
@@ -87,6 +89,12 @@ const elements = {
   historyEndLabel: document.querySelector("#history-end-label"),
   historySampleValues: document.querySelector("#history-sample-values"),
   liveButton: document.querySelector("#live-button"),
+  clearSessionButton: document.querySelector("#clear-session-button"),
+  confirmationDialog: document.querySelector("#confirmation-dialog"),
+  confirmationTitle: document.querySelector("#confirmation-title"),
+  confirmationMessage: document.querySelector("#confirmation-message"),
+  confirmationCancelButton: document.querySelector("#confirmation-cancel"),
+  confirmationConfirmButton: document.querySelector("#confirmation-confirm"),
 };
 
 function readStoredValue(key, fallback, allowed) {
@@ -181,8 +189,53 @@ function setText(node, value) {
   if (node) node.textContent = value;
 }
 
+function setHidden(node, hidden) {
+  if (node) node.hidden = hidden;
+}
+
 function setGauge(node, value) {
   node?.style.setProperty("--value", String(clampPercent(value)));
+}
+
+function closeConfirmationDialog(accepted) {
+  const resolver = state.activeConfirmation;
+  state.activeConfirmation = null;
+
+  if (elements.confirmationDialog?.open) {
+    elements.confirmationDialog.close();
+  } else {
+    elements.confirmationDialog?.removeAttribute("open");
+  }
+
+  if (state.confirmationReturnFocus instanceof HTMLElement) {
+    state.confirmationReturnFocus.focus();
+  }
+  state.confirmationReturnFocus = null;
+
+  resolver?.(accepted);
+}
+
+function requestConfirmation({ title, message, confirmLabel = "Confirm", cancelLabel = "Cancel", tone = "default" }) {
+  if (!elements.confirmationDialog) return Promise.resolve(false);
+
+  if (state.activeConfirmation) closeConfirmationDialog(false);
+
+  setText(elements.confirmationTitle, title);
+  setText(elements.confirmationMessage, message);
+  setText(elements.confirmationConfirmButton, confirmLabel);
+  setText(elements.confirmationCancelButton, cancelLabel);
+  elements.confirmationConfirmButton?.classList.toggle("danger", tone === "danger");
+  state.confirmationReturnFocus = document.activeElement;
+
+  return new Promise((resolve) => {
+    state.activeConfirmation = resolve;
+    if (typeof elements.confirmationDialog.showModal === "function") {
+      elements.confirmationDialog.showModal();
+    } else {
+      elements.confirmationDialog.setAttribute("open", "");
+    }
+    elements.confirmationCancelButton?.focus();
+  });
 }
 
 function cssColor(name) {
@@ -739,8 +792,18 @@ function updateHistoryControls() {
     elements.historyScrubber.setAttribute("aria-valuetext", ariaValueText);
   }
 
+  if (elements.historyChart) {
+    elements.historyChart.setAttribute("aria-valuemax", String(lastIndex));
+    elements.historyChart.setAttribute("aria-valuenow", String(activeIndex));
+    elements.historyChart.setAttribute("aria-valuetext", ariaValueText);
+  }
+
   if (elements.liveButton) {
     elements.liveButton.disabled = isLive;
+  }
+
+  if (elements.clearSessionButton) {
+    elements.clearSessionButton.disabled = sampleCount === 0;
   }
 }
 
@@ -762,6 +825,12 @@ function setHistorySelection(index) {
 function returnToLiveHistory() {
   state.selectedSampleIndex = null;
   renderSelectedSample();
+  redrawCharts();
+}
+
+function clearSessionHistory() {
+  resetHistory();
+  updateHistoryControls();
   redrawCharts();
 }
 
@@ -943,12 +1012,12 @@ async function fetchSnapshot() {
     const response = await fetch("/api/snapshot", { cache: "no-store" });
     if (!response.ok) throw new Error(`Snapshot failed with HTTP ${response.status}`);
     const snapshot = await response.json();
-    elements.alert.hidden = true;
+    setHidden(elements.statusMessage, true);
     renderSnapshot(snapshot);
     setLiveStatus("live", "Live");
   } catch (error) {
-    elements.alert.hidden = false;
-    setText(elements.alert, error instanceof Error ? error.message : "Snapshot failed");
+    setHidden(elements.statusMessage, false);
+    setText(elements.statusMessage, error instanceof Error ? error.message : "Snapshot failed");
     setLiveStatus("error", "Error");
   } finally {
     state.loading = false;
@@ -1024,6 +1093,34 @@ elements.historyScrubber?.addEventListener("input", () => {
 
 elements.liveButton?.addEventListener("click", () => {
   returnToLiveHistory();
+});
+
+elements.clearSessionButton?.addEventListener("click", async () => {
+  const accepted = await requestConfirmation({
+    title: "Clear session history?",
+    message:
+      "This clears only the samples currently loaded in this browser tab. It does not delete the SQLite history database or change system data.",
+    confirmLabel: "Clear session",
+    tone: "danger",
+  });
+  if (accepted) clearSessionHistory();
+});
+
+elements.confirmationCancelButton?.addEventListener("click", () => {
+  closeConfirmationDialog(false);
+});
+
+elements.confirmationConfirmButton?.addEventListener("click", () => {
+  closeConfirmationDialog(true);
+});
+
+elements.confirmationDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeConfirmationDialog(false);
+});
+
+elements.confirmationDialog?.addEventListener("click", (event) => {
+  if (event.target === elements.confirmationDialog) closeConfirmationDialog(false);
 });
 
 elements.historyChart?.addEventListener("keydown", (event) => {

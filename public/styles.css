@@ -497,7 +497,7 @@ h1 {
   stroke-width: 2;
 }
 
-.alert {
+.status-message {
   border: 1px solid rgba(239, 68, 68, 0.35);
   border-radius: 8px;
   background: rgba(127, 29, 29, 0.36);
@@ -753,7 +753,7 @@ h1 {
 
 .history-scrubber-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 0.6rem;
   align-items: center;
   min-width: 0;
@@ -784,11 +784,68 @@ h1 {
   padding: 0.25rem 0.72rem;
 }
 
+.mini-button.secondary {
+  border-color: var(--border);
+  background: var(--control-bg);
+}
+
+.mini-button.danger {
+  border-color: color-mix(in srgb, var(--red) 58%, transparent);
+  background: color-mix(in srgb, var(--red) 18%, transparent);
+}
+
 .mini-button:disabled {
   border-color: var(--border);
   background: var(--control-bg);
   color: var(--muted);
   cursor: not-allowed;
+}
+
+.confirmation-dialog {
+  width: min(440px, calc(100vw - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg-strong);
+  color: var(--text);
+  padding: 0;
+  box-shadow: var(--shadow);
+}
+
+.confirmation-dialog::backdrop {
+  background: rgba(2, 6, 23, 0.68);
+  backdrop-filter: blur(4px);
+}
+
+.confirmation-card {
+  display: grid;
+  gap: 1.2rem;
+  padding: 1.2rem;
+}
+
+.confirmation-kicker {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.confirmation-card h2 {
+  margin-bottom: 0.45rem;
+  font-size: 1.15rem;
+}
+
+.confirmation-card p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.confirmation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.55rem;
 }
 
 .filesystem-list,
@@ -1006,7 +1063,7 @@ td {
   }
 
   .history-scrubber-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
   }
 
   .gauge {

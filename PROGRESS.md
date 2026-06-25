@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.13`
+- Version: `0.1.14`
 - Date: 2026-06-25
-- Status: Local dashboard with SQLite-backed recent history, Rust single-daemon persistent runtime, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, and Bun development/fallback runtime.
+- Status: Local dashboard with SQLite-backed recent history, Rust single-daemon persistent runtime, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, and Bun development/fallback runtime.
 
 ## Completed
 
@@ -133,6 +133,15 @@
 - [x] Updated the setup wizard to ask for GitHub release binary vs local Cargo compile.
 - [x] Vendored Apache ECharts under `public/vendor/` with upstream license and notice files for no-Bun runtime use.
 - [x] Added ADR 0005 and dependency/provenance reports for Axum and vendored ECharts.
+
+### 0.1.14 - Web UI Confirmation Dialogs
+
+- [x] Scanned the public web UI for native browser dialog APIs.
+- [x] Replaced the alert-named inline error surface with `status-message` naming.
+- [x] Added a reusable accessible confirmation dialog backed by `<dialog>`.
+- [x] Added a confirmed `Clear` control for the browser-local Live History session buffer.
+- [x] Added regression coverage for the no-native-dialog policy.
+- [x] Documented the dialog policy and rendered verification.
 
 ## Known Limitations
 

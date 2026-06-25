@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.13`
+- Version: `0.1.14`
 - Runtime: Rust daemon for persistent installs; Bun remains available for development and fallback
 - Public UI: `http://127.0.0.1:4274`
 - Legacy writer API: `http://127.0.0.1:4276`
@@ -152,6 +152,7 @@ For persistent background collection, install user-space systemd services:
 - Responsive Bar mode that keeps a minimum bar width and rolls the visible window left as new samples arrive
 - SQLite-backed recent history so browser refreshes refill Live History instead of starting empty
 - Timeline scrubber with selected datetime context, compact metric values, and a return-to-live control
+- In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
 - Browser-local display preferences for theme and graph mode
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, and a no-Bun systemd path
 
@@ -207,6 +208,7 @@ Implementation notes:
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
 | [docs/reports/2026-06-24-rust-agent-dependency-vetting.md](docs/reports/2026-06-24-rust-agent-dependency-vetting.md) | Rust agent dependency and SQLx vetting |
 | [docs/reports/2026-06-25-rust-daemon-dependency-vetting.md](docs/reports/2026-06-25-rust-daemon-dependency-vetting.md) | Rust daemon and vendored dashboard asset dependency vetting |
+| [docs/reports/2026-06-25-webui-confirmation-dialog-verification.md](docs/reports/2026-06-25-webui-confirmation-dialog-verification.md) | Web UI confirmation-dialog policy and rendered verification |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 

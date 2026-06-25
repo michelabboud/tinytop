@@ -172,8 +172,16 @@ In-memory session state:
 - selected timeline index
 - ECharts instance
 - pause/loading flags
+- active confirmation dialog resolver and return-focus target
 
 The browser keeps a rolling 120-sample window. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width. When the visible capacity is reached, the window rolls left: new samples appear on the right and older visible samples disappear on the left.
+
+Web UI interaction policy:
+
+- Public browser code must not call native `alert`, `confirm`, or `prompt`.
+- Inline errors render through the `status-message` surface.
+- Browser-local destructive actions use the reusable `<dialog>` confirmation flow in `public/app.js`.
+- Confirmed actions must describe their scope before continuing; for example, clearing Live History affects only the current tab's session buffer and does not delete SQLite history.
 
 ## Runtime Detection
 

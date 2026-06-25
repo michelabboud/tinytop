@@ -87,7 +87,7 @@
           </fieldset>
         </section>
 
-        <div class="alert" id="alert" role="status" hidden></div>
+        <div class="status-message" id="status-message" role="status" hidden></div>
 
         <section class="overview-grid" id="overview" aria-label="System overview">
           <article class="gauge-panel accent-green">
@@ -153,10 +153,15 @@
           <div
             id="history-chart"
             class="history-chart"
+            role="slider"
             tabindex="0"
+            aria-valuemin="0"
+            aria-valuemax="0"
+            aria-valuenow="0"
+            aria-valuetext="Live"
             aria-label="Live usage history. Select a point in the chart to inspect that sample."
           ></div>
-          <div class="history-scrubber" aria-label="Live history timeline">
+          <div class="history-scrubber">
             <div class="history-scrubber-meta">
               <span>Timeline</span>
               <strong id="history-position-label">Live</strong>
@@ -173,12 +178,13 @@
                 disabled
               />
               <button class="mini-button" id="live-button" type="button" disabled>Live</button>
+              <button class="mini-button secondary" id="clear-session-button" type="button" disabled>Clear</button>
             </div>
             <div class="history-scrubber-scale" aria-hidden="true">
               <span id="history-start-label">-</span>
               <span id="history-end-label">Live</span>
             </div>
-            <div class="history-sample-values" id="history-sample-values" aria-label="Selected sample values"></div>
+            <div class="history-sample-values" id="history-sample-values"></div>
           </div>
         </section>
 
@@ -253,6 +259,25 @@
         </section>
       </main>
     </div>
+
+    <dialog
+      class="confirmation-dialog"
+      id="confirmation-dialog"
+      aria-labelledby="confirmation-title"
+      aria-describedby="confirmation-message"
+    >
+      <div class="confirmation-card">
+        <div>
+          <span class="confirmation-kicker">Confirmation</span>
+          <h2 id="confirmation-title">Confirm action</h2>
+          <p id="confirmation-message">Review this action before continuing.</p>
+        </div>
+        <div class="confirmation-actions">
+          <button class="mini-button secondary" id="confirmation-cancel" type="button">Cancel</button>
+          <button class="mini-button danger" id="confirmation-confirm" type="button">Confirm</button>
+        </div>
+      </div>
+    </dialog>
 
     <script src="/vendor/echarts.min.js"></script>
     <script src="/app.js" type="module"></script>

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.14 - 2026-06-25
+
+- Replaced the alert-named inline fetch-error surface with `status-message` naming.
+- Added a reusable accessible in-app confirmation dialog for browser UI actions.
+- Added a confirmed `Clear` action for the browser-local Live History session buffer without deleting SQLite history or changing system data.
+- Added regression coverage that scans the public web UI for browser-native `alert`, `confirm`, and `prompt` calls.
+- Documented the no-native-dialog web UI policy and verification evidence.
+
 ## 0.1.13 - 2026-06-25
 
 - Added `tinytop-agent serve`, a Rust daemon that serves the dashboard, owns SQLite, collects on an interval, and exposes both public `/api/*` and writer-compatible routes.
