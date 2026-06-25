@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.17`
+- Version: `0.1.18`
 - Date: 2026-06-25
-- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -116,15 +116,15 @@
 - [x] Added shared Rust snapshot types matching the existing JSON contract.
 - [x] Added a Linux/WSL Rust collector with fixture, live-host, and no-shell-command tests.
 - [x] Kept Rust host collection crate-backed through `procfs` and `sysinfo`, with a reusable live `sysinfo::System`.
-- [x] Added a SQLx-backed SQLite store crate for the Rust agent path.
+- [x] Added a SQLx-backed SQLite store crate for the Rust collector path.
 - [x] Added `tinytop-agent collect --json` and optional `--sqlite` storage mode.
 - [x] Documented the SQLx architecture decision and dependency vetting.
 
 ### 0.1.13 - Rust Single-Daemon Runtime
 
-- [x] Added `tinytop-agent serve` as a Rust dashboard daemon on `127.0.0.1:4274`.
+- [x] Added `tinytop-agent serve` as a Rust collector/dashboard daemon on `127.0.0.1:4274`.
 - [x] Exposed public `/api/snapshot` and `/api/history` routes from the Rust daemon.
-- [x] Exposed writer-compatible `/snapshot/latest`, `/snapshot/collect`, and `/history` routes from the Rust daemon.
+- [x] Exposed legacy collector-compatible `/snapshot/latest`, `/snapshot/collect`, and `/history` routes from the Rust daemon.
 - [x] Added interval collection and SQLx-backed SQLite writes in the Rust daemon.
 - [x] Updated `./tinytop systemd install` to default to a single Rust `tinytop.service`.
 - [x] Kept the legacy Bun split services available with `./tinytop systemd install --bun`.
@@ -169,6 +169,13 @@
 - [x] Updated `./tinytop rust serve` and systemd rendering to use embedded assets by default.
 - [x] Added regression coverage for embedded Rust serving without a dashboard directory and asset equality across legacy/Rust dashboard trees.
 - [x] Added ADR 0006 for embedded Rust dashboard assets and legacy dashboard asset ownership.
+
+### 0.1.18 - Documentation Sweep
+
+- [x] Refreshed root docs and guides for the Rust collector/dashboard daemon and legacy Bun fallback wording.
+- [x] Updated dependency and verification reports to point at `agent/assets/dashboard/` and `legacy/dashboard/`.
+- [x] Marked the original Bun writer ADR as superseded in the ADR index while preserving the historical ADR file.
+- [x] Added a documentation sweep report for the embedded dashboard asset transition.
 
 ## Known Limitations
 

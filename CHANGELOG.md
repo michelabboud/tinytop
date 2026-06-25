@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.18 - 2026-06-25
+
+- Refreshed the current documentation and guides after the embedded Rust collector/dashboard asset move.
+- Updated user-facing port, process, API, and operations wording to describe the Rust collector/dashboard daemon and the legacy Bun dashboard/collector fallback.
+- Updated dependency and UI verification reports so current commands reference `agent/assets/dashboard/` and `legacy/dashboard/` instead of the removed root `public/` tree.
+- Marked ADR 0001 as superseded in the ADR index while preserving the historical ADR file unchanged.
+
 ## 0.1.17 - 2026-06-25
 
 - Moved the static dashboard assets from root `public/` into `legacy/dashboard/` for the legacy Bun runtime.
@@ -35,12 +42,12 @@
 
 ## 0.1.13 - 2026-06-25
 
-- Added `tinytop-agent serve`, a Rust daemon that serves the dashboard, owns SQLite, collects on an interval, and exposes both public `/api/*` and writer-compatible routes.
+- Added `tinytop-agent serve`, a Rust daemon that serves the dashboard, owns SQLite, collects on an interval, and exposes both public `/api/*` and legacy collector-compatible routes.
 - Updated systemd defaults to install a single Rust `tinytop.service`; kept the legacy Bun split services behind `./tinytop systemd install --bun`.
 - Added `./tinytop rust` commands for release-binary install, local build, collect, serve, serve-writer, test, and check.
-- Updated the setup wizard to ask whether the Rust agent should come from a GitHub release binary or a local Cargo compile.
-- Added Rust-backed DB `stats`, `check`, and `vacuum` paths so the command center can manage SQLite without Bun when a Rust agent or Cargo is available.
-- Vendored the Apache ECharts browser bundle under `public/vendor/` with upstream license and notice files so the Rust daemon can run without `node_modules`.
+- Updated the setup wizard to ask whether the Rust collector binary should come from a GitHub release binary or a local Cargo compile.
+- Added Rust-backed DB `stats`, `check`, and `vacuum` paths so the command center can manage SQLite without Bun when a Rust binary or Cargo is available.
+- Vendored the Apache ECharts browser bundle with upstream license and notice files so the Rust daemon can run without `node_modules`.
 - Added Axum-based daemon tests, Rust history JSON contract tests, SQLite file-creation regression coverage, and Bash command-center tests for the Rust systemd path.
 - Documented the Rust single-daemon runtime, Axum dependency decision, vendored asset provenance, and no-Bun install path.
 
@@ -49,7 +56,7 @@
 - Added an additive Rust workspace under `agent/` without removing or replacing the existing Bun collector.
 - Added shared Rust snapshot types that serialize to the current dashboard JSON contract.
 - Added a Rust Linux/WSL collector with parser, fixture, live-host, and no-shell-command tests.
-- Added a SQLx-backed SQLite history store proof point for the Rust agent path.
+- Added a SQLx-backed SQLite history store proof point for the Rust collector path.
 - Added `tinytop-agent collect --json` and optional `--sqlite` collect-and-store mode.
 - Documented the Rust collector preview, SQLx decision, dependency vetting, crate-backed host collection, and Rust `1.95.0` requirement.
 

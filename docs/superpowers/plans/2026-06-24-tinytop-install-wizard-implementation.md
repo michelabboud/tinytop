@@ -1,5 +1,10 @@
 # TinyTop Install Wizard Implementation Plan
 
+> Current status note, 2026-06-25: this is a historical `0.1.9` implementation
+> plan. Persistent installs now default to the Rust `tinytop.service`
+> collector/dashboard daemon; the Bun split dashboard/collector path remains
+> available only when explicitly requested with `--bun`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the real Telecode-style TinyTop install and operations flow: a zero-dependency `./tinytop` Bash command center that can bootstrap Bun and then launch a Bun setup wizard.

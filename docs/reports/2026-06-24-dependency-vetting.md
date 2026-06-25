@@ -19,7 +19,7 @@ Playwright was used only as an external temporary QA runner through `/tmp/tinyto
 
 - Version pinned by `package.json`: `^6.1.0`
 - Purpose: renders Live History line, stacked area, stacked bar, heatmap, and treemap chart modes.
-- Serving model: vendored local bundle at `public/vendor/echarts.min.js`, exposed through `/vendor/echarts.min.js`.
+- Serving model: vendored local bundle exposed through `/vendor/echarts.min.js`. Since `0.1.17`, the bundle lives in both `legacy/dashboard/vendor/echarts.min.js` for the Bun fallback and `agent/assets/dashboard/vendor/echarts.min.js` for the embedded Rust daemon.
 
 ## Alternatives
 

@@ -27,7 +27,7 @@ Default persistent mode runs one Rust daemon:
 
 Legacy Bun development mode starts two processes:
 
-- public dashboard: `src/server.ts` on `127.0.0.1:4274`
+- legacy Bun dashboard: `src/server.ts` on `127.0.0.1:4274`
 - legacy Bun collector: `legacy/bun-collector.ts` on `127.0.0.1:4276`
 
 Check listeners:

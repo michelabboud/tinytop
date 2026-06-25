@@ -5,6 +5,11 @@ Status: approved for implementation
 Recorded in: TinyTop 0.1.8
 Target implementation: TinyTop 0.1.9
 
+Current status note, 2026-06-25: this spec records the original Bun
+writer/dashboard design. TinyTop now defaults to one Rust
+collector/dashboard user service, with the legacy Bun split path available only
+when explicitly selected.
+
 ## Goal
 
 Make TinyTop feel installable by a new user, not just runnable by the author.

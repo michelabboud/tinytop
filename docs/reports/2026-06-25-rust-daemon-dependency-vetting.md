@@ -2,9 +2,10 @@
 
 ## Summary
 
-TinyTop `0.1.13` adds a Rust daemon path that can serve the dashboard, own
-SQLite, collect Linux/WSL metrics, and expose dashboard plus writer-compatible
-HTTP APIs without Bun at runtime.
+TinyTop `0.1.13` added a Rust daemon path that can serve the dashboard, own
+SQLite, collect Linux/WSL metrics, and expose dashboard plus legacy
+collector-compatible HTTP APIs without Bun at runtime. Since `0.1.17`, that
+daemon serves embedded dashboard assets by default.
 
 ## Axum
 
@@ -37,11 +38,16 @@ HTTP APIs without Bun at runtime.
 - Version: `6.1.0` from the existing npm dependency
 - License: Apache License 2.0
 - Source copied from: `node_modules/echarts/dist/echarts.min.js`
-- Destination: `public/vendor/echarts.min.js`
+- Current destinations:
+  - `agent/assets/dashboard/vendor/echarts.min.js` for the embedded Rust daemon
+  - `legacy/dashboard/vendor/echarts.min.js` for the legacy Bun fallback
 - License/notice files copied:
-  - `public/vendor/echarts.LICENSE`
-  - `public/vendor/echarts.NOTICE`
-  - `public/vendor/echarts.LICENSE-d3`
+  - `agent/assets/dashboard/vendor/echarts.LICENSE`
+  - `agent/assets/dashboard/vendor/echarts.NOTICE`
+  - `agent/assets/dashboard/vendor/echarts.LICENSE-d3`
+  - `legacy/dashboard/vendor/echarts.LICENSE`
+  - `legacy/dashboard/vendor/echarts.NOTICE`
+  - `legacy/dashboard/vendor/echarts.LICENSE-d3`
 - Reason selected: the Rust no-Bun runtime must serve dashboard assets without
   `node_modules` or internet access at startup. Redistributing the already-used
   Apache ECharts browser bundle keeps the dashboard offline-capable.

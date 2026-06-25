@@ -1,8 +1,11 @@
-# Rust Agent Dependency Vetting
+# Rust Collector Dependency Vetting
 
 ## Summary
 
-The Rust collector preview added a Cargo workspace under `agent/`. As of `0.1.13`, the Rust agent also has a daemon runtime; see [2026-06-25-rust-daemon-dependency-vetting.md](2026-06-25-rust-daemon-dependency-vetting.md) for the Axum and vendored-dashboard-asset decision.
+The Rust collector preview added a Cargo workspace under `agent/`. As of
+`0.1.13`, the Rust collector also has a daemon runtime; see
+[2026-06-25-rust-daemon-dependency-vetting.md](2026-06-25-rust-daemon-dependency-vetting.md)
+for the Axum and vendored-dashboard-asset decision.
 
 ## Dependency Decisions
 
@@ -62,7 +65,7 @@ The Rust collector preview added a Cargo workspace under `agent/`. As of `0.1.13
 - Version pinned: `1.0.150`
 - License: `MIT OR Apache-2.0`
 - Source checked: crates.io search metadata
-- Reason selected: the Rust agent CLI emits JSON and the SQLx store persists full snapshot JSON.
+- Reason selected: the Rust collector CLI emits JSON and the SQLx store persists full snapshot JSON.
 
 ### time
 

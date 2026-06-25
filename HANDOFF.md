@@ -1,17 +1,17 @@
 # TinyTop Handoff
 
-Date: 2026-06-25 22:50 Asia/Jerusalem
+Date: 2026-06-25 23:05 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Latest shipped checkpoint before this work: `c473814eae44ea4566555548a0b4306f5324a450`
-- Latest shipped tag before this work: `v0.1.16`
-- Current checkpoint version: `0.1.17`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.17`
-- Working tree before the v0.1.17 work: clean and aligned with `origin/main`
+- Latest shipped checkpoint before this work: `44be5f22afac89058a11abaa171d30f1bc3a6764`
+- Latest shipped tag before this work: `v0.1.17`
+- Current checkpoint version: `0.1.18`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.18`
+- Working tree before the v0.1.18 documentation sweep: clean and aligned with `origin/main`
 
 ## Runtime State
 
@@ -41,7 +41,7 @@ Evidence:
 - Replaced alert-named UI hooks with `status-message`.
 - Added a reusable accessible in-app confirmation dialog.
 - Added a confirmed `Clear` action for the browser-local Live History session buffer.
-- Added `tests/webui-dialogs.test.ts`, which scans public UI files and rejects native `alert`, `confirm`, and `prompt` calls.
+- Added `tests/webui-dialogs.test.ts`, which scans dashboard UI files and rejects native `alert`, `confirm`, and `prompt` calls.
 - Updated `README.md`, `GUIDE.md`, `ARCHITECTURE.md`, `CHANGELOG.md`, `PROGRESS.md`, and `docs/reports/2026-06-25-webui-confirmation-dialog-verification.md`.
 - Committed and pushed `d829160`.
 - Tagged and pushed `v0.1.14`.
@@ -68,6 +68,13 @@ Evidence:
 - Kept `--public-dir` and `TINYTOP_PUBLIC_DIR` as explicit development overrides.
 - Updated `./tinytop rust serve` and systemd rendering to use embedded assets by default.
 - Added ADR 0006 for embedded Rust dashboard assets and legacy dashboard asset ownership.
+
+### v0.1.18 - Documentation Sweep
+
+- Refreshed current docs and guides for the embedded Rust collector/dashboard daemon.
+- Updated current-path references from the removed root `public/` tree to `agent/assets/dashboard/` and `legacy/dashboard/`.
+- Added `docs/reports/2026-06-25-documentation-sweep.md`.
+- Updated the ADR index to show ADR 0001 as superseded by the Rust single-daemon runtime decision, without rewriting the historical ADR.
 
 ### Daemon Start
 
@@ -99,6 +106,17 @@ Evidence:
   - `/app.js`: contained `requestConfirmation`
   - `/vendor/echarts.min.js`: contained `echarts`
   - Process stopped after the smoke test; default ports are free
+- `git diff --check`: clean
+
+## Verification Evidence From v0.1.18 Documentation Sweep
+
+- `./tinytop check`
+  - Bun tests: `43 pass`, `0 fail`
+  - `src/server.ts --check`: `status: ok`
+  - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
+  - Rust workspace tests: passed
+  - Browser bundle: built `legacy/dashboard/app.js` successfully
+- `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
 - `git diff --check`: clean
 
 ## Useful Commands

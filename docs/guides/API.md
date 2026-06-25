@@ -15,7 +15,7 @@ TinyTop APIs support only `GET` requests. Other methods return JSON errors with 
 
 ### GET /health
 
-Health check for the public dashboard process.
+Health check for the Rust collector/dashboard daemon or legacy Bun dashboard process.
 
 Response:
 

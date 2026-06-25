@@ -80,7 +80,7 @@ The Rust daemon has its own Cargo workspace under `agent/`.
 
 The default local ports are:
 
-- `127.0.0.1:4274` - public dashboard UI
+- `127.0.0.1:4274` - dashboard UI
 - `127.0.0.1:4276` - legacy collector API when using split mode
 
 Check live listeners:
@@ -111,7 +111,7 @@ The Bun development command is:
 
 The Bun development command starts:
 
-- the public dashboard process on `127.0.0.1:4274`
+- the legacy Bun dashboard process on `127.0.0.1:4274`
 - the internal legacy Bun collector process on `127.0.0.1:4276`
 
 Open:
@@ -148,8 +148,8 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 
 | Variable | Default | Applies to | Description |
 | --- | --- | --- | --- |
-| `HOST` | `127.0.0.1` | dashboard | Public dashboard bind host |
-| `PORT` | `4274` | dashboard | Public dashboard port |
+| `HOST` | `127.0.0.1` | dashboard | Dashboard bind host |
+| `PORT` | `4274` | dashboard | Dashboard port |
 | `HISTORY_WRITER_HOST` | `127.0.0.1` | collector and dashboard spawn env | Collector bind host; env name retained for compatibility |
 | `HISTORY_WRITER_PORT` | `4276` | collector and dashboard proxy URL | Collector port; env name retained for compatibility |
 | `HISTORY_WRITER_URL` | unset | dashboard | Full URL for an existing collector; disables auto-spawn |

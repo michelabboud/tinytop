@@ -6,9 +6,9 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.17`
+- Version: `0.1.18`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
-- Public UI: `http://127.0.0.1:4274`
+- Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
 - Network exposure: loopback only by default
@@ -210,6 +210,7 @@ Implementation notes:
 | [docs/reports/2026-06-24-rust-agent-dependency-vetting.md](docs/reports/2026-06-24-rust-agent-dependency-vetting.md) | Rust collector dependency and SQLx vetting |
 | [docs/reports/2026-06-25-rust-daemon-dependency-vetting.md](docs/reports/2026-06-25-rust-daemon-dependency-vetting.md) | Rust daemon and vendored dashboard asset dependency vetting |
 | [docs/reports/2026-06-25-webui-confirmation-dialog-verification.md](docs/reports/2026-06-25-webui-confirmation-dialog-verification.md) | Web UI confirmation-dialog policy and rendered verification |
+| [docs/reports/2026-06-25-documentation-sweep.md](docs/reports/2026-06-25-documentation-sweep.md) | Documentation sweep for the embedded Rust collector/dashboard asset move |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
@@ -221,8 +222,8 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `HOST` | `127.0.0.1` | Public dashboard bind host |
-| `PORT` | `4274` | Public dashboard port |
+| `HOST` | `127.0.0.1` | Dashboard bind host |
+| `PORT` | `4274` | Dashboard port |
 | `HISTORY_WRITER_HOST` | `127.0.0.1` | Legacy collector bind host; env name retained for compatibility |
 | `HISTORY_WRITER_PORT` | `4276` | Legacy collector port; env name retained for compatibility |
 | `HISTORY_WRITER_URL` | unset | Existing collector URL; when set, dashboard does not spawn a collector |
@@ -235,7 +236,7 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 
 The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
-- `127.0.0.1:4274` - public dashboard UI
+- `127.0.0.1:4274` - dashboard UI
 - `127.0.0.1:4276` - legacy/internal collector API for split mode
 
 ## Persistence
