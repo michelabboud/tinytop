@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 
 const WEB_UI_EXTENSIONS = new Set([".css", ".html", ".js"]);
+const DASHBOARD_DIR = "legacy/dashboard";
 
 function collectWebUiFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
@@ -12,7 +13,7 @@ function collectWebUiFiles(root: string): string[] {
   });
 }
 
-const webUiFiles = collectWebUiFiles("public");
+const webUiFiles = collectWebUiFiles(DASHBOARD_DIR);
 
 function read(path: string): string {
   return readFileSync(path, "utf8");
@@ -28,15 +29,15 @@ describe("web UI dialogs", () => {
   });
 
   test("uses status-message naming instead of alert naming for inline errors", () => {
-    expect(read("public/index.html")).not.toContain('id="alert"');
-    expect(read("public/index.html")).not.toContain('class="alert"');
-    expect(read("public/styles.css")).not.toContain(".alert");
-    expect(read("public/app.js")).not.toContain("elements.alert");
+    expect(read(`${DASHBOARD_DIR}/index.html`)).not.toContain('id="alert"');
+    expect(read(`${DASHBOARD_DIR}/index.html`)).not.toContain('class="alert"');
+    expect(read(`${DASHBOARD_DIR}/styles.css`)).not.toContain(".alert");
+    expect(read(`${DASHBOARD_DIR}/app.js`)).not.toContain("elements.alert");
   });
 
   test("provides an accessible in-app confirmation dialog", () => {
-    const html = read("public/index.html");
-    const app = read("public/app.js");
+    const html = read(`${DASHBOARD_DIR}/index.html`);
+    const app = read(`${DASHBOARD_DIR}/app.js`);
 
     expect(html).toContain('id="confirmation-dialog"');
     expect(html).toContain('aria-labelledby="confirmation-title"');

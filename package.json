@@ -1,6 +1,6 @@
 {
   "name": "tinytop",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -18,7 +18,7 @@
     "rust:build": "cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent",
     "rust:test": "cargo test --manifest-path agent/Cargo.toml --workspace",
     "rust:collect": "cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json",
-    "rust:serve": "cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve --public-dir public",
+    "rust:serve": "cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve",
     "rust:serve-writer": "cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve-writer"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-TINYTOP_VERSION="0.1.16"
+TINYTOP_VERSION="0.1.17"
 INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
 INSTALL_RUST_COMMAND='curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh'
 
@@ -347,18 +347,14 @@ cmd_rust_serve() {
 
   local agent_bin
   agent_bin="$(rust_agent_exec)"
-  local extra_args=()
-  if [[ "$subcommand" == "serve" ]]; then
-    extra_args=(--public-dir "$ROOT_DIR/public")
-  fi
 
   if [[ -x "$agent_bin" ]]; then
-    exec "$agent_bin" "$subcommand" "${extra_args[@]}" "$@"
+    exec "$agent_bin" "$subcommand" "$@"
   fi
 
   require_cargo
   cd "$ROOT_DIR"
-  exec cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- "$subcommand" "${extra_args[@]}" "$@"
+  exec cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- "$subcommand" "$@"
 }
 
 cmd_rust() {
@@ -496,7 +492,7 @@ cmd_check() {
   require_bun
   cd "$ROOT_DIR"
   bun run check
-  bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
+  bun build legacy/dashboard/app.js --target=browser --outdir=/tmp/tinytop-build-check
 }
 
 cmd_start() {
@@ -557,8 +553,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=$ROOT_DIR
-Environment=TINYTOP_PUBLIC_DIR=$ROOT_DIR/public
-ExecStart=$agent_exec serve --host ${HOST:-127.0.0.1} --port ${PORT:-4274} --public-dir $ROOT_DIR/public
+ExecStart=$agent_exec serve --host ${HOST:-127.0.0.1} --port ${PORT:-4274}
 Restart=on-failure
 RestartSec=3
 
@@ -616,7 +611,6 @@ cmd_systemd_render() {
 }
 
 ensure_rust_agent_for_systemd() {
-  [[ -f "$ROOT_DIR/public/vendor/echarts.min.js" ]] || die "Dashboard asset missing: $ROOT_DIR/public/vendor/echarts.min.js"
   local agent_exec
   agent_exec="$(rust_agent_exec)"
   if [[ -x "$agent_exec" ]]; then

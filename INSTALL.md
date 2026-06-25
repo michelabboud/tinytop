@@ -72,7 +72,7 @@ cd /path/to/tinytop
 ./tinytop deps
 ```
 
-This is only required for Bun/TypeScript development. Apache ECharts is vendored under `public/vendor/` for the Rust no-Bun runtime.
+This is only required for Bun/TypeScript development. Apache ECharts is vendored under both `legacy/dashboard/vendor/` and `agent/assets/dashboard/vendor/`; the Rust no-Bun runtime embeds its dashboard assets into the collector binary.
 
 The Rust daemon has its own Cargo workspace under `agent/`.
 
@@ -156,7 +156,7 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 | `HISTORY_POLL_MS` | `1500` | Rust daemon and legacy Bun collector | Collection interval in milliseconds |
 | `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | Rust daemon and legacy Bun collector | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running legacy Bun collector |
-| `TINYTOP_PUBLIC_DIR` | `./public` | Rust daemon | Static dashboard asset directory |
+| `TINYTOP_PUBLIC_DIR` | unset | Rust daemon | Optional development override for dashboard assets; unset uses embedded assets |
 | `XDG_DATA_HOME` | `~/.local/share` | Legacy Bun collector | Base directory for default SQLite path |
 
 ## SQLite Location
@@ -194,7 +194,7 @@ If Rust is installed, also run the Rust collector checks:
 ```bash
 cargo test --manifest-path agent/Cargo.toml --workspace
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
-cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve --public-dir public
+cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve
 ```
 
 Check HTTP endpoints:

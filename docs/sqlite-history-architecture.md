@@ -18,8 +18,8 @@ This document describes the implemented SQLite history architecture for TinyTop.
 The default runtime uses one Rust process:
 
 1. `tinytop-agent serve` on `127.0.0.1:4274`
-   - Serves static frontend assets from `public/`.
-   - Serves vendored Apache ECharts from `public/vendor/echarts.min.js`.
+   - Serves embedded static frontend assets from `agent/assets/dashboard/`.
+   - Serves vendored Apache ECharts from embedded dashboard assets.
    - Serves `/api/snapshot` and `/api/history`.
    - Exposes legacy collector-compatible routes on the same port.
    - Collects local telemetry.
@@ -31,7 +31,7 @@ The legacy Bun development runtime uses two local processes:
 
 1. `dashboard` on `127.0.0.1:4274`
    - Serves static frontend assets.
-   - Serves `/vendor/echarts.min.js` from `public/vendor/`.
+   - Serves `/vendor/echarts.min.js` from `legacy/dashboard/vendor/`.
    - Proxies `/api/snapshot` and `/api/history` to the collector process.
    - Never opens SQLite.
 
@@ -149,7 +149,7 @@ The SQLite owner reverses the selected rows before returning them so the browser
 
 ## Frontend Hydration
 
-On startup, `public/app.js` requests:
+On startup, the dashboard `app.js` requests:
 
 ```text
 /api/history?limit=120&window_seconds=180

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.17 - 2026-06-25
+
+- Moved the static dashboard assets from root `public/` into `legacy/dashboard/` for the legacy Bun runtime.
+- Added a byte-identical Rust dashboard asset tree under `agent/assets/dashboard/`.
+- Embedded the dashboard HTML, CSS, browser JavaScript, and ECharts bundle into `tinytop-agent serve`.
+- Kept `--public-dir` and `TINYTOP_PUBLIC_DIR` as explicit development overrides while making embedded assets the default Rust path.
+- Updated the Bun development server, command center, tests, docs, and handoff for embedded Rust dashboard ownership.
+- Added regression coverage for embedded Rust serving without a dashboard directory and for legacy/Rust dashboard asset equality.
+- Added ADR 0006 for embedded Rust dashboard assets and legacy dashboard asset ownership.
+
 ## 0.1.16 - 2026-06-25
 
 - Moved the legacy Bun collector daemon from `src/collector-daemon.ts` to `legacy/bun-collector.ts`.

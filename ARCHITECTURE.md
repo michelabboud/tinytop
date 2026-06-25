@@ -32,8 +32,8 @@ It works before Bun is installed for help and bootstrap, then hands off to
 
 ## Data Flow
 
-1. The browser loads `public/index.html`, `public/styles.css`, `/vendor/echarts.min.js`, and `public/app.js`.
-2. `public/app.js` reads browser-local theme and graph-mode settings from `localStorage`.
+1. The browser loads embedded Rust dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, and `app.js`.
+2. `app.js` reads browser-local theme and graph-mode settings from `localStorage`.
 3. The frontend requests `/api/history?limit=120&window_seconds=180` to hydrate Live History from SQLite.
 4. The frontend polls `/api/snapshot` every 1500 ms.
 5. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
@@ -49,13 +49,12 @@ It works before Bun is installed for help and bootstrap, then hands off to
 | `src/collector.ts` | Live host reads from Linux/WSL sources and `SystemSnapshot` construction |
 | `src/history-store.ts` | SQLite setup, pragmas, indexes, prepared inserts, latest reads, range reads |
 | `legacy/bun-collector.ts` | Legacy Bun collector HTTP API, scheduled collection loop, SQLite ownership |
-| `src/server.ts` | Legacy Bun public HTTP server, static assets, ECharts route, collector proxy |
+| `src/server.ts` | Legacy Bun HTTP server, static assets, ECharts route, collector proxy |
 | `src/ops.ts` | SQLite maintenance helpers for stats, integrity checks, and vacuum |
 | `src/wizard/index.ts` | Bun setup wizard launched by `./tinytop setup` |
 | `tinytop` | Bash command center for setup, Bun bootstrap, systemd services, logs, status, and DB operations |
-| `public/index.html` | App shell and semantic dashboard structure |
-| `public/styles.css` | Themes, layout, responsive behavior, dashboard styling |
-| `public/app.js` | Browser state, polling, history hydration, ECharts rendering, interactions |
+| `legacy/dashboard/` | Legacy Bun dashboard asset tree |
+| `agent/assets/dashboard/` | Rust-embedded dashboard asset tree; kept byte-identical to `legacy/dashboard/` |
 | `tests/` | Bun tests for parsers, snapshot building, server routes, and history storage |
 | `agent/crates/tinytop-types` | Rust snapshot structs serialized to the existing dashboard JSON contract |
 | `agent/crates/tinytop-collectors` | Rust platform collector crate; currently Linux/WSL only |
@@ -71,7 +70,7 @@ Current Rust commands:
 ```bash
 cargo test --manifest-path agent/Cargo.toml --workspace
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
-cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve --public-dir public
+cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve-writer
 ```
 
@@ -79,7 +78,7 @@ The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun
 
 ## Public Dashboard API
 
-The Rust daemon and legacy public dashboard expose:
+The Rust daemon and legacy Bun dashboard expose:
 
 - `GET /health`
 - `GET /api/snapshot`
@@ -180,7 +179,7 @@ Web UI interaction policy:
 
 - Public browser code must not call native `alert`, `confirm`, or `prompt`.
 - Inline errors render through the `status-message` surface.
-- Browser-local destructive actions use the reusable `<dialog>` confirmation flow in `public/app.js`.
+- Browser-local destructive actions use the reusable `<dialog>` confirmation flow in the dashboard `app.js`.
 - Confirmed actions must describe their scope before continuing; for example, clearing Live History affects only the current tab's session buffer and does not delete SQLite history.
 
 ## Runtime Detection
@@ -216,3 +215,4 @@ Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
 - [0003 - Bash Bootstrap Plus Bun Install Wizard](docs/adr/0003-bash-bootstrap-bun-install-wizard.md)
 - [0004 - Additive Rust Agent With SQLx Store](docs/adr/0004-rust-agent-sqlx-store.md)
 - [0005 - Rust Single-Daemon Systemd Runtime](docs/adr/0005-rust-single-daemon-systemd-runtime.md)
+- [0006 - Embed Dashboard Assets In The Rust Collector](docs/adr/0006-embedded-dashboard-assets.md)

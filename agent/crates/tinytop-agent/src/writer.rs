@@ -26,14 +26,21 @@ pub struct ServeOptions {
     pub port: u16,
     pub sqlite_url: String,
     pub poll_ms: u64,
-    pub public_dir: Option<PathBuf>,
+    pub dashboard_assets: DashboardAssets,
+}
+
+#[derive(Debug, Clone)]
+pub enum DashboardAssets {
+    Embedded,
+    Directory(PathBuf),
+    Disabled,
 }
 
 #[derive(Clone)]
 struct AppState {
     collector: Arc<Mutex<LinuxCollector>>,
     store: SqliteHistoryStore,
-    public_dir: Option<PathBuf>,
+    dashboard_assets: DashboardAssets,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,7 +66,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
     let state = AppState {
         collector: Arc::new(Mutex::new(LinuxCollector::default())),
         store,
-        public_dir: options.public_dir,
+        dashboard_assets: options.dashboard_assets,
     };
 
     collect_and_store(&state).await?;
@@ -132,30 +139,49 @@ async fn static_file(
     State(state): State<AppState>,
     axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
 ) -> Result<Response, ServeError> {
-    let public_dir = state
-        .public_dir
-        .as_ref()
-        .ok_or_else(|| ServeError::not_found("dashboard assets are not configured"))?;
     let Some(relative_path) = static_relative_path(uri.path()) else {
         return Err(ServeError::not_found("asset not found"));
     };
-    let path = public_dir.join(relative_path);
-    let bytes = std::fs::read(&path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => {
-            ServeError::not_found(format!("{} is missing", path.display()))
-        }
-        _ => ServeError::Io(error),
-    })?;
 
+    match &state.dashboard_assets {
+        DashboardAssets::Disabled => Err(ServeError::not_found("dashboard assets are disabled")),
+        DashboardAssets::Embedded => embedded_response(relative_path),
+        DashboardAssets::Directory(public_dir) => {
+            let path = public_dir.join(relative_path);
+            let bytes = std::fs::read(&path).map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    ServeError::not_found(format!("{} is missing", path.display()))
+                }
+                _ => ServeError::Io(error),
+            })?;
+            Ok(bytes_response(bytes, content_type(relative_path)))
+        }
+    }
+}
+
+fn embedded_response(path: &Path) -> Result<Response, ServeError> {
+    let bytes = match path.to_str() {
+        Some("index.html") => include_bytes!("../../../assets/dashboard/index.html").as_slice(),
+        Some("styles.css") => include_bytes!("../../../assets/dashboard/styles.css").as_slice(),
+        Some("app.js") => include_bytes!("../../../assets/dashboard/app.js").as_slice(),
+        Some("vendor/echarts.min.js") => {
+            include_bytes!("../../../assets/dashboard/vendor/echarts.min.js").as_slice()
+        }
+        _ => return Err(ServeError::not_found("embedded asset not found")),
+    };
+
+    Ok(bytes_response(bytes, content_type(path)))
+}
+
+fn bytes_response(bytes: impl Into<axum::body::Body>, content_type: &'static str) -> Response {
     let mut response = Response::new(bytes.into());
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(content_type(relative_path)),
-    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    Ok(response)
+    response
 }
 
 async fn read_history_with_backfill(

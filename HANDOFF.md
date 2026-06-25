@@ -1,17 +1,17 @@
 # TinyTop Handoff
 
-Date: 2026-06-25 22:33 Asia/Jerusalem
+Date: 2026-06-25 22:50 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Latest shipped checkpoint before this work: `895deed8f0c33e6c0a72f827b644f26bd2a8a35a`
-- Latest shipped tag before this work: `v0.1.15`
-- Current checkpoint version: `0.1.16`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.16`
-- Working tree before the v0.1.16 work: clean and aligned with `origin/main`
+- Latest shipped checkpoint before this work: `c473814eae44ea4566555548a0b4306f5324a450`
+- Latest shipped tag before this work: `v0.1.16`
+- Current checkpoint version: `0.1.17`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.17`
+- Working tree before the v0.1.17 work: clean and aligned with `origin/main`
 
 ## Runtime State
 
@@ -29,8 +29,10 @@ The default persistent dashboard path is the Rust collector/dashboard daemon.
 Evidence:
 
 - `ARCHITECTURE.md` states `tinytop-agent serve` serves the dashboard, returns the latest stored sample or collects a fresh one, and collects telemetry through `tinytop-collectors`.
+- `tinytop-agent serve` embeds dashboard assets from `agent/assets/dashboard/` by default.
 - `./tinytop systemd install` defaults to the single Rust collector/dashboard daemon.
 - The legacy Bun collector now lives at `legacy/bun-collector.ts` and is available only through explicit Bun development or `--bun` systemd mode.
+- The legacy Bun dashboard assets now live at `legacy/dashboard/`.
 
 ## Recently Completed
 
@@ -58,6 +60,15 @@ Evidence:
 - Renamed newly rendered legacy Bun systemd collector service to `tinytop-collector.service`.
 - Kept cleanup/status paths aware of older `tinytop-writer.service` installs.
 
+### v0.1.17 - Embedded Rust Dashboard Assets
+
+- Moved the static dashboard asset tree to `legacy/dashboard/` for the legacy Bun runtime.
+- Added a byte-identical Rust dashboard asset tree under `agent/assets/dashboard/`.
+- Embedded the dashboard HTML, CSS, browser JavaScript, and ECharts bundle into `tinytop-agent serve`.
+- Kept `--public-dir` and `TINYTOP_PUBLIC_DIR` as explicit development overrides.
+- Updated `./tinytop rust serve` and systemd rendering to use embedded assets by default.
+- Added ADR 0006 for embedded Rust dashboard assets and legacy dashboard asset ownership.
+
 ### Daemon Start
 
 - Started the Rust daemon with:
@@ -75,11 +86,19 @@ Evidence:
 ## Verification Evidence From Latest Feature Checkpoint
 
 - `./tinytop check`
-  - Bun tests: `41 pass`, `0 fail`
+  - Bun tests: `43 pass`, `0 fail`
   - `src/server.ts --check`: `status: ok`
   - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
   - Rust workspace tests: passed
-  - Browser bundle: built `public/app.js` successfully
+  - Browser bundle: built `legacy/dashboard/app.js` successfully
+- `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
+- `./tinytop rust build`: built `agent/target/release/tinytop-agent`
+- Embedded dashboard smoke test with `./tinytop rust serve --sqlite sqlite::memory: --poll-ms 100000`
+  - `/health`: `ok`
+  - `/`: contained `<title>TinyTop</title>`
+  - `/app.js`: contained `requestConfirmation`
+  - `/vendor/echarts.min.js`: contained `echarts`
+  - Process stopped after the smoke test; default ports are free
 - `git diff --check`: clean
 
 ## Useful Commands
@@ -107,4 +126,4 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 - No TinyTop foreground daemon is running at this handoff refresh. Start one with `./tinytop rust serve` or use `./tinytop systemd start` after installing the service.
 - WSL user systemd was previously unavailable in this environment, so foreground Rust daemon mode is the known-working path.
 - The dashboard is loopback-only by design.
-- `public/vendor/echarts.min.js` is vendored third-party code and should stay excluded from local UI policy scans.
+- `legacy/dashboard/vendor/echarts.min.js` and `agent/assets/dashboard/vendor/echarts.min.js` are vendored third-party code and should stay excluded from local UI policy scans.

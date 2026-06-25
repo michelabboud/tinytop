@@ -101,7 +101,8 @@ describe("tinytop command center", () => {
     expect(result.stdout).toContain("tinytop.service");
     expect(result.stdout).toContain("ExecStart=");
     expect(result.stdout).toContain("tinytop-agent serve");
-    expect(result.stdout).toContain("--public-dir");
+    expect(result.stdout).not.toContain("--public-dir");
+    expect(result.stdout).not.toContain("TINYTOP_PUBLIC_DIR");
     expect(result.stdout).not.toContain("tinytop-writer.service");
     expect(result.stdout).not.toContain("tinytop-dashboard.service");
     expect(result.stdout).not.toContain("run src/collector-daemon.ts");

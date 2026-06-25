@@ -46,12 +46,60 @@ fn serve_exposes_dashboard_and_history_api() {
     result.expect("server should expose dashboard and history API");
 }
 
+#[test]
+fn serve_exposes_embedded_dashboard_without_public_dir() {
+    let port = reserve_port();
+    let cwd = temp_empty_dir("tinytop-agent-empty-cwd");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+        ])
+        .current_dir(&cwd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start from a cwd without dashboard files");
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get(port, "/"))
+        .map(|response| assert!(response.contains("<title>TinyTop</title>")))
+        .and_then(|_| http_get(port, "/styles.css"))
+        .map(|response| assert!(response.contains("status-message")))
+        .and_then(|_| http_get(port, "/app.js"))
+        .map(|response| assert!(response.contains("requestConfirmation")))
+        .and_then(|_| http_get(port, "/vendor/echarts.min.js"))
+        .map(|response| assert!(response.contains("echarts")));
+
+    stop_child(&mut child);
+    fs::remove_dir_all(cwd).ok();
+
+    result.expect("server should expose embedded dashboard assets without --public-dir");
+}
+
 fn reserve_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should reserve a local port");
     listener
         .local_addr()
         .expect("reserved listener should have an address")
         .port()
+}
+
+fn temp_empty_dir(prefix: &str) -> std::path::PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("{prefix}-{stamp}"));
+    fs::create_dir_all(&dir).expect("temp directory should be created");
+    dir
 }
 
 fn temp_public_dir() -> std::path::PathBuf {

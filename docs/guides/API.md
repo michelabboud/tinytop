@@ -126,16 +126,16 @@ Samples are returned oldest first.
 
 ### GET /vendor/echarts.min.js
 
-Returns the vendored Apache ECharts browser bundle from `public/vendor/echarts.min.js`.
+Returns the vendored Apache ECharts browser bundle from the Rust embedded dashboard assets or, in legacy Bun mode, from `legacy/dashboard/vendor/echarts.min.js`.
 
 ### Static Assets
 
 | Path | File |
 | --- | --- |
-| `/` | `public/index.html` |
-| `/index.html` | `public/index.html` |
-| `/styles.css` | `public/styles.css` |
-| `/app.js` | `public/app.js` |
+| `/` | embedded `index.html` or `legacy/dashboard/index.html` |
+| `/index.html` | embedded `index.html` or `legacy/dashboard/index.html` |
+| `/styles.css` | embedded `styles.css` or `legacy/dashboard/styles.css` |
+| `/app.js` | embedded `app.js` or `legacy/dashboard/app.js` |
 
 ## Legacy Collector API
 

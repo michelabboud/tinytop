@@ -189,10 +189,10 @@ fn parse_serve_options(
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(DEFAULT_POLL_MS);
-    let mut public_dir = if defaults.include_dashboard {
-        Some(default_public_dir())
+    let mut dashboard_assets = if defaults.include_dashboard {
+        dashboard_assets_from_env()
     } else {
-        None
+        writer::DashboardAssets::Disabled
     };
 
     let mut index = 0;
@@ -215,11 +215,13 @@ fn parse_serve_options(
                 index += 2;
             }
             "--public-dir" => {
-                public_dir = Some(PathBuf::from(require_value(args, index, "--public-dir")?));
+                dashboard_assets = writer::DashboardAssets::Directory(PathBuf::from(
+                    require_value(args, index, "--public-dir")?,
+                ));
                 index += 2;
             }
             "--no-dashboard" => {
-                public_dir = None;
+                dashboard_assets = writer::DashboardAssets::Disabled;
                 index += 1;
             }
             other => return Err(format!("unknown serve option: {other}").into()),
@@ -231,7 +233,7 @@ fn parse_serve_options(
         port,
         sqlite_url,
         poll_ms,
-        public_dir,
+        dashboard_assets,
     })
 }
 
@@ -278,14 +280,10 @@ fn expand_home(value: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(value))
 }
 
-fn default_public_dir() -> PathBuf {
+fn dashboard_assets_from_env() -> writer::DashboardAssets {
     std::env::var("TINYTOP_PUBLIC_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join("public")
-        })
+        .map(|path| writer::DashboardAssets::Directory(PathBuf::from(path)))
+        .unwrap_or(writer::DashboardAssets::Embedded)
 }
 
 fn now_ms() -> Result<i64, Box<dyn std::error::Error>> {
@@ -308,7 +306,7 @@ Examples:
   tinytop-agent collect --json
   tinytop-agent collect --sqlite sqlite::memory:
   tinytop-agent db stats
-  tinytop-agent serve --host 127.0.0.1 --port 4274 --public-dir public
+  tinytop-agent serve --host 127.0.0.1 --port 4274
   tinytop-agent serve-writer --host 127.0.0.1 --port 4276
 "#
     );

@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.16`
+- Version: `0.1.17`
 - Date: 2026-06-25
-- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime, legacy Bun collector fallback under `legacy/`, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -131,7 +131,7 @@
 - [x] Added `./tinytop rust install-binary`, `build`, `serve`, `serve-writer`, `collect`, `test`, and `check`.
 - [x] Added Rust-backed DB stats, integrity check, and vacuum support for the command center.
 - [x] Updated the setup wizard to ask for GitHub release binary vs local Cargo compile.
-- [x] Vendored Apache ECharts under `public/vendor/` with upstream license and notice files for no-Bun runtime use.
+- [x] Vendored Apache ECharts with upstream license and notice files for no-Bun runtime use.
 - [x] Added ADR 0005 and dependency/provenance reports for Axum and vendored ECharts.
 
 ### 0.1.14 - Web UI Confirmation Dialogs
@@ -159,6 +159,16 @@
 - [x] Updated new legacy Bun systemd units to use `tinytop-collector.service`.
 - [x] Kept command-center cleanup/status paths aware of older `tinytop-writer.service` installs.
 - [x] Updated current-facing docs from writer-first language to collector-first language.
+
+### 0.1.17 - Embedded Rust Dashboard Assets
+
+- [x] Moved the static dashboard asset tree to `legacy/dashboard/` for the legacy Bun runtime.
+- [x] Added a byte-identical Rust dashboard asset tree under `agent/assets/dashboard/`.
+- [x] Embedded the dashboard HTML, CSS, browser JavaScript, and ECharts bundle into `tinytop-agent serve`.
+- [x] Kept `--public-dir` and `TINYTOP_PUBLIC_DIR` as explicit development overrides.
+- [x] Updated `./tinytop rust serve` and systemd rendering to use embedded assets by default.
+- [x] Added regression coverage for embedded Rust serving without a dashboard directory and asset equality across legacy/Rust dashboard trees.
+- [x] Added ADR 0006 for embedded Rust dashboard assets and legacy dashboard asset ownership.
 
 ## Known Limitations
 

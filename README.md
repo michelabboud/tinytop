@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.16`
+- Version: `0.1.17`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Public UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
@@ -173,7 +173,7 @@ bun test
 bun run check
 bun run rust:test
 bun run rust:serve
-bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
+bun build legacy/dashboard/app.js --target=browser --outdir=/tmp/tinytop-build-check
 ```
 
 ## Rust Collector/Dashboard Daemon
@@ -183,7 +183,7 @@ The Rust workspace lives under `agent/` and provides the default persistent runt
 ```bash
 cargo test --manifest-path agent/Cargo.toml --workspace
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
-cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve --public-dir public
+cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve
 ```
 
 The Rust daemon is the collector and dashboard in one process on `127.0.0.1:4274`. The older Bun dashboard/collector split is still available with `./tinytop start`, `./tinytop start:split`, and `./tinytop systemd install --bun`.
@@ -229,7 +229,7 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | `HISTORY_POLL_MS` | `1500` | Collector sampling interval |
 | `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
-| `TINYTOP_PUBLIC_DIR` | `./public` | Static dashboard asset directory for the Rust daemon |
+| `TINYTOP_PUBLIC_DIR` | unset | Optional development override for Rust dashboard assets; unset uses embedded assets |
 
 ## Ports
 
