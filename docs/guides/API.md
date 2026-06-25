@@ -6,8 +6,8 @@ This guide documents the local HTTP APIs used by TinyTop.
 
 | Process | URL | Audience |
 | --- | --- | --- |
-| Rust daemon | `http://127.0.0.1:4274` | Browser, local user, and writer-compatible API clients |
-| Legacy writer | `http://127.0.0.1:4276` | Internal dashboard process when using Bun split mode |
+| Rust collector/dashboard daemon | `http://127.0.0.1:4274` | Browser, local user, and legacy collector API clients |
+| Legacy Bun collector | `http://127.0.0.1:4276` | Internal dashboard process when using Bun split mode |
 
 TinyTop APIs support only `GET` requests. Other methods return JSON errors with HTTP `405`.
 
@@ -25,7 +25,7 @@ ok
 
 ### GET /api/snapshot
 
-Returns the latest `SystemSnapshot`. In the Rust daemon this is handled in-process. In Bun split mode it proxies to writer `/snapshot/latest`.
+Returns the latest `SystemSnapshot`. In the Rust daemon this is handled in-process. In Bun split mode it proxies to collector `/snapshot/latest`.
 
 Example:
 
@@ -90,14 +90,14 @@ The example above is shortened. Real responses include full CPU times, filesyste
 
 ### GET /api/history
 
-Returns persisted recent history from the Rust daemon or legacy writer process.
+Returns persisted recent history from the Rust daemon or legacy Bun collector process.
 
 Query parameters:
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `limit` | integer | `120` | Maximum number of samples |
-| `window_seconds` | integer | writer default `300` | Relative time window when `since_ms` is absent |
+| `window_seconds` | integer | collector default `300` | Relative time window when `since_ms` is absent |
 | `since_ms` | integer | derived from `window_seconds` | Inclusive Unix epoch millisecond lower bound |
 | `until_ms` | integer | none | Inclusive Unix epoch millisecond upper bound |
 
@@ -137,11 +137,11 @@ Returns the vendored Apache ECharts browser bundle from `public/vendor/echarts.m
 | `/styles.css` | `public/styles.css` |
 | `/app.js` | `public/app.js` |
 
-## Writer-Compatible API
+## Legacy Collector API
 
 ### GET /health
 
-Health check for the Rust daemon or legacy writer process.
+Health check for the Rust daemon or legacy Bun collector process.
 
 Response:
 
@@ -151,17 +151,17 @@ ok
 
 ### GET /snapshot/latest
 
-Returns the latest stored snapshot. If no sample exists yet, the writer collects and stores one before responding.
+Returns the latest stored snapshot. If no sample exists yet, the collector collects and stores one before responding.
 
 ### GET /snapshot/collect
 
-Collects a new live snapshot, stores it in SQLite, and returns it. The writer timer uses this route internally.
+Collects a new live snapshot, stores it in SQLite, and returns it. The collector timer uses this route internally.
 
 ### GET /history
 
 Returns persisted samples from SQLite. Query parameters match dashboard `/api/history`.
 
-In the default Rust daemon, these writer-compatible routes are available on
+In the default Rust daemon, these legacy collector routes are available on
 `http://127.0.0.1:4274`. In legacy Bun split mode they are available on
 `http://127.0.0.1:4276`.
 
@@ -179,7 +179,7 @@ Common status codes:
 | --- | --- |
 | `404` | Route not found |
 | `405` | Non-GET method |
-| `500` | Collection, writer, or history query failure |
+| `500` | Collection, collector, or history query failure |
 | `503` | Provider missing in test/fallback handler configuration |
 
 ## Cache Headers

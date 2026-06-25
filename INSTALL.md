@@ -12,7 +12,7 @@ Use the root command center first:
 ./tinytop setup
 ```
 
-For the default no-Bun persistent runtime, install a Rust agent binary and then install the Rust user service:
+For the default no-Bun persistent runtime, install a Rust collector binary and then install the Rust collector/dashboard user service:
 
 ```bash
 ./tinytop rust install-binary
@@ -28,14 +28,14 @@ If a release binary is not available for your platform, compile locally:
 ./tinytop systemd install --rust
 ```
 
-`./tinytop setup` is still available for source/development installs after Bun is installed. It launches the Bun setup wizard with `bun run setup` and asks whether systemd should use a GitHub release binary or a local Cargo compile.
+`./tinytop setup` is still available for source/development installs after Bun is installed. It launches the Bun setup wizard with `bun run setup`, asks whether to install the Rust collector or the legacy Bun collector, and asks Rust users whether to use a GitHub release binary or a local Cargo compile.
 
 ## Requirements
 
 - Linux or WSL2
 - A shell with access to `/proc`
 - Loopback ports `4274` and `4276` available unless overridden
-- Rust agent binary from a TinyTop GitHub release, or Rust `1.95.0` or newer to compile locally
+- Rust collector binary from a TinyTop GitHub release, or Rust `1.95.0` or newer to compile locally
 - Optional for development and the Bun wizard: Bun matching the repo package manager line, `bun@1.3.11`
 
 If Bun is missing, TinyTop can print or run the official installer:
@@ -81,7 +81,7 @@ The Rust daemon has its own Cargo workspace under `agent/`.
 The default local ports are:
 
 - `127.0.0.1:4274` - public dashboard UI
-- `127.0.0.1:4276` - legacy collector/writer API when using split mode
+- `127.0.0.1:4276` - legacy collector API when using split mode
 
 Check live listeners:
 
@@ -112,7 +112,7 @@ The Bun development command is:
 The Bun development command starts:
 
 - the public dashboard process on `127.0.0.1:4274`
-- the internal writer process on `127.0.0.1:4276`
+- the internal legacy Bun collector process on `127.0.0.1:4276`
 
 Open:
 
@@ -122,7 +122,7 @@ http://127.0.0.1:4274
 
 ## Start Processes Separately
 
-Use this when you want the writer and dashboard supervised as separate foreground processes from one wrapper:
+Use this when you want the collector and dashboard supervised as separate foreground processes from one wrapper:
 
 ```bash
 ./tinytop start:split
@@ -131,14 +131,14 @@ Use this when you want the writer and dashboard supervised as separate foregroun
 Or run the underlying commands manually in two terminals:
 
 ```bash
-bun run writer
+bun run collector
 ```
 
 ```bash
 TINYTOP_DISABLE_WRITER_SPAWN=1 bun run dev
 ```
 
-If the writer is on a non-default URL:
+If the collector is on a non-default URL:
 
 ```bash
 HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
@@ -150,14 +150,14 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 | --- | --- | --- | --- |
 | `HOST` | `127.0.0.1` | dashboard | Public dashboard bind host |
 | `PORT` | `4274` | dashboard | Public dashboard port |
-| `HISTORY_WRITER_HOST` | `127.0.0.1` | writer and dashboard spawn env | Writer bind host |
-| `HISTORY_WRITER_PORT` | `4276` | writer and dashboard proxy URL | Writer port |
-| `HISTORY_WRITER_URL` | unset | dashboard | Full URL for an existing writer; disables auto-spawn |
-| `HISTORY_POLL_MS` | `1500` | Rust daemon and writer | Collection interval in milliseconds |
-| `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | Rust daemon and writer | SQLite database path |
-| `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running writer |
+| `HISTORY_WRITER_HOST` | `127.0.0.1` | collector and dashboard spawn env | Collector bind host; env name retained for compatibility |
+| `HISTORY_WRITER_PORT` | `4276` | collector and dashboard proxy URL | Collector port; env name retained for compatibility |
+| `HISTORY_WRITER_URL` | unset | dashboard | Full URL for an existing collector; disables auto-spawn |
+| `HISTORY_POLL_MS` | `1500` | Rust daemon and legacy Bun collector | Collection interval in milliseconds |
+| `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | Rust daemon and legacy Bun collector | SQLite database path |
+| `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running legacy Bun collector |
 | `TINYTOP_PUBLIC_DIR` | `./public` | Rust daemon | Static dashboard asset directory |
-| `XDG_DATA_HOME` | `~/.local/share` | Bun writer | Base directory for default SQLite path |
+| `XDG_DATA_HOME` | `~/.local/share` | Legacy Bun collector | Base directory for default SQLite path |
 
 ## SQLite Location
 
@@ -212,7 +212,7 @@ ok
 
 ## Upgrade
 
-1. Stop running daemon, dashboard, and writer processes.
+1. Stop running daemon, dashboard, and collector processes.
 2. Pull or apply the new code.
 3. Run `./tinytop deps`.
 4. Run `./tinytop check`.
@@ -223,14 +223,14 @@ The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are 
 
 ## Reset Local History
 
-Stop the dashboard and writer first, then move the database files aside:
+Stop the dashboard and collector first, then move the database files aside:
 
 ```bash
 ./tinytop db backup
 ./tinytop db reset --yes
 ```
 
-Start TinyTop again. The writer will create a fresh database.
+Start TinyTop again. The collector will create a fresh database.
 
 ## systemd User Services
 
@@ -243,7 +243,7 @@ Install persistent user services:
 
 `./tinytop systemd install` defaults to the Rust daemon. Use
 `./tinytop systemd install --bun` only when you explicitly want the legacy Bun
-dashboard/writer split.
+dashboard/collector split.
 
 Check or follow them:
 

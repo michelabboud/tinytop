@@ -2,7 +2,7 @@
 
 TinyTop's default persistent runtime is a single local Rust daemon. It serves the browser dashboard, collects Linux/WSL telemetry, owns SQLite, and exposes dashboard/history APIs over loopback.
 
-The original Bun dashboard and writer remain in the repo for TypeScript development and fallback.
+The original Bun dashboard and legacy collector remain in the repo for TypeScript development and fallback.
 
 ## Runtime Topology
 
@@ -22,9 +22,9 @@ Rust daemon: tinytop-agent serve
 SQLite: ~/.local/share/tinytop/history.sqlite
 ```
 
-`./tinytop systemd install` defaults to this Rust service. The daemon also keeps writer-compatible routes (`/snapshot/latest`, `/snapshot/collect`, and `/history`) on the same port for API continuity.
+`./tinytop systemd install` defaults to this Rust collector/dashboard service. The daemon also keeps the legacy collector-compatible routes (`/snapshot/latest`, `/snapshot/collect`, and `/history`) on the same port for API continuity.
 
-For development, `bun run dev` starts `src/server.ts`, and that process spawns `src/collector-daemon.ts`. For split supervision, start the writer separately with `bun run writer`, then start the dashboard with `TINYTOP_DISABLE_WRITER_SPAWN=1`.
+For development, `bun run dev` starts `src/server.ts`, and that process spawns `legacy/bun-collector.ts`. For split supervision, start the legacy Bun collector separately with `bun run collector`, then start the dashboard with `TINYTOP_DISABLE_WRITER_SPAWN=1`.
 
 The supported operator entrypoint is the root `./tinytop` Bash command center.
 It works before Bun is installed for help and bootstrap, then hands off to
@@ -48,8 +48,8 @@ It works before Bun is installed for help and bootstrap, then hands off to
 | `src/parsers.ts` | Pure parsing and normalization for `/proc`, pressure, load, filesystems, and runtime detection |
 | `src/collector.ts` | Live host reads from Linux/WSL sources and `SystemSnapshot` construction |
 | `src/history-store.ts` | SQLite setup, pragmas, indexes, prepared inserts, latest reads, range reads |
-| `src/collector-daemon.ts` | Legacy Bun writer HTTP API, scheduled collection loop, SQLite ownership |
-| `src/server.ts` | Legacy Bun public HTTP server, static assets, ECharts route, writer proxy |
+| `legacy/bun-collector.ts` | Legacy Bun collector HTTP API, scheduled collection loop, SQLite ownership |
+| `src/server.ts` | Legacy Bun public HTTP server, static assets, ECharts route, collector proxy |
 | `src/ops.ts` | SQLite maintenance helpers for stats, integrity checks, and vacuum |
 | `src/wizard/index.ts` | Bun setup wizard launched by `./tinytop setup` |
 | `tinytop` | Bash command center for setup, Bun bootstrap, systemd services, logs, status, and DB operations |
@@ -60,11 +60,11 @@ It works before Bun is installed for help and bootstrap, then hands off to
 | `agent/crates/tinytop-types` | Rust snapshot structs serialized to the existing dashboard JSON contract |
 | `agent/crates/tinytop-collectors` | Rust platform collector crate; currently Linux/WSL only |
 | `agent/crates/tinytop-store` | SQLx-backed Rust history store using the current SQLite schema |
-| `agent/crates/tinytop-agent` | Rust CLI and daemon for collection, SQLite history, dashboard serving, and writer-compatible APIs |
+| `agent/crates/tinytop-agent` | Rust CLI and daemon for collection, SQLite history, dashboard serving, and legacy collector-compatible APIs |
 
 ## Rust Daemon
 
-The Rust workspace is intentionally additive. The existing Bun collector remains intact in `src/collector.ts`, but systemd defaults to the Rust daemon.
+The Rust workspace is intentionally additive. The existing Bun metric collector remains intact in `src/collector.ts`, while the legacy Bun collector daemon lives under `legacy/`. Systemd defaults to the Rust collector/dashboard daemon.
 
 Current Rust commands:
 
@@ -89,16 +89,16 @@ The Rust daemon and legacy public dashboard expose:
 
 See [docs/guides/API.md](docs/guides/API.md) for request and response details.
 
-## Writer-Compatible API
+## Legacy Collector API
 
-The Rust daemon exposes these routes on `127.0.0.1:4274`. The legacy split writer exposes the same routes on `127.0.0.1:4276`:
+The Rust daemon exposes these routes on `127.0.0.1:4274`. The legacy split Bun collector exposes the same routes on `127.0.0.1:4276`:
 
 - `GET /health`
 - `GET /snapshot/latest`
 - `GET /snapshot/collect`
 - `GET /history?limit=&window_seconds=&since_ms=&until_ms=`
 
-The writer-compatible API is internal. It binds to loopback by default and should not be exposed publicly.
+The legacy collector API is internal. It binds to loopback by default and should not be exposed publicly.
 
 ## SQLite
 
@@ -204,7 +204,7 @@ The app is read-only with respect to the operating system:
 
 Systemd integration uses user services under `~/.config/systemd/user/`.
 The default unit is `tinytop.service`, running `tinytop-agent serve`. The legacy
-Bun split path remains available through `tinytop-writer.service` and
+Bun split path remains available through `tinytop-collector.service` and
 `tinytop-dashboard.service` when explicitly installed with `--bun`.
 
 ## Decisions

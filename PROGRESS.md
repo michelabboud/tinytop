@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.15`
+- Version: `0.1.16`
 - Date: 2026-06-25
-- Status: Local dashboard with SQLite-backed recent history, Rust single-daemon persistent runtime, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime, legacy Bun collector fallback under `legacy/`, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -150,9 +150,19 @@
 - [x] Confirmed the running daemon is the Rust collector path.
 - [x] Recorded recent verification evidence and next useful work.
 
+### 0.1.16 - Collector Naming And Legacy Bun Placement
+
+- [x] Moved the legacy Bun collector daemon to `legacy/bun-collector.ts`.
+- [x] Added `bun run collector` and `bun run collector:check` scripts while preserving writer aliases for compatibility.
+- [x] Updated the setup wizard to choose `rust` or `bun` collector runtime.
+- [x] Kept Rust as the default one-daemon collector/dashboard path.
+- [x] Updated new legacy Bun systemd units to use `tinytop-collector.service`.
+- [x] Kept command-center cleanup/status paths aware of older `tinytop-writer.service` installs.
+- [x] Updated current-facing docs from writer-first language to collector-first language.
+
 ## Known Limitations
 
-- SQLite retention is not implemented yet. The writer stores recent samples indefinitely until the database is manually archived or reset.
+- SQLite retention is not implemented yet. The collector stores recent samples indefinitely until the database is manually archived or reset.
 - Rollup tables for longer time ranges are planned but not implemented.
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
 - The UI hydrates a 120-sample rolling window, not arbitrary long-range history browsing.
@@ -165,7 +175,7 @@
 - [ ] Add raw history retention, defaulting to a configurable 24 to 72 hour window.
 - [ ] Add one-minute rollups for longer history ranges.
 - [ ] Add a dashboard setting for visible history duration and persisted sample count.
-- [ ] Add a writer health indicator in the UI when the internal writer API is unreachable.
+- [ ] Add a collector/daemon health indicator in the UI when the internal collector API is unreachable.
 - [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
 - [ ] Add native Windows collector support.
 - [ ] Add native macOS collector support.

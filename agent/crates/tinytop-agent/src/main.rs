@@ -295,7 +295,7 @@ fn now_ms() -> Result<i64, Box<dyn std::error::Error>> {
 
 fn print_help() {
     println!(
-        r#"TinyTop Rust agent
+        r#"TinyTop Rust collector
 
 Usage:
   tinytop-agent collect [--json] [--sqlite <database-url>]

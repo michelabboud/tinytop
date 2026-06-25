@@ -6,10 +6,10 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.15`
-- Runtime: Rust daemon for persistent installs; Bun remains available for development and fallback
+- Version: `0.1.16`
+- Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Public UI: `http://127.0.0.1:4274`
-- Legacy writer API: `http://127.0.0.1:4276`
+- Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
 - Network exposure: loopback only by default
 
@@ -25,7 +25,7 @@ cd tinytop
 
 Open <http://127.0.0.1:4274>.
 
-For persistent installs without Bun, use the Rust agent:
+For persistent installs without Bun, use the Rust collector/dashboard daemon:
 
 ```bash
 ./tinytop rust install-binary
@@ -41,7 +41,7 @@ If a release binary is not available for your platform, compile locally:
 ./tinytop systemd install --rust
 ```
 
-`./tinytop setup` is the Telecode-style Bun wizard for source/development installs. It asks whether systemd should use a GitHub release binary or a local Cargo compile.
+`./tinytop setup` is the Telecode-style Bun wizard for source/development installs. It asks whether to install the Rust collector/dashboard daemon or the legacy Bun collector path. For Rust installs, it also asks whether to use a GitHub release binary or a local Cargo compile.
 
 For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day usage, see [GUIDE.md](GUIDE.md).
 
@@ -61,7 +61,7 @@ For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day u
    ./tinytop doctor
    ```
 
-3. Install the Rust agent. Prefer a release binary:
+3. Install the Rust collector binary. Prefer a release binary:
 
    ```bash
    ./tinytop rust install-binary
@@ -168,7 +168,7 @@ For persistent background collection, install user-space systemd services:
 ./tinytop start:split
 ./tinytop db stats
 bun run dev
-bun run writer
+bun run collector
 bun test
 bun run check
 bun run rust:test
@@ -176,7 +176,7 @@ bun run rust:serve
 bun build public/app.js --target=browser --outdir=/tmp/tinytop-build-check
 ```
 
-## Rust Daemon
+## Rust Collector/Dashboard Daemon
 
 The Rust workspace lives under `agent/` and provides the default persistent runtime:
 
@@ -186,7 +186,7 @@ cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve --public-dir public
 ```
 
-The Rust daemon serves the dashboard and APIs on `127.0.0.1:4274`. The older Bun dashboard/writer split is still available with `./tinytop start`, `./tinytop start:split`, and `./tinytop systemd install --bun`.
+The Rust daemon is the collector and dashboard in one process on `127.0.0.1:4274`. The older Bun dashboard/collector split is still available with `./tinytop start`, `./tinytop start:split`, and `./tinytop systemd install --bun`.
 
 Implementation notes:
 
@@ -204,10 +204,10 @@ Implementation notes:
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, data flow, modules, SQLite schema, safety boundaries |
 | [CHANGELOG.md](CHANGELOG.md) | Versioned release notes |
 | [PROGRESS.md](PROGRESS.md) | Completed milestones and next work |
-| [docs/guides/API.md](docs/guides/API.md) | Public dashboard API and internal writer API |
+| [docs/guides/API.md](docs/guides/API.md) | Public dashboard API and internal collector API |
 | [docs/guides/OPERATIONS.md](docs/guides/OPERATIONS.md) | Runtime checks, SQLite inspection, backup/reset, troubleshooting |
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
-| [docs/reports/2026-06-24-rust-agent-dependency-vetting.md](docs/reports/2026-06-24-rust-agent-dependency-vetting.md) | Rust agent dependency and SQLx vetting |
+| [docs/reports/2026-06-24-rust-agent-dependency-vetting.md](docs/reports/2026-06-24-rust-agent-dependency-vetting.md) | Rust collector dependency and SQLx vetting |
 | [docs/reports/2026-06-25-rust-daemon-dependency-vetting.md](docs/reports/2026-06-25-rust-daemon-dependency-vetting.md) | Rust daemon and vendored dashboard asset dependency vetting |
 | [docs/reports/2026-06-25-webui-confirmation-dialog-verification.md](docs/reports/2026-06-25-webui-confirmation-dialog-verification.md) | Web UI confirmation-dialog policy and rendered verification |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
@@ -223,12 +223,12 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Public dashboard bind host |
 | `PORT` | `4274` | Public dashboard port |
-| `HISTORY_WRITER_HOST` | `127.0.0.1` | Legacy writer bind host |
-| `HISTORY_WRITER_PORT` | `4276` | Legacy writer port |
-| `HISTORY_WRITER_URL` | unset | Existing writer URL; when set, dashboard does not spawn a writer |
-| `HISTORY_POLL_MS` | `1500` | Writer collection interval |
+| `HISTORY_WRITER_HOST` | `127.0.0.1` | Legacy collector bind host; env name retained for compatibility |
+| `HISTORY_WRITER_PORT` | `4276` | Legacy collector port; env name retained for compatibility |
+| `HISTORY_WRITER_URL` | unset | Existing collector URL; when set, dashboard does not spawn a collector |
+| `HISTORY_POLL_MS` | `1500` | Collector sampling interval |
 | `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | SQLite database path |
-| `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the writer separately |
+| `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
 | `TINYTOP_PUBLIC_DIR` | `./public` | Static dashboard asset directory for the Rust daemon |
 
 ## Ports
@@ -236,11 +236,11 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 - `127.0.0.1:4274` - public dashboard UI
-- `127.0.0.1:4276` - legacy/internal collector-writer API for split mode
+- `127.0.0.1:4276` - legacy/internal collector API for split mode
 
 ## Persistence
 
-Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the writer process owns SQLite and the dashboard process reads through the writer API. The browser hydrates up to 120 recent samples on startup, then continues polling live samples.
+Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API. The browser hydrates up to 120 recent samples on startup, then continues polling live samples.
 
 The current SQLite implementation stores indexed metric columns plus the complete snapshot JSON. Retention and rollup tables are planned but not implemented yet, so the database grows until manually archived or reset.
 

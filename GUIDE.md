@@ -45,7 +45,7 @@ The rail status shows the polling state:
 ## Refresh And Pause
 
 - `Refresh` requests a fresh snapshot immediately.
-- `Pause` stops browser polling. The Rust daemon or legacy writer can still continue collecting samples in the background.
+- `Pause` stops browser polling. The Rust daemon or legacy Bun collector can still continue collecting samples in the background.
 - `Resume` restarts browser polling and returns the UI to live updates.
 
 ## Confirmation Windows

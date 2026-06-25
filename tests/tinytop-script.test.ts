@@ -94,7 +94,7 @@ describe("tinytop command center", () => {
     expect(result.stderr).toContain("https://rustup.rs");
   });
 
-  test("systemd render emits a single Rust dashboard daemon by default", async () => {
+  test("systemd render emits a single Rust collector/dashboard daemon by default", async () => {
     const result = await runTinytop(["systemd", "render"]);
 
     expect(result.exitCode).toBe(0);
@@ -105,15 +105,24 @@ describe("tinytop command center", () => {
     expect(result.stdout).not.toContain("tinytop-writer.service");
     expect(result.stdout).not.toContain("tinytop-dashboard.service");
     expect(result.stdout).not.toContain("run src/collector-daemon.ts");
+    expect(result.stdout).not.toContain("run legacy/bun-collector.ts");
     expect(result.stdout).not.toContain("run src/server.ts");
     expect(result.stdout).not.toContain("User=");
   });
 
-  test("systemd render can still emit the legacy Bun writer", async () => {
+  test("legacy Bun collector lives under legacy and not src", () => {
+    expect(existsSync(join(repoRoot, "legacy/bun-collector.ts"))).toBe(true);
+    expect(existsSync(join(repoRoot, "src/collector-daemon.ts"))).toBe(false);
+  });
+
+  test("systemd render can still emit the legacy Bun collector", async () => {
     const result = await runTinytop(["systemd", "render", "--bun"]);
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("run src/collector-daemon.ts");
+    expect(result.stdout).toContain("tinytop-collector.service");
+    expect(result.stdout).not.toContain("tinytop-writer.service");
+    expect(result.stdout).toContain("run legacy/bun-collector.ts");
+    expect(result.stdout).toContain("Description=TinyTop legacy Bun collector");
     expect(result.stdout).not.toContain("tinytop-agent serve");
   });
 });

@@ -5,7 +5,7 @@ This document describes the implemented SQLite history architecture for TinyTop.
 ## Summary
 
 - Default SQLite owner: `tinytop-agent serve`
-- Legacy Bun SQLite owner: `src/collector-daemon.ts`
+- Legacy Bun SQLite owner: `legacy/bun-collector.ts`
 - Rust store module: `agent/crates/tinytop-store`
 - Legacy Bun store module: `src/history-store.ts`
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
@@ -21,7 +21,7 @@ The default runtime uses one Rust process:
    - Serves static frontend assets from `public/`.
    - Serves vendored Apache ECharts from `public/vendor/echarts.min.js`.
    - Serves `/api/snapshot` and `/api/history`.
-   - Exposes writer-compatible routes on the same port.
+   - Exposes legacy collector-compatible routes on the same port.
    - Collects local telemetry.
    - Owns the SQLite connection.
    - Applies SQLite pragmas and schema setup.
@@ -32,10 +32,10 @@ The legacy Bun development runtime uses two local processes:
 1. `dashboard` on `127.0.0.1:4274`
    - Serves static frontend assets.
    - Serves `/vendor/echarts.min.js` from `public/vendor/`.
-   - Proxies `/api/snapshot` and `/api/history` to the writer process.
+   - Proxies `/api/snapshot` and `/api/history` to the collector process.
    - Never opens SQLite.
 
-2. `collector-writer` on `127.0.0.1:4276`
+2. `legacy-bun-collector` on `127.0.0.1:4276`
    - Collects local telemetry.
    - Owns the SQLite connection.
    - Applies SQLite pragmas and schema setup.
@@ -44,11 +44,11 @@ The legacy Bun development runtime uses two local processes:
 
 Both runtimes avoid accidental multi-process writes and keep WAL behavior, migrations, pragmas, and future retention policy in one process.
 
-## Writer API
+## Legacy Collector API
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Plain-text writer health check |
+| `GET` | `/health` | Plain-text collector health check |
 | `GET` | `/snapshot/latest` | Return latest stored sample, collecting one if none exists |
 | `GET` | `/snapshot/collect` | Collect and store a new sample immediately |
 | `GET` | `/history` | Return timestamp-window history samples |
@@ -62,7 +62,7 @@ Both runtimes avoid accidental multi-process writes and keep WAL behavior, migra
 | `since_ms` | Inclusive Unix epoch millisecond lower bound |
 | `until_ms` | Inclusive Unix epoch millisecond upper bound |
 
-The Rust daemon and legacy writer return history oldest first so charts and timeline controls can render naturally.
+The Rust daemon and legacy Bun collector return history oldest first so charts and timeline controls can render naturally.
 
 ## SQLite Pragmas
 
@@ -117,7 +117,7 @@ Typed columns are still stored for graph values and future rollups, so history i
 
 ## Write Path
 
-1. The Rust daemon collection loop runs every `HISTORY_POLL_MS` milliseconds. In legacy Bun mode, the writer timer calls `/snapshot/collect`.
+1. The Rust daemon collection loop runs every `HISTORY_POLL_MS` milliseconds. In legacy Bun mode, the collector timer calls `/snapshot/collect`.
 2. The collector reads local Linux/WSL sources.
 3. `tinytop-store` or `openHistoryStore().insertSnapshot()` writes the sample in SQLite.
 4. The insert uses `captured_at_ms` as a unique timestamp key.
@@ -194,6 +194,6 @@ SQLite may create sidecar files beside the database:
 - `history.sqlite-wal`
 - `history.sqlite-shm`
 
-Back up all three when the Rust daemon or legacy writer is running, or stop the SQLite owner before copying only `history.sqlite`.
+Back up all three when the Rust daemon or legacy Bun collector is running, or stop the SQLite owner before copying only `history.sqlite`.
 
 See [docs/guides/OPERATIONS.md](guides/OPERATIONS.md) for inspection, backup, and reset commands.

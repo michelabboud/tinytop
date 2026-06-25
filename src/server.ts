@@ -94,7 +94,7 @@ async function fetchWriterWithRetry(writerBaseUrl: string, pathnameWithSearch: s
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("writer process is unavailable");
+  throw lastError instanceof Error ? lastError : new Error("collector process is unavailable");
 }
 
 export function createFetchHandler(options: FetchHandlerOptions): (request: Request) => Promise<Response> {
@@ -181,7 +181,7 @@ export function startServer(): { url: string; stop(force?: boolean): void } {
   const writerProcess =
     process.env.HISTORY_WRITER_URL || process.env.TINYTOP_DISABLE_WRITER_SPAWN === "1"
       ? null
-      : Bun.spawn(["bun", "run", new URL("./collector-daemon.ts", import.meta.url).pathname], {
+      : Bun.spawn(["bun", "run", new URL("../legacy/bun-collector.ts", import.meta.url).pathname], {
           stdout: "inherit",
           stderr: "inherit",
           env: {

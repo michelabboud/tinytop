@@ -15,7 +15,7 @@ Use `./tinytop` for day-to-day operations:
 ./tinytop stats
 ```
 
-The command center can install or build the Rust agent, bootstrap Bun for
+The command center can install or build the Rust collector, bootstrap Bun for
 development, run the setup wizard, manage user-space systemd services, and
 perform SQLite backup/check/reset operations.
 
@@ -23,12 +23,12 @@ perform SQLite backup/check/reset operations.
 
 Default persistent mode runs one Rust daemon:
 
-- Rust dashboard daemon: `tinytop-agent serve` on `127.0.0.1:4274`
+- Rust collector/dashboard daemon: `tinytop-agent serve` on `127.0.0.1:4274`
 
 Legacy Bun development mode starts two processes:
 
 - public dashboard: `src/server.ts` on `127.0.0.1:4274`
-- internal writer: `src/collector-daemon.ts` on `127.0.0.1:4276`
+- legacy Bun collector: `legacy/bun-collector.ts` on `127.0.0.1:4276`
 
 Check listeners:
 
@@ -53,7 +53,7 @@ Start the Rust foreground daemon:
 Start Bun development mode:
 
 ```bash
-./tinytop rust serve
+./tinytop start
 ```
 
 Start Bun split mode:
@@ -81,7 +81,7 @@ Expected `bun run check` behavior:
 
 1. Runs all Bun tests.
 2. Runs `src/server.ts --check`.
-3. Runs `src/collector-daemon.ts --check`, including an in-memory SQLite write/read.
+3. Runs `legacy/bun-collector.ts --check`, including an in-memory SQLite write/read.
 4. Runs the Rust workspace tests through Cargo.
 
 ## SQLite Path
@@ -119,22 +119,22 @@ Integrity check:
 ./tinytop db check
 ```
 
-`./tinytop db stats|check|vacuum` uses the Rust agent first, falls back to Cargo
+`./tinytop db stats|check|vacuum` uses the Rust collector binary first, falls back to Cargo
 when a release binary is unavailable, and uses Bun only as the final fallback.
 
 ## Backup History
 
-Best option: stop the daemon, dashboard, or writer, then use:
+Best option: stop the daemon, dashboard, or collector, then use:
 
 ```bash
 ./tinytop db backup
 ```
 
-When the writer is running, include `history.sqlite-wal` and `history.sqlite-shm` in the backup.
+When the collector is running, include `history.sqlite-wal` and `history.sqlite-shm` in the backup.
 
 ## Reset History
 
-Stop the daemon, dashboard, or writer first. Move current files aside:
+Stop the daemon, dashboard, or collector first. Move current files aside:
 
 ```bash
 ./tinytop db backup
@@ -147,7 +147,7 @@ Start the app again:
 ./tinytop rust serve
 ```
 
-The Rust daemon or legacy writer will create a fresh database.
+The Rust daemon or legacy Bun collector will create a fresh database.
 
 ## Port Conflicts
 
@@ -165,7 +165,7 @@ ss -ltnp '( sport = :4274 or sport = :4276 )'
 
 Fix:
 
-- Stop the stale daemon, dashboard, or writer process if it belongs to this project.
+- Stop the stale daemon, dashboard, or collector process if it belongs to this project.
 - Or run with alternate ports:
 
 ```bash

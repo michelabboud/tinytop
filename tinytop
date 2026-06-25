@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-TINYTOP_VERSION="0.1.15"
+TINYTOP_VERSION="0.1.16"
 INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
 INSTALL_RUST_COMMAND='curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh'
 
@@ -140,7 +140,7 @@ dashboard_url() {
   printf 'http://%s:%s\n' "${HOST:-127.0.0.1}" "${PORT:-4274}"
 }
 
-writer_url() {
+collector_url() {
   printf 'http://%s:%s\n' "${HISTORY_WRITER_HOST:-127.0.0.1}" "${HISTORY_WRITER_PORT:-4276}"
 }
 
@@ -193,7 +193,7 @@ Once Bun exists, ./tinytop setup runs the richer Bun wizard with:
 
 Default URLs:
   Dashboard: http://127.0.0.1:4274
-  Legacy writer: http://127.0.0.1:4276
+  Legacy collector API: http://127.0.0.1:4276
 
 Default SQLite:
   ~/.local/share/tinytop/history.sqlite
@@ -221,7 +221,7 @@ Install Rust/Cargo when compiling locally:
   $INSTALL_RUST_COMMAND
   cargo --version
 
-Install the TinyTop Rust agent from GitHub release assets:
+Install the TinyTop Rust collector binary from GitHub release assets:
   ./tinytop rust install-binary
 
 Compile locally:
@@ -288,7 +288,7 @@ cmd_install_rust() {
 cmd_rust_install_binary() {
   local curl_bin
   curl_bin="$(curl_path)"
-  [[ -n "$curl_bin" ]] || die "curl is required to install the TinyTop Rust agent release binary."
+  [[ -n "$curl_bin" ]] || die "curl is required to install the TinyTop Rust collector release binary."
 
   local destination temp url
   destination="$(rust_agent_local_bin)"
@@ -296,24 +296,24 @@ cmd_rust_install_binary() {
   temp="$(mktemp)"
   mkdir -p "$(dirname "$destination")"
 
-  info "Downloading TinyTop Rust agent:"
+  info "Downloading TinyTop Rust collector binary:"
   say "  $url"
   if ! "$curl_bin" -fL "$url" -o "$temp"; then
     rm -f "$temp"
-    die "Could not download a prebuilt TinyTop Rust agent for this platform.
+    die "Could not download a prebuilt TinyTop Rust collector binary for this platform.
 Fallback: install Rust and run ./tinytop rust build"
   fi
 
   chmod 0755 "$temp"
   mv "$temp" "$destination"
-  ok "Installed TinyTop Rust agent: $destination"
+  ok "Installed TinyTop Rust collector binary: $destination"
 }
 
 cmd_rust_build() {
   require_cargo
   cd "$ROOT_DIR"
   cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent
-  ok "Built TinyTop Rust agent: $(rust_agent_target_bin)"
+  ok "Built TinyTop Rust collector binary: $(rust_agent_target_bin)"
 }
 
 cmd_rust_test() {
@@ -433,9 +433,9 @@ cmd_doctor() {
   local agent_bin
   agent_bin="$(rust_agent_exec)"
   if [[ -x "$agent_bin" ]]; then
-    status_line "Rust agent" "ok ($agent_bin)"
+    status_line "Rust collector binary" "ok ($agent_bin)"
   else
-    status_line "Rust agent" "missing (run ./tinytop rust install-binary or ./tinytop rust build)"
+    status_line "Rust collector binary" "missing (run ./tinytop rust install-binary or ./tinytop rust build)"
   fi
 
   if [[ -d "$ROOT_DIR/node_modules" ]]; then
@@ -445,9 +445,9 @@ cmd_doctor() {
   fi
 
   status_line "Dashboard URL" "$(dashboard_url)"
-  status_line "Writer URL" "$(writer_url)"
+  status_line "Collector API URL" "$(collector_url)"
   status_line "Dashboard port" "$(port_status "${PORT:-4274}")"
-  status_line "Writer port" "$(port_status "${HISTORY_WRITER_PORT:-4276}")"
+  status_line "Collector API port" "$(port_status "${HISTORY_WRITER_PORT:-4276}")"
   status_line "SQLite DB" "$(history_db_path)"
 
   if systemd_user_available; then
@@ -456,14 +456,15 @@ cmd_doctor() {
     status_line "systemd user" "unavailable"
   fi
 
-  local writer_state="not installed"
+  local collector_state="not installed"
   local dashboard_state="not installed"
   local daemon_state="not installed"
   unit_installed "tinytop.service" && daemon_state="installed"
-  unit_installed "tinytop-writer.service" && writer_state="installed"
+  unit_installed "tinytop-collector.service" && collector_state="installed"
+  unit_installed "tinytop-writer.service" && collector_state="installed (legacy writer unit name)"
   unit_installed "tinytop-dashboard.service" && dashboard_state="installed"
-  status_line "rust daemon service" "$daemon_state"
-  status_line "writer service" "$writer_state"
+  status_line "rust collector/dashboard service" "$daemon_state"
+  status_line "legacy Bun collector service" "$collector_state"
   status_line "dashboard service" "$dashboard_state"
 }
 
@@ -507,11 +508,11 @@ cmd_start() {
 cmd_start_split() {
   require_bun
   cd "$ROOT_DIR"
-  info "Starting TinyTop writer in the background."
-  bun run writer &
-  local writer_pid=$!
-  trap 'kill "$writer_pid" 2>/dev/null || true' EXIT INT TERM
-  info "Starting TinyTop dashboard with writer auto-spawn disabled."
+  info "Starting TinyTop legacy Bun collector in the background."
+  bun run collector &
+  local collector_pid=$!
+  trap 'kill "$collector_pid" 2>/dev/null || true' EXIT INT TERM
+  info "Starting TinyTop dashboard with collector auto-spawn disabled."
   TINYTOP_DISABLE_WRITER_SPAWN=1 bun run dev
 }
 
@@ -525,18 +526,18 @@ systemd_bun_exec() {
   fi
 }
 
-render_writer_unit() {
+render_bun_collector_unit() {
   local bun_exec
   bun_exec="$(systemd_bun_exec)"
   cat <<EOF
 [Unit]
-Description=TinyTop collector writer
+Description=TinyTop legacy Bun collector
 After=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=$ROOT_DIR
-ExecStart=$bun_exec run src/collector-daemon.ts
+ExecStart=$bun_exec run legacy/bun-collector.ts
 Restart=on-failure
 RestartSec=3
 
@@ -550,7 +551,7 @@ render_rust_daemon_unit() {
   agent_exec="$(rust_agent_exec)"
   cat <<EOF
 [Unit]
-Description=TinyTop Rust dashboard daemon
+Description=TinyTop Rust collector and dashboard daemon
 After=network-online.target
 
 [Service]
@@ -572,8 +573,8 @@ render_dashboard_unit() {
   cat <<EOF
 [Unit]
 Description=TinyTop dashboard
-After=network-online.target tinytop-writer.service
-Requires=tinytop-writer.service
+After=network-online.target tinytop-collector.service
+Requires=tinytop-collector.service
 
 [Service]
 Type=simple
@@ -603,8 +604,8 @@ cmd_systemd_render() {
   local mode
   mode="$(systemd_mode_from_args "$@")"
   if [[ "$mode" == "bun" ]]; then
-    say "# ~/.config/systemd/user/tinytop-writer.service"
-    render_writer_unit
+    say "# ~/.config/systemd/user/tinytop-collector.service"
+    render_bun_collector_unit
     say
     say "# ~/.config/systemd/user/tinytop-dashboard.service"
     render_dashboard_unit
@@ -622,7 +623,7 @@ ensure_rust_agent_for_systemd() {
     return 0
   fi
 
-  info "Rust agent binary is missing; building it locally."
+  info "Rust collector binary is missing; building it locally."
   cmd_rust_build
 }
 
@@ -634,11 +635,11 @@ cmd_systemd_install() {
   mkdir -p "$unit_dir"
   if [[ "$mode" == "bun" ]]; then
     require_bun
-    render_writer_unit > "$unit_dir/tinytop-writer.service"
+    render_bun_collector_unit > "$unit_dir/tinytop-collector.service"
     render_dashboard_unit > "$unit_dir/tinytop-dashboard.service"
     systemctl --user daemon-reload
-    systemctl --user enable tinytop-writer.service tinytop-dashboard.service
-    ok "Installed and enabled TinyTop Bun user services."
+    systemctl --user enable tinytop-collector.service tinytop-dashboard.service
+    ok "Installed and enabled TinyTop legacy Bun collector services."
   else
     ensure_rust_agent_for_systemd
     render_rust_daemon_unit > "$unit_dir/tinytop.service"
@@ -648,7 +649,7 @@ cmd_systemd_install() {
   fi
   if [[ " $* " == *" --now "* ]]; then
     if [[ "$mode" == "bun" ]]; then
-      systemctl --user start tinytop-writer.service tinytop-dashboard.service
+      systemctl --user start tinytop-collector.service tinytop-dashboard.service
     else
       systemctl --user start tinytop.service
     fi
@@ -660,8 +661,8 @@ cmd_systemd_install() {
 
 cmd_systemd_uninstall() {
   command -v systemctl >/dev/null 2>&1 || die "systemctl is not available."
-  systemctl --user disable --now tinytop.service tinytop-dashboard.service tinytop-writer.service 2>/dev/null || true
-  rm -f "$(unit_path tinytop.service)" "$(unit_path tinytop-dashboard.service)" "$(unit_path tinytop-writer.service)"
+  systemctl --user disable --now tinytop.service tinytop-dashboard.service tinytop-collector.service tinytop-writer.service 2>/dev/null || true
+  rm -f "$(unit_path tinytop.service)" "$(unit_path tinytop-dashboard.service)" "$(unit_path tinytop-collector.service)" "$(unit_path tinytop-writer.service)"
   systemctl --user daemon-reload
   ok "Removed TinyTop user services."
 }
@@ -673,7 +674,10 @@ systemd_action_units() {
   fi
 
   local found=0
-  if unit_installed "tinytop-writer.service"; then
+  if unit_installed "tinytop-collector.service"; then
+    printf '%s\n' "tinytop-collector.service"
+    found=1
+  elif unit_installed "tinytop-writer.service"; then
     printf '%s\n' "tinytop-writer.service"
     found=1
   fi
@@ -698,6 +702,8 @@ cmd_systemd_logs() {
   command -v journalctl >/dev/null 2>&1 || die "journalctl is not available."
   if unit_installed "tinytop.service"; then
     journalctl --user -u tinytop.service -f
+  elif unit_installed "tinytop-collector.service"; then
+    journalctl --user -u tinytop-collector.service -u tinytop-dashboard.service -f
   else
     journalctl --user -u tinytop-writer.service -u tinytop-dashboard.service -f
   fi
@@ -818,7 +824,7 @@ cmd_stats() {
 }
 
 cmd_logs() {
-  if unit_installed "tinytop.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
+  if unit_installed "tinytop.service" || unit_installed "tinytop-collector.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
     cmd_systemd_logs
   else
     say "No TinyTop systemd units installed."
@@ -827,7 +833,7 @@ cmd_logs() {
 }
 
 cmd_restart() {
-  if unit_installed "tinytop.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
+  if unit_installed "tinytop.service" || unit_installed "tinytop-collector.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
     cmd_systemd_action restart
   else
     say "No TinyTop systemd units installed. Use Ctrl-C in foreground mode, then run ./tinytop rust serve."
@@ -835,12 +841,12 @@ cmd_restart() {
 }
 
 cmd_stop() {
-  if unit_installed "tinytop.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
+  if unit_installed "tinytop.service" || unit_installed "tinytop-collector.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
     cmd_systemd_action stop
   else
     say "No TinyTop systemd units installed. Stop foreground TinyTop processes with Ctrl-C."
     if command -v pgrep >/dev/null 2>&1; then
-      pgrep -af 'src/(server|collector-daemon)\.ts' || true
+      pgrep -af '(src/server\.ts|legacy/bun-collector\.ts|src/collector-daemon\.ts)' || true
     fi
   fi
 }

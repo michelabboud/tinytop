@@ -1,4 +1,4 @@
-import { collectSnapshot, type SystemSnapshot } from "./collector";
+import { collectSnapshot, type SystemSnapshot } from "../src/collector";
 import {
   DEFAULT_HISTORY_LIMIT,
   defaultHistoryDbPath,
@@ -6,7 +6,7 @@ import {
   type HistoryQuery,
   type HistorySample,
   type HistoryStore,
-} from "./history-store";
+} from "../src/history-store";
 
 const DEFAULT_WRITER_HOST = "127.0.0.1";
 const DEFAULT_WRITER_PORT = 4276;
@@ -18,7 +18,7 @@ type SnapshotResult = {
   currentProcStatText: string;
 };
 
-type WriterHandlerOptions = {
+type CollectorHandlerOptions = {
   store: HistoryStore;
   collect?: (previousProcStatText?: string) => Promise<SnapshotResult>;
   now?: () => number;
@@ -48,7 +48,7 @@ function parseHistoryQuery(searchParams: URLSearchParams, now: () => number): Hi
   };
 }
 
-export function createWriterFetchHandler(options: WriterHandlerOptions): (request: Request) => Promise<Response> {
+export function createCollectorFetchHandler(options: CollectorHandlerOptions): (request: Request) => Promise<Response> {
   let previousProcStatText: string | undefined;
   let collectPromise: Promise<HistorySample> | null = null;
   const collect = options.collect ?? collectSnapshot;
@@ -69,7 +69,7 @@ export function createWriterFetchHandler(options: WriterHandlerOptions): (reques
     return collectPromise;
   }
 
-  return async function handleWriterRequest(request: Request): Promise<Response> {
+  return async function handleCollectorRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method !== "GET") {
@@ -122,16 +122,18 @@ export function createWriterFetchHandler(options: WriterHandlerOptions): (reques
       }
     }
 
-    return jsonError("Writer route not found", 404);
+    return jsonError("Collector route not found", 404);
   };
 }
 
-export function startCollectorDaemon(): { url: string; stop(force?: boolean): void } {
+export const createWriterFetchHandler = createCollectorFetchHandler;
+
+export function startLegacyBunCollector(): { url: string; stop(force?: boolean): void } {
   const hostname = process.env.HISTORY_WRITER_HOST ?? DEFAULT_WRITER_HOST;
   const port = Number(process.env.HISTORY_WRITER_PORT ?? DEFAULT_WRITER_PORT);
   const pollMs = Number(process.env.HISTORY_POLL_MS ?? DEFAULT_POLL_MS);
   const store = openHistoryStore(defaultHistoryDbPath());
-  const fetch = createWriterFetchHandler({ store });
+  const fetch = createCollectorFetchHandler({ store });
 
   const server = Bun.serve({
     hostname,
@@ -151,7 +153,7 @@ export function startCollectorDaemon(): { url: string; stop(force?: boolean): vo
     console.error(error instanceof Error ? error.message : "initial collection failed");
   });
 
-  console.log(`TinyTop writer listening on ${server.url}`);
+  console.log(`TinyTop legacy Bun collector listening on ${server.url}`);
   console.log(`History database: ${defaultHistoryDbPath()}`);
 
   return {
@@ -163,6 +165,8 @@ export function startCollectorDaemon(): { url: string; stop(force?: boolean): vo
     },
   };
 }
+
+export const startCollectorDaemon = startLegacyBunCollector;
 
 async function runCheck(): Promise<void> {
   const store = openHistoryStore(":memory:");
@@ -186,10 +190,10 @@ async function runCheck(): Promise<void> {
   );
 }
 
-if (process.argv[1]?.endsWith("src/collector-daemon.ts")) {
+if (process.argv[1]?.endsWith("legacy/bun-collector.ts")) {
   if (process.argv.includes("--check")) {
     await runCheck();
   } else {
-    startCollectorDaemon();
+    startLegacyBunCollector();
   }
 }

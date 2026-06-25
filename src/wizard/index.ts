@@ -5,6 +5,7 @@ import { resolveHistoryDbPath } from "../ops";
 
 export type WizardMode = "foreground" | "split" | "systemd" | "skip";
 export type RustBinarySource = "release" | "compile";
+export type CollectorRuntime = "rust" | "bun";
 export type WizardCommand = string[];
 
 export type CommandResult = {
@@ -27,11 +28,12 @@ export type WizardResult = {
 
 export type SetupSummary = {
   dashboardUrl: string;
-  writerUrl: string;
+  collectorUrl: string;
   dbPath: string;
   mode: WizardMode;
   runChecks: boolean;
   startServices: boolean;
+  collectorRuntime: CollectorRuntime;
   rustBinarySource: RustBinarySource;
 };
 
@@ -40,17 +42,19 @@ type ParsedArgs = {
   runChecks: boolean;
   mode: WizardMode;
   startServices: boolean;
+  collectorRuntime: CollectorRuntime;
   rustBinarySource: RustBinarySource;
 };
 
 const MODES = new Set<WizardMode>(["foreground", "split", "systemd", "skip"]);
 const RUST_BINARY_SOURCES = new Set<RustBinarySource>(["release", "compile"]);
+const COLLECTOR_RUNTIMES = new Set<CollectorRuntime>(["rust", "bun"]);
 
 function dashboardUrl(env: Record<string, string | undefined>): string {
   return `http://${env.HOST ?? "127.0.0.1"}:${env.PORT ?? "4274"}`;
 }
 
-function writerUrl(env: Record<string, string | undefined>): string {
+function collectorUrl(env: Record<string, string | undefined>): string {
   return `http://${env.HISTORY_WRITER_HOST ?? "127.0.0.1"}:${env.HISTORY_WRITER_PORT ?? "4276"}`;
 }
 
@@ -60,6 +64,7 @@ function parseArgs(args: string[]): ParsedArgs {
     runChecks: true,
     mode: "foreground",
     startServices: false,
+    collectorRuntime: "rust",
     rustBinarySource: "release",
   };
 
@@ -70,6 +75,14 @@ function parseArgs(args: string[]): ParsedArgs {
     else if (arg === "--skip-checks") parsed.runChecks = false;
     else if (arg === "--start-services") parsed.startServices = true;
     else if (arg === "--skip-start") parsed.startServices = false;
+    else if (arg === "--collector") {
+      const value = args[index + 1] as CollectorRuntime | undefined;
+      if (!value || !COLLECTOR_RUNTIMES.has(value)) {
+        throw new Error(`Invalid --collector value: ${value ?? "<missing>"}`);
+      }
+      parsed.collectorRuntime = value;
+      index += 1;
+    }
     else if (arg === "--rust-binary-source") {
       const value = args[index + 1] as RustBinarySource | undefined;
       if (!value || !RUST_BINARY_SOURCES.has(value)) {
@@ -94,16 +107,22 @@ function parseArgs(args: string[]): ParsedArgs {
 }
 
 export function buildSetupSummary(summary: SetupSummary): string {
-  return [
+  const lines = [
     "TinyTop setup wizard",
     `Runtime mode: ${summary.mode}`,
+    `Collector runtime: ${summary.collectorRuntime === "rust" ? "Rust" : "Legacy Bun"}`,
     `Dashboard: ${summary.dashboardUrl}`,
-    `Writer: ${summary.writerUrl}`,
+    `Collector API: ${summary.collectorUrl}`,
     `SQLite: ${summary.dbPath}`,
     `Verification: ${summary.runChecks ? "bun run check" : "skipped"}`,
-    `Rust agent: ${summary.rustBinarySource === "release" ? "GitHub release binary" : "local Cargo compile"}`,
     `Start services: ${summary.startServices ? "yes" : "no"}`,
-  ].join("\n");
+  ];
+
+  if (summary.collectorRuntime === "rust") {
+    lines.splice(7, 0, `Rust collector binary: ${summary.rustBinarySource === "release" ? "GitHub release binary" : "local Cargo compile"}`);
+  }
+
+  return lines.join("\n");
 }
 
 async function defaultRunCommand(command: WizardCommand, options: { cwd: string; env: Record<string, string | undefined> }): Promise<CommandResult> {
@@ -121,6 +140,13 @@ async function defaultRunCommand(command: WizardCommand, options: { cwd: string;
 async function promptForInteractiveArgs(parsed: ParsedArgs, out: (line: string) => void): Promise<ParsedArgs> {
   const rl = createInterface({ input: nodeStdin, output: nodeStdout });
   try {
+    out("Choose collector runtime: rust collector or bun collector");
+    const collectorAnswer = (await rl.question(`Collector runtime [${parsed.collectorRuntime}]: `)).trim();
+    if (collectorAnswer) {
+      if (!COLLECTOR_RUNTIMES.has(collectorAnswer as CollectorRuntime)) throw new Error(`Invalid collector runtime: ${collectorAnswer}`);
+      parsed.collectorRuntime = collectorAnswer as CollectorRuntime;
+    }
+
     out("Choose runtime mode: foreground, split, systemd, skip");
     const modeAnswer = (await rl.question(`Runtime mode [${parsed.mode}]: `)).trim();
     if (modeAnswer) {
@@ -131,14 +157,17 @@ async function promptForInteractiveArgs(parsed: ParsedArgs, out: (line: string) 
     const checksAnswer = (await rl.question(`Run verification with bun run check? [Y/n]: `)).trim().toLowerCase();
     parsed.runChecks = checksAnswer === "" || checksAnswer === "y" || checksAnswer === "yes";
 
-    if (parsed.mode === "systemd") {
-      out("Choose Rust agent install method: release or compile");
-      const sourceAnswer = (await rl.question(`Rust agent [${parsed.rustBinarySource}]: `)).trim();
+    if (parsed.mode === "systemd" && parsed.collectorRuntime === "rust") {
+      out("Choose Rust collector binary install method: release or compile");
+      const sourceAnswer = (await rl.question(`Rust collector binary [${parsed.rustBinarySource}]: `)).trim();
       if (sourceAnswer) {
-        if (!RUST_BINARY_SOURCES.has(sourceAnswer as RustBinarySource)) throw new Error(`Invalid Rust agent install method: ${sourceAnswer}`);
+        if (!RUST_BINARY_SOURCES.has(sourceAnswer as RustBinarySource)) throw new Error(`Invalid Rust collector binary install method: ${sourceAnswer}`);
         parsed.rustBinarySource = sourceAnswer as RustBinarySource;
       }
 
+      const startAnswer = (await rl.question(`Start systemd services now? [y/N]: `)).trim().toLowerCase();
+      parsed.startServices = startAnswer === "y" || startAnswer === "yes";
+    } else if (parsed.mode === "systemd") {
       const startAnswer = (await rl.question(`Start systemd services now? [y/N]: `)).trim().toLowerCase();
       parsed.startServices = startAnswer === "y" || startAnswer === "yes";
     }
@@ -196,11 +225,12 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardResu
   out(
     buildSetupSummary({
       dashboardUrl: dashboardUrl(env),
-      writerUrl: writerUrl(env),
+      collectorUrl: collectorUrl(env),
       dbPath: resolveHistoryDbPath({ env }),
       mode: parsed.mode,
       runChecks: parsed.runChecks,
       startServices: parsed.startServices,
+      collectorRuntime: parsed.collectorRuntime,
       rustBinarySource: parsed.rustBinarySource,
     }),
   );
@@ -222,14 +252,19 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardResu
   }
 
   if (parsed.mode === "systemd") {
-    const rustSetupCommand: WizardCommand =
-      parsed.rustBinarySource === "release" ? ["./tinytop", "rust", "install-binary"] : ["./tinytop", "rust", "build"];
-    if (!(await runStep("Rust agent", rustSetupCommand, runCommand, cwd, env, out, err))) {
+    if (parsed.collectorRuntime === "rust") {
+      const rustSetupCommand: WizardCommand =
+        parsed.rustBinarySource === "release" ? ["./tinytop", "rust", "install-binary"] : ["./tinytop", "rust", "build"];
+      if (!(await runStep("Rust collector", rustSetupCommand, runCommand, cwd, env, out, err))) {
+        return { exitCode: 1 };
+      }
+      if (!(await runStep("systemd install", ["./tinytop", "systemd", "install", "--rust"], runCommand, cwd, env, out, err))) {
+        return { exitCode: 1 };
+      }
+    } else if (!(await runStep("Legacy Bun collector", ["./tinytop", "systemd", "install", "--bun"], runCommand, cwd, env, out, err))) {
       return { exitCode: 1 };
     }
-    if (!(await runStep("systemd install", ["./tinytop", "systemd", "install", "--rust"], runCommand, cwd, env, out, err))) {
-      return { exitCode: 1 };
-    }
+
     if (parsed.startServices) {
       if (!(await runStep("systemd start", ["./tinytop", "systemd", "start"], runCommand, cwd, env, out, err))) {
         return { exitCode: 1 };
@@ -238,9 +273,18 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardResu
       out("Start later with: ./tinytop systemd start");
     }
   } else if (parsed.mode === "split") {
-    out("Start split mode with: ./tinytop start:split");
+    if (parsed.collectorRuntime === "rust") {
+      out("Start Rust collector API with: ./tinytop rust serve-writer");
+      out("Start dashboard with: TINYTOP_DISABLE_WRITER_SPAWN=1 bun run dev");
+    } else {
+      out("Start split legacy Bun collector mode with: ./tinytop start:split");
+    }
   } else if (parsed.mode === "foreground") {
-    out("Start foreground mode with: ./tinytop start");
+    if (parsed.collectorRuntime === "rust") {
+      out("Start foreground Rust collector with: ./tinytop rust serve");
+    } else {
+      out("Start foreground legacy Bun collector mode with: ./tinytop start");
+    }
   } else {
     out("Runtime start skipped.");
   }

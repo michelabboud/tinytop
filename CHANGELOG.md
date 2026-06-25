@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.16 - 2026-06-25
+
+- Moved the legacy Bun collector daemon from `src/collector-daemon.ts` to `legacy/bun-collector.ts`.
+- Added `bun run collector` and `bun run collector:check`, keeping writer script aliases for compatibility.
+- Updated the setup wizard to ask for `rust` or `bun` collector runtime; Rust means the single collector/dashboard daemon, while Bun means the legacy split collector/dashboard path.
+- Renamed new legacy Bun systemd rendering/install output to `tinytop-collector.service`, while keeping cleanup and service actions aware of the older `tinytop-writer.service` name.
+- Updated command-center, wizard, architecture, install, API, operations, and README wording from writer-first language to collector-first language.
+- Added regression tests for the legacy collector path, setup wizard collector selection, and systemd unit rendering.
+
 ## 0.1.15 - 2026-06-25
 
 - Added `HANDOFF.md` as the current TinyTop restart point.

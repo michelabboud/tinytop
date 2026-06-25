@@ -14,20 +14,24 @@ describe("TinyTop setup wizard", () => {
   test("builds a setup summary with ports, DB path, and runtime mode", () => {
     const summary = buildSetupSummary({
       dashboardUrl: "http://127.0.0.1:4274",
-      writerUrl: "http://127.0.0.1:4276",
+      collectorUrl: "http://127.0.0.1:4276",
       dbPath: "/home/demo/.local/share/tinytop/history.sqlite",
       mode: "systemd",
       runChecks: true,
       startServices: true,
+      collectorRuntime: "rust",
       rustBinarySource: "release",
     });
 
     expect(summary).toContain("Runtime mode: systemd");
+    expect(summary).toContain("Collector runtime: Rust");
     expect(summary).toContain("Dashboard: http://127.0.0.1:4274");
-    expect(summary).toContain("Writer: http://127.0.0.1:4276");
+    expect(summary).toContain("Collector API: http://127.0.0.1:4276");
+    expect(summary).not.toContain("Writer:");
     expect(summary).toContain("SQLite: /home/demo/.local/share/tinytop/history.sqlite");
     expect(summary).toContain("Verification: bun run check");
-    expect(summary).toContain("Rust agent: GitHub release binary");
+    expect(summary).toContain("Rust collector binary: GitHub release binary");
+    expect(summary).not.toContain("Rust agent:");
   });
 
   test("noninteractive setup skips dependency install when node_modules exists", async () => {
@@ -53,7 +57,8 @@ describe("TinyTop setup wizard", () => {
       expect(result.exitCode).toBe(0);
       expect(commands).toEqual([]);
       expect(output.join("\n")).toContain("TinyTop setup wizard");
-      expect(output.join("\n")).toContain("./tinytop start");
+      expect(output.join("\n")).toContain("Collector runtime: Rust");
+      expect(output.join("\n")).toContain("./tinytop rust serve");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -95,7 +100,7 @@ describe("TinyTop setup wizard", () => {
     try {
       const result = await runWizard({
         cwd: repo,
-        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--rust-binary-source", "compile", "--start-services"],
+        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--collector", "rust", "--rust-binary-source", "compile", "--start-services"],
         stdout: () => {},
         stderr: () => {},
         runCommand: async (command) => {
@@ -126,7 +131,7 @@ describe("TinyTop setup wizard", () => {
     try {
       const result = await runWizard({
         cwd: repo,
-        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--rust-binary-source", "release"],
+        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--collector", "rust", "--rust-binary-source", "release"],
         stdout: (line) => output.push(line),
         stderr: (line) => output.push(line),
         runCommand: async (command) => {
@@ -143,7 +148,39 @@ describe("TinyTop setup wizard", () => {
         ["./tinytop", "rust", "install-binary"],
         ["./tinytop", "systemd", "install", "--rust"],
       ]);
-      expect(output.join("\n")).toContain("Rust agent: GitHub release binary");
+      expect(output.join("\n")).toContain("Rust collector binary: GitHub release binary");
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("systemd mode can install the legacy Bun collector instead of the Rust collector", async () => {
+    const repo = tempRepo(true);
+    const commands: WizardCommand[] = [];
+    const output: string[] = [];
+
+    try {
+      const result = await runWizard({
+        cwd: repo,
+        args: ["--non-interactive", "--skip-checks", "--mode", "systemd", "--collector", "bun", "--start-services"],
+        stdout: (line) => output.push(line),
+        stderr: (line) => output.push(line),
+        runCommand: async (command) => {
+          commands.push(command);
+          return { ok: true, code: 0 };
+        },
+        env: {
+          HOME: "/home/demo",
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(commands).toEqual([
+        ["./tinytop", "systemd", "install", "--bun"],
+        ["./tinytop", "systemd", "start"],
+      ]);
+      expect(output.join("\n")).toContain("Collector runtime: Legacy Bun");
+      expect(output.join("\n")).not.toContain("Rust collector binary: GitHub release binary");
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
