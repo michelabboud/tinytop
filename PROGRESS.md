@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.14`
+- Version: `0.1.15`
 - Date: 2026-06-25
-- Status: Local dashboard with SQLite-backed recent history, Rust single-daemon persistent runtime, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, and Bun development/fallback runtime.
+- Status: Local dashboard with SQLite-backed recent history, Rust single-daemon persistent runtime, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -142,6 +142,13 @@
 - [x] Added a confirmed `Clear` control for the browser-local Live History session buffer.
 - [x] Added regression coverage for the no-native-dialog policy.
 - [x] Documented the dialog policy and rendered verification.
+
+### 0.1.15 - Handoff Checkpoint
+
+- [x] Added root `HANDOFF.md`.
+- [x] Captured the current repo, tag, remote, runtime, and health state.
+- [x] Confirmed the running daemon is the Rust collector path.
+- [x] Recorded recent verification evidence and next useful work.
 
 ## Known Limitations
 

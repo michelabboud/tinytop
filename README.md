@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.14`
+- Version: `0.1.15`
 - Runtime: Rust daemon for persistent installs; Bun remains available for development and fallback
 - Public UI: `http://127.0.0.1:4274`
 - Legacy writer API: `http://127.0.0.1:4276`
@@ -198,6 +198,7 @@ Implementation notes:
 
 | File | Purpose |
 | --- | --- |
+| [HANDOFF.md](HANDOFF.md) | Current restart point, daemon state, verification evidence, and next work |
 | [INSTALL.md](INSTALL.md) | Prerequisites, setup, environment variables, running, upgrade, uninstall |
 | [GUIDE.md](GUIDE.md) | User guide for the dashboard UI, graph modes, timeline, refresh behavior |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, data flow, modules, SQLite schema, safety boundaries |

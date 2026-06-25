@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.15 - 2026-06-25
+
+- Added `HANDOFF.md` as the current TinyTop restart point.
+- Recorded the live Rust daemon state, Rust collector confirmation, recent verification evidence, and next useful work.
+- Bumped the docs-only checkpoint version so the handoff can be committed, tagged, and pulled cleanly.
+
 ## 0.1.14 - 2026-06-25
 
 - Replaced the alert-named inline fetch-error surface with `status-message` naming.
