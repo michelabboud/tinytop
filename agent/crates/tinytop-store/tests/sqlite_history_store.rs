@@ -1,4 +1,4 @@
-use tinytop_store::{HistoryQuery, SqliteHistoryStore};
+use tinytop_store::{DashboardSettings, HistoryQuery, SqliteHistoryStore};
 use tinytop_types::{
     CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
     PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
@@ -163,4 +163,61 @@ async fn sqlite_store_upserts_duplicate_sample_timestamps() {
 
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].snapshot.cpu.usage_percent, 99.0);
+}
+
+#[tokio::test]
+async fn sqlite_store_persists_dashboard_settings() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time should be after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("tinytop-settings-{stamp}"));
+    std::fs::create_dir_all(&dir).expect("temp dir should be created");
+    let db_path = dir.join("history.sqlite");
+    let database_url = format!("sqlite://{}", db_path.display());
+
+    let store = SqliteHistoryStore::connect(&database_url)
+        .await
+        .expect("store should connect");
+
+    let defaults = store
+        .get_settings()
+        .await
+        .expect("default dashboard settings should be readable");
+    assert_eq!(defaults.default_theme, "midnight");
+    assert_eq!(defaults.default_graph_mode, "line");
+    assert_eq!(defaults.default_history_window, "live");
+    assert_eq!(defaults.poll_interval_ms, 1_500);
+
+    let settings = DashboardSettings {
+        default_theme: "aurora".to_string(),
+        default_graph_mode: "heatmap".to_string(),
+        default_history_window: "1h".to_string(),
+        poll_interval_ms: 3_000,
+        retention_hours: 96,
+        top_process_count: 12,
+        ..DashboardSettings::default()
+    };
+    store
+        .put_settings(&settings)
+        .await
+        .expect("settings should persist");
+
+    drop(store);
+    let reopened = SqliteHistoryStore::connect(&database_url)
+        .await
+        .expect("store should reopen");
+    let persisted = reopened
+        .get_settings()
+        .await
+        .expect("settings should be readable after reconnect");
+
+    assert_eq!(persisted.default_theme, "aurora");
+    assert_eq!(persisted.default_graph_mode, "heatmap");
+    assert_eq!(persisted.default_history_window, "1h");
+    assert_eq!(persisted.poll_interval_ms, 3_000);
+    assert_eq!(persisted.retention_hours, 96);
+    assert_eq!(persisted.top_process_count, 12);
+
+    std::fs::remove_dir_all(dir).ok();
 }

@@ -6,12 +6,14 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.21`
+- Version: `0.1.22`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
 - SQLite retention: stored until manual archive/reset; automatic retention is not implemented yet
+- Runtime identity: `./tinytop status` and `GET /api/version`
+- Settings: browser-local display preferences plus SQLite-backed daemon defaults at `GET`/`PUT /api/settings`
 - Network exposure: loopback only by default
 
 ## Install And Run
@@ -101,10 +103,16 @@ For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day u
    ./tinytop setup
    ```
 
-8. Optional foreground Bun development runtime:
+8. Optional foreground runtime. The command center auto-selects the Rust collector/dashboard daemon when available and falls back to legacy Bun only when Rust is unavailable:
 
    ```bash
    ./tinytop start
+   ```
+
+   Force the legacy Bun dashboard when needed:
+
+   ```bash
+   TINYTOP_RUNTIME=legacy ./tinytop start
    ```
 
 9. Useful maintenance commands:
@@ -128,6 +136,7 @@ The root `./tinytop` command is the supported operator entrypoint:
 ./tinytop rust build
 ./tinytop install-bun --print-only
 ./tinytop setup
+./tinytop start
 ./tinytop systemd install --rust
 ./tinytop db stats
 ./tinytop db backup
@@ -154,8 +163,10 @@ For persistent background collection, install user-space systemd services:
 - SQLite-backed recent history so browser refreshes refill History instead of starting empty
 - Timestamp-based timeline with Live, 15m, 1h, 6h, and 24h range presets
 - Timeline scrubber with selected datetime context, compact metric values, and a return-to-live control
+- Visible collector/dashboard runtime and version metadata in the sidebar
 - In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
 - Browser-local display preferences for theme, graph mode, and selected history range
+- Settings panel with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, and a no-Bun systemd path
 
 ## Common Commands
@@ -190,7 +201,14 @@ cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve
 ```
 
-The Rust daemon is the collector and dashboard in one process on `127.0.0.1:4274`. The older Bun dashboard/collector split is still available with `./tinytop start`, `./tinytop start:split`, and `./tinytop systemd install --bun`.
+The Rust daemon is the collector and dashboard in one process on `127.0.0.1:4274`. The older Bun dashboard/collector split is still available with `TINYTOP_RUNTIME=legacy ./tinytop start`, `./tinytop start:split`, and `./tinytop systemd install --bun`.
+
+Use these checks to confirm which runtime is serving the dashboard:
+
+```bash
+./tinytop status
+curl -fsS http://127.0.0.1:4274/api/version
+```
 
 Implementation notes:
 
@@ -217,7 +235,8 @@ Implementation notes:
 | [docs/reports/2026-06-25-documentation-sweep.md](docs/reports/2026-06-25-documentation-sweep.md) | Documentation sweep for the embedded Rust collector/dashboard asset move |
 | [docs/reports/2026-06-26-history-retention-docs.md](docs/reports/2026-06-26-history-retention-docs.md) | Documentation sweep clarifying current SQLite retention and UI history-window behavior |
 | [docs/reports/2026-06-26-runtime-specific-verification.md](docs/reports/2026-06-26-runtime-specific-verification.md) | Verification split for Rust versus legacy Bun setup choices |
-| [docs/reports/2026-06-26-dashboard-timeline-settings.md](docs/reports/2026-06-26-dashboard-timeline-settings.md) | Timestamp timeline implementation, smoke test evidence, and settings roadmap |
+| [docs/reports/2026-06-26-dashboard-timeline-settings.md](docs/reports/2026-06-26-dashboard-timeline-settings.md) | Timestamp timeline implementation, settings implementation, and smoke test evidence |
+| [docs/reports/2026-06-26-runtime-auto-detect-version.md](docs/reports/2026-06-26-runtime-auto-detect-version.md) | Runtime auto-detection and API/sidebar version identity |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
@@ -236,6 +255,7 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | `HISTORY_WRITER_PORT` | `4276` | Legacy collector port; env name retained for compatibility |
 | `HISTORY_WRITER_URL` | unset | Existing collector URL; when set, dashboard does not spawn a collector |
 | `HISTORY_POLL_MS` | `1500` | Collector sampling interval |
+| `TINYTOP_RUNTIME` | `auto` | Runtime selection for `./tinytop start`: `auto`, `rust`, `legacy`, or `bun` |
 | `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
 | `TINYTOP_PUBLIC_DIR` | unset | Optional development override for Rust dashboard assets; unset uses embedded assets |
@@ -252,6 +272,8 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API.
 
 TinyTop currently has no automatic SQLite retention job. Raw samples stay in `metric_samples` until you manually archive or reset the database with the command-center DB tools.
+
+Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, thresholds, and enabled sections. Active theme, graph mode, and history range still stay in this browser's `localStorage`.
 
 The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. The range presets are Live, 15m, 1h, 6h, and 24h. Large responses are paged with `/api/history?since_ms=...&until_ms=...`, deduplicated by timestamp, and downsampled for browser rendering when needed. These query windows do not delete older SQLite rows.
 

@@ -1,4 +1,7 @@
-use std::str::FromStr;
+use std::{
+    str::FromStr,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -20,6 +23,106 @@ pub struct StoreStats {
     pub sample_count: i64,
     pub oldest_captured_at_ms: Option<i64>,
     pub newest_captured_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardSettings {
+    pub default_theme: String,
+    pub default_graph_mode: String,
+    pub poll_interval_ms: i64,
+    pub default_history_window: String,
+    pub retention_hours: i64,
+    pub rollup_retention_days: i64,
+    pub top_process_count: i64,
+    pub redaction_default: bool,
+    pub thresholds: DashboardThresholds,
+    pub enabled_sections: DashboardSections,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardThresholds {
+    pub cpu_warn: i64,
+    pub memory_warn: i64,
+    pub disk_warn: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DashboardSections {
+    pub overview: bool,
+    pub history: bool,
+    pub filesystem: bool,
+    pub pressure: bool,
+    pub processes: bool,
+}
+
+impl Default for DashboardSettings {
+    fn default() -> Self {
+        Self {
+            default_theme: "midnight".to_string(),
+            default_graph_mode: "line".to_string(),
+            poll_interval_ms: 1_500,
+            default_history_window: "live".to_string(),
+            retention_hours: 72,
+            rollup_retention_days: 30,
+            top_process_count: 8,
+            redaction_default: false,
+            thresholds: DashboardThresholds::default(),
+            enabled_sections: DashboardSections::default(),
+        }
+    }
+}
+
+impl Default for DashboardThresholds {
+    fn default() -> Self {
+        Self {
+            cpu_warn: 80,
+            memory_warn: 85,
+            disk_warn: 85,
+        }
+    }
+}
+
+impl Default for DashboardSections {
+    fn default() -> Self {
+        Self {
+            overview: true,
+            history: true,
+            filesystem: true,
+            pressure: true,
+            processes: true,
+        }
+    }
+}
+
+impl DashboardSettings {
+    pub fn validate(&self) -> Result<(), StoreError> {
+        validate_one_of(
+            "defaultTheme",
+            &self.default_theme,
+            &["midnight", "matrix", "aurora", "solar", "ember"],
+        )?;
+        validate_one_of(
+            "defaultGraphMode",
+            &self.default_graph_mode,
+            &["line", "area", "bar", "heatmap", "treemap"],
+        )?;
+        validate_one_of(
+            "defaultHistoryWindow",
+            &self.default_history_window,
+            &["live", "15m", "1h", "6h", "24h"],
+        )?;
+        validate_range("pollIntervalMs", self.poll_interval_ms, 250, 60_000)?;
+        validate_range("retentionHours", self.retention_hours, 1, 8_760)?;
+        validate_range("rollupRetentionDays", self.rollup_retention_days, 1, 366)?;
+        validate_range("topProcessCount", self.top_process_count, 1, 50)?;
+        validate_range("thresholds.cpuWarn", self.thresholds.cpu_warn, 0, 100)?;
+        validate_range("thresholds.memoryWarn", self.thresholds.memory_warn, 0, 100)?;
+        validate_range("thresholds.diskWarn", self.thresholds.disk_warn, 0, 100)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -44,6 +147,50 @@ impl SqliteHistoryStore {
         let store = Self { pool };
         store.apply_schema().await?;
         Ok(store)
+    }
+
+    pub async fn get_settings(&self) -> Result<DashboardSettings, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT value_json
+            FROM app_settings
+            WHERE setting_key = 'dashboard'
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some(row) = row else {
+            return Ok(DashboardSettings::default());
+        };
+
+        let value_json = row.try_get::<String, _>("value_json")?;
+        let settings: DashboardSettings = serde_json::from_str(&value_json)?;
+        settings.validate()?;
+        Ok(settings)
+    }
+
+    pub async fn put_settings(
+        &self,
+        settings: &DashboardSettings,
+    ) -> Result<DashboardSettings, StoreError> {
+        settings.validate()?;
+        let value_json = serde_json::to_string(settings)?;
+        sqlx::query(
+            r#"
+            INSERT INTO app_settings (setting_key, value_json, updated_at_ms)
+            VALUES ('dashboard', ?, ?)
+            ON CONFLICT(setting_key) DO UPDATE SET
+              value_json = excluded.value_json,
+              updated_at_ms = excluded.updated_at_ms
+            "#,
+        )
+        .bind(value_json)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+
+        Ok(settings.clone())
     }
 
     pub async fn insert_snapshot(
@@ -271,6 +418,18 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS app_settings (
+              setting_key TEXT PRIMARY KEY,
+              value_json TEXT NOT NULL,
+              updated_at_ms INTEGER NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }
@@ -280,6 +439,7 @@ pub enum StoreError {
     Sqlx(sqlx::Error),
     Json(serde_json::Error),
     IntegerOverflow { field: &'static str },
+    Validation(String),
 }
 
 impl std::fmt::Display for StoreError {
@@ -290,6 +450,7 @@ impl std::fmt::Display for StoreError {
             Self::IntegerOverflow { field } => {
                 write!(formatter, "{field} does not fit in SQLite INTEGER")
             }
+            Self::Validation(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -299,7 +460,7 @@ impl std::error::Error for StoreError {
         match self {
             Self::Sqlx(error) => Some(error),
             Self::Json(error) => Some(error),
-            Self::IntegerOverflow { .. } => None,
+            Self::IntegerOverflow { .. } | Self::Validation(_) => None,
         }
     }
 }
@@ -330,6 +491,33 @@ fn to_i64(value: impl TryInto<i64>, field: &'static str) -> Result<i64, StoreErr
     value
         .try_into()
         .map_err(|_| StoreError::IntegerOverflow { field })
+}
+
+fn now_ms() -> i64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    millis.min(i64::MAX as u128) as i64
+}
+
+fn validate_one_of(field: &str, value: &str, allowed: &[&str]) -> Result<(), StoreError> {
+    if allowed.contains(&value) {
+        return Ok(());
+    }
+    Err(StoreError::Validation(format!(
+        "{field} must be one of {}",
+        allowed.join(", ")
+    )))
+}
+
+fn validate_range(field: &str, value: i64, min: i64, max: i64) -> Result<(), StoreError> {
+    if (min..=max).contains(&value) {
+        return Ok(());
+    }
+    Err(StoreError::Validation(format!(
+        "{field} must be between {min} and {max}"
+    )))
 }
 
 fn load_percent(snapshot: &SystemSnapshot) -> f64 {

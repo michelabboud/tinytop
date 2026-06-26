@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
@@ -125,5 +126,122 @@ describe("tinytop command center", () => {
     expect(result.stdout).toContain("run legacy/bun-collector.ts");
     expect(result.stdout).toContain("Description=TinyTop legacy Bun collector");
     expect(result.stdout).not.toContain("tinytop-agent serve");
+  });
+
+  test("systemd render prefers the current repo Rust binary over an installed local binary", async () => {
+    const targetPath = join(repoRoot, "agent/target/release/tinytop-agent");
+    if (!existsSync(targetPath)) return;
+
+    const home = mkdtempSync(join(tmpdir(), "tinytop-home-"));
+    const localBinDir = join(home, ".local/bin");
+    mkdirSync(localBinDir, { recursive: true });
+    const localPath = join(localBinDir, "tinytop-agent");
+    writeFileSync(localPath, "#!/usr/bin/env bash\nprintf 'stale-local-agent\\n'\n");
+    chmodSync(localPath, 0o755);
+
+    const result = await runTinytop(["systemd", "render"], {
+      HOME: home,
+      PATH: "/usr/bin:/bin",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`ExecStart=${targetPath} serve`);
+    expect(result.stdout).not.toContain(localPath);
+  });
+
+  test("start auto-selects the Rust collector/dashboard when an agent binary is available", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
+    const agentPath = join(dir, "tinytop-agent");
+    writeFileSync(agentPath, "#!/usr/bin/env bash\nprintf 'agent:%s\\n' \"$*\"\n");
+    chmodSync(agentPath, 0o755);
+
+    const result = await runTinytop(["start"], {
+      PATH: "/usr/bin:/bin",
+      TINYTOP_AGENT_BIN: agentPath,
+      TINYTOP_RUNTIME: "auto",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Auto-selected Rust collector/dashboard daemon");
+    expect(result.stdout).toContain("agent:serve");
+  });
+
+  test("start honors the legacy Bun runtime override", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
+    const bunPath = join(dir, "bun");
+    writeFileSync(bunPath, "#!/usr/bin/env bash\nprintf 'bun:%s\\n' \"$*\"\n");
+    chmodSync(bunPath, 0o755);
+
+    const result = await runTinytop(["start"], {
+      PATH: `${dir}:/usr/bin:/bin`,
+      TINYTOP_RUNTIME: "legacy",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Auto-selected legacy Bun dashboard");
+    expect(result.stdout).toContain("bun:run dev");
+  });
+
+  test("start honors bun as an alias for the legacy runtime override", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
+    const bunPath = join(dir, "bun");
+    writeFileSync(bunPath, "#!/usr/bin/env bash\nprintf 'bun:%s\\n' \"$*\"\n");
+    chmodSync(bunPath, 0o755);
+
+    const result = await runTinytop(["start"], {
+      PATH: `${dir}:/usr/bin:/bin`,
+      TINYTOP_RUNTIME: "bun",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Auto-selected legacy Bun dashboard");
+    expect(result.stdout).toContain("bun:run dev");
+  });
+
+  test("status reports the version endpoint when a daemon is running", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
+    const curlPath = join(dir, "curl");
+    writeFileSync(
+      curlPath,
+      [
+        "#!/usr/bin/env bash",
+        "case \"$*\" in",
+        "  */api/version*) printf '%s\\n' '{\"version\":\"9.9.9\",\"runtime\":\"rust\",\"component\":\"collector-dashboard-daemon\",\"dashboard\":\"embedded\"}' ;;",
+        "  *) exit 22 ;;",
+        "esac",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(curlPath, 0o755);
+
+    const result = await runTinytop(["status"], {
+      PATH: `${dir}:/usr/bin:/bin`,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Running daemon: rust collector-dashboard-daemon v9.9.9 (embedded dashboard)");
+  });
+
+  test("stop does not kill unrelated installed tinytop-agent processes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
+    const pgrepPath = join(dir, "pgrep");
+    writeFileSync(
+      pgrepPath,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' '999999 /home/demo/.local/bin/tinytop-agent serve'",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(pgrepPath, 0o755);
+
+    const result = await runTinytop(["stop"], {
+      PATH: `${dir}:/usr/bin:/bin`,
+      XDG_RUNTIME_DIR: mkdtempSync(join(tmpdir(), "tinytop-runtime-dir-")),
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("no foreground TinyTop runtime was detected");
+    expect(result.stdout).not.toContain("Stopping foreground TinyTop runtime");
   });
 });

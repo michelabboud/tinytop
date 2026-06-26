@@ -32,4 +32,10 @@ describe("dashboard timestamp timeline", () => {
     expect(app).toContain("readStoredValue(STORAGE_KEYS.historyWindow");
     expect(app).toContain("storeValue(STORAGE_KEYS.historyWindow");
   });
+
+  test("shows collector/dashboard version metadata", () => {
+    expect(html).toContain('id="daemon-version"');
+    expect(app).toContain('fetch("/api/version"');
+    expect(app).toContain("renderVersion");
+  });
 });

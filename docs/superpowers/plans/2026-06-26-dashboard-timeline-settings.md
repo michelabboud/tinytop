@@ -29,9 +29,9 @@
 - Mirror changed dashboard files into `legacy/dashboard/`.
 - Create or modify `tests/dashboard-timeline.test.ts`: static behavior tests for timestamp timeline controls and API-compatible history pagination.
 - Modify `tests/dashboard-assets.test.ts`: keep parity coverage intact.
-- Later modify `agent/crates/tinytop-store/src/lib.rs`: `app_settings` schema and typed accessors.
-- Later modify `agent/crates/tinytop-agent/src/writer.rs`: `GET /api/settings` and `PUT /api/settings`.
-- Later create Rust store/API tests for settings persistence and validation.
+- Modify `agent/crates/tinytop-store/src/lib.rs`: `app_settings` schema and typed accessors.
+- Modify `agent/crates/tinytop-agent/src/writer.rs`: `GET /api/settings` and `PUT /api/settings`.
+- Create Rust store/API tests for settings persistence and validation.
 - Modify docs and `VERSION` at each completed release checkpoint.
 
 ---
@@ -217,11 +217,11 @@ Create `docs/reports/2026-06-26-dashboard-timeline-settings.md` with the focused
 - Produces Rust methods: `get_settings()`, `put_settings(settings)`, and typed validation for daemon defaults.
 - Produces HTTP endpoints: `GET /api/settings` and `PUT /api/settings`.
 
-- [ ] **Step 1: Write Rust store tests for settings persistence**
-- [ ] **Step 2: Implement `app_settings` schema and typed accessors**
-- [ ] **Step 3: Write Rust API contract tests**
-- [ ] **Step 4: Implement settings routes with validation and no-store responses**
-- [ ] **Step 5: Update ADR 0007 with the browser-vs-daemon split**
+- [x] **Step 1: Write Rust store tests for settings persistence**
+- [x] **Step 2: Implement `app_settings` schema and typed accessors**
+- [x] **Step 3: Write Rust API contract tests**
+- [x] **Step 4: Implement settings routes with validation and no-store responses**
+- [x] **Step 5: Update ADR 0007 with the browser-vs-daemon split**
 
 Daemon settings to persist in SQLite:
 
@@ -264,11 +264,11 @@ Browser-local settings to keep in localStorage:
 - Consumes `GET /api/settings`.
 - Produces an in-dashboard settings panel with two groups: `This Browser` and `This Daemon`.
 
-- [ ] **Step 1: Write static UI tests for the settings panel labels and controls**
-- [ ] **Step 2: Add a settings button and panel**
-- [ ] **Step 3: Wire browser-local settings without API calls**
-- [ ] **Step 4: Wire daemon settings to `GET /api/settings` and `PUT /api/settings`**
-- [ ] **Step 5: Run focused dashboard and API tests**
+- [x] **Step 1: Write static UI tests for the settings panel labels and controls**
+- [x] **Step 2: Add a settings button and panel**
+- [x] **Step 3: Wire browser-local settings without API calls**
+- [x] **Step 4: Wire daemon settings to `GET /api/settings` and `PUT /api/settings`**
+- [x] **Step 5: Run focused dashboard and API tests**
 
 ---
 

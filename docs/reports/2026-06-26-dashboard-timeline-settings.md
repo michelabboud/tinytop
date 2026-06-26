@@ -8,7 +8,7 @@ The approved dashboard improvement plan was saved at:
 
 - `docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md`
 
-This release implements the first vertical slice from that plan: make the current dashboard timeline timestamp-based and useful before introducing SQLite-backed daemon settings.
+This report now covers the timeline slice and the follow-up settings slice from that plan: the dashboard timeline is timestamp-based, and daemon defaults are stored through the Rust collector/dashboard daemon.
 
 ## Implemented In 0.1.21
 
@@ -104,9 +104,33 @@ Result:
 - `/api/history?limit=5&since_ms=0` returned SQLite-backed samples.
 - The alternate-port smoke daemon was stopped after verification.
 
-## Settings Roadmap
+## Implemented In 0.1.22
 
-SQLite-backed daemon settings planned next:
+- Added SQLite table `app_settings (setting_key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL)`.
+- Added typed Rust settings defaults and validation in `tinytop-store`.
+- Added `GET /api/settings` and `PUT /api/settings` in `tinytop-agent serve`.
+- Added a Settings panel with `This Browser` local preferences and `This Daemon` SQLite-backed defaults.
+- Kept active theme, graph mode, and history range in browser `localStorage`.
+- Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
+- Added legacy Bun in-memory settings handling so the shared dashboard works in fallback mode.
+
+Focused settings verification:
+
+```bash
+cargo test --manifest-path agent/Cargo.toml -p tinytop-store sqlite_store_persists_dashboard_settings
+cargo test --manifest-path agent/Cargo.toml -p tinytop-agent --test serve_contract serve_persists_dashboard_settings_api
+bun test tests/dashboard-settings.test.ts tests/server.test.ts tests/dashboard-timeline.test.ts tests/dashboard-assets.test.ts
+```
+
+Result:
+
+- Rust store settings test: `1 pass`, `0 fail`.
+- Rust serve settings API test: `1 pass`, `0 fail`.
+- Dashboard/settings/server/asset focused Bun tests: `17 pass`, `0 fail`.
+
+## Settings Split
+
+SQLite-backed daemon settings now implemented:
 
 - default theme
 - default graph mode
@@ -130,4 +154,4 @@ Browser-local settings that should stay in localStorage:
 - dismissed UI hints
 - last visible section or scroll position
 
-The next implementation slice should add the `app_settings` table, `GET /api/settings`, and `PUT /api/settings`, then expose a settings UI with separate `This Browser` and `This Daemon` sections.
+Remaining follow-up: retention and rollup defaults can be saved, but automatic pruning and rollup enforcement are not implemented yet.

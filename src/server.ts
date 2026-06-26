@@ -1,5 +1,7 @@
 import { collectSnapshot, type SystemSnapshot } from "./collector";
 import type { HistoryQuery, HistorySample } from "./history-store";
+import { cloneDashboardSettings, normalizeDashboardSettings } from "./settings";
+import { versionMetadata } from "./version";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4274;
@@ -81,6 +83,23 @@ async function copyJsonResponse(response: Response): Promise<Response> {
   });
 }
 
+async function collectorVersion(writerFetch: FetchHandlerOptions["writerFetch"]): Promise<unknown> {
+  if (!writerFetch) return undefined;
+
+  try {
+    const response = await writerFetch("/version");
+    if (!response.ok) {
+      return { status: "error", error: `collector version failed with HTTP ${response.status}` };
+    }
+    return await response.json();
+  } catch (error) {
+    return {
+      status: "error",
+      error: error instanceof Error ? error.message : "collector version failed",
+    };
+  }
+}
+
 async function fetchWriterWithRetry(writerBaseUrl: string, pathnameWithSearch: string): Promise<Response> {
   const url = new URL(pathnameWithSearch, writerBaseUrl);
   let lastError: unknown;
@@ -99,9 +118,36 @@ async function fetchWriterWithRetry(writerBaseUrl: string, pathnameWithSearch: s
 
 export function createFetchHandler(options: FetchHandlerOptions): (request: Request) => Promise<Response> {
   let previousProcStatText: string | undefined;
+  let dashboardSettings = cloneDashboardSettings();
 
   return async function handleRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname === "/api/settings") {
+      if (request.method === "GET") {
+        return Response.json(cloneDashboardSettings(dashboardSettings), {
+          headers: {
+            "cache-control": "no-store",
+          },
+        });
+      }
+
+      if (request.method === "PUT") {
+        try {
+          dashboardSettings = normalizeDashboardSettings(await request.json());
+          return Response.json(cloneDashboardSettings(dashboardSettings), {
+            headers: {
+              "cache-control": "no-store",
+            },
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "settings update failed";
+          return jsonError(message, 400);
+        }
+      }
+
+      return jsonError("Settings supports only GET and PUT", 405);
+    }
 
     if (request.method !== "GET") {
       return jsonError("Only GET requests are supported", 405);
@@ -110,6 +156,19 @@ export function createFetchHandler(options: FetchHandlerOptions): (request: Requ
     if (url.pathname === "/health") {
       return new Response("ok", {
         headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    if (url.pathname === "/api/version") {
+      return Response.json(await versionMetadata({
+        runtime: "legacy-bun",
+        component: "dashboard",
+        dashboard: "legacy",
+        collector: await collectorVersion(options.writerFetch),
+      }), {
+        headers: {
+          "cache-control": "no-store",
+        },
       });
     }
 

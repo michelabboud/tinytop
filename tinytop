@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-TINYTOP_VERSION="0.1.21"
+TINYTOP_VERSION="0.1.22"
 INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
 INSTALL_RUST_COMMAND='curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh'
 
@@ -75,13 +75,6 @@ rust_agent_exec() {
     return
   fi
 
-  local local_bin
-  local_bin="$(rust_agent_local_bin)"
-  if [[ -x "$local_bin" ]]; then
-    printf '%s\n' "$local_bin"
-    return
-  fi
-
   local target_bin
   target_bin="$(rust_agent_target_bin)"
   if [[ -x "$target_bin" ]]; then
@@ -89,7 +82,46 @@ rust_agent_exec() {
     return
   fi
 
+  local local_bin
+  local_bin="$(rust_agent_local_bin)"
+  if [[ -x "$local_bin" ]]; then
+    printf '%s\n' "$local_bin"
+    return
+  fi
+
   printf '%s\n' "$target_bin"
+}
+
+rust_agent_available() {
+  local agent_bin
+  agent_bin="$(rust_agent_exec)"
+  [[ -x "$agent_bin" || -n "$(cargo_path)" ]]
+}
+
+selected_runtime() {
+  local requested="${TINYTOP_RUNTIME:-auto}"
+  case "$requested" in
+    auto|"")
+      if rust_agent_available; then
+        printf 'rust\n'
+      elif [[ -n "$(bun_path)" ]]; then
+        printf 'legacy\n'
+      else
+        die "No TinyTop runtime is available. Run ./tinytop rust install-binary, ./tinytop install-rust --print-only, or ./tinytop install-bun --yes"
+      fi
+      ;;
+    rust)
+      rust_agent_available || die "Rust collector is not available. Run ./tinytop rust install-binary or ./tinytop rust build"
+      printf 'rust\n'
+      ;;
+    bun|legacy|legacy-bun)
+      [[ -n "$(bun_path)" ]] || die "Bun is required for legacy runtime. Run: ./tinytop install-bun --yes"
+      printf 'legacy\n'
+      ;;
+    *)
+      die "Unknown TINYTOP_RUNTIME=$requested. Use auto, rust, legacy, or bun."
+      ;;
+  esac
 }
 
 rust_release_os() {
@@ -142,6 +174,79 @@ dashboard_url() {
 
 collector_url() {
   printf 'http://%s:%s\n' "${HISTORY_WRITER_HOST:-127.0.0.1}" "${HISTORY_WRITER_PORT:-4276}"
+}
+
+runtime_state_dir() {
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    printf '%s/tinytop\n' "$XDG_RUNTIME_DIR"
+  else
+    printf '%s/tinytop\n' "${XDG_STATE_HOME:-$HOME/.local/state}"
+  fi
+}
+
+runtime_root_id() {
+  printf '%s' "$ROOT_DIR" | cksum | awk '{print $1}'
+}
+
+runtime_pid_file() {
+  printf '%s/%s.pid\n' "$(runtime_state_dir)" "$(runtime_root_id)"
+}
+
+write_runtime_pid_file() {
+  local pid_file
+  pid_file="$(runtime_pid_file)"
+  mkdir -p "$(dirname "$pid_file")"
+  printf '%s\n' "$$" > "$pid_file"
+}
+
+runtime_pid_from_file() {
+  local pid_file pid
+  pid_file="$(runtime_pid_file)"
+  [[ -f "$pid_file" ]] || return 1
+  read -r pid < "$pid_file" || return 1
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+  rm -f "$pid_file"
+  return 1
+}
+
+clear_runtime_pid_file() {
+  rm -f "$(runtime_pid_file)"
+}
+
+json_field() {
+  local json="$1"
+  local field="$2"
+  local pattern
+  pattern="\"${field}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+  if [[ "$json" =~ $pattern ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+  fi
+}
+
+running_daemon_version() {
+  local curl_bin
+  curl_bin="$(curl_path)"
+  [[ -n "$curl_bin" ]] || return 1
+
+  local body
+  body="$("$curl_bin" -fsS --max-time 1 "$(dashboard_url)/api/version" 2>/dev/null)" || return 1
+
+  local version runtime component dashboard
+  version="$(json_field "$body" "version")"
+  runtime="$(json_field "$body" "runtime")"
+  component="$(json_field "$body" "component")"
+  dashboard="$(json_field "$body" "dashboard")"
+  [[ -n "$version" && -n "$runtime" ]] || return 1
+  [[ -n "$component" ]] || component="daemon"
+
+  if [[ -n "$dashboard" && "$dashboard" != "none" ]]; then
+    printf '%s %s v%s (%s dashboard)\n' "$runtime" "$component" "$version" "$dashboard"
+  else
+    printf '%s %s v%s\n' "$runtime" "$component" "$version"
+  fi
 }
 
 print_banner() {
@@ -348,6 +453,10 @@ cmd_rust_serve() {
   local agent_bin
   agent_bin="$(rust_agent_exec)"
 
+  if [[ "$subcommand" == "serve" || "$subcommand" == "serve-writer" ]]; then
+    write_runtime_pid_file
+  fi
+
   if [[ -x "$agent_bin" ]]; then
     exec "$agent_bin" "$subcommand" "$@"
   fi
@@ -444,6 +553,12 @@ cmd_doctor() {
   status_line "Collector API URL" "$(collector_url)"
   status_line "Dashboard port" "$(port_status "${PORT:-4274}")"
   status_line "Collector API port" "$(port_status "${HISTORY_WRITER_PORT:-4276}")"
+  local running_version
+  if running_version="$(running_daemon_version)"; then
+    status_line "Running daemon" "$running_version"
+  else
+    status_line "Running daemon" "unknown (/api/version unavailable)"
+  fi
   status_line "SQLite DB" "$(history_db_path)"
 
   if systemd_user_available; then
@@ -496,14 +611,24 @@ cmd_check() {
 }
 
 cmd_start() {
+  local runtime
+  runtime="$(selected_runtime)"
+  if [[ "$runtime" == "rust" ]]; then
+    info "Auto-selected Rust collector/dashboard daemon."
+    cmd_rust_serve serve "$@"
+  fi
+
+  info "Auto-selected legacy Bun dashboard."
   require_bun
   cd "$ROOT_DIR"
-  exec bun run dev "$@"
+  write_runtime_pid_file
+  exec "$(bun_path)" run dev "$@"
 }
 
 cmd_start_split() {
   require_bun
   cd "$ROOT_DIR"
+  write_runtime_pid_file
   info "Starting TinyTop legacy Bun collector in the background."
   bun run collector &
   local collector_pid=$!
@@ -826,11 +951,25 @@ cmd_logs() {
   fi
 }
 
+foreground_tinytop_pids() {
+  local pid
+  if pid="$(runtime_pid_from_file)"; then
+    printf '%s\n' "$pid"
+    return 0
+  fi
+
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -af '([t]inytop-agent serve|[s]rc/server\.ts|[l]egacy/bun-collector\.ts)' | awk -v root="$ROOT_DIR" '
+    $0 ~ root { print $1 }
+  '
+}
+
 cmd_restart() {
   if unit_installed "tinytop.service" || unit_installed "tinytop-collector.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
     cmd_systemd_action restart
   else
-    say "No TinyTop systemd units installed. Use Ctrl-C in foreground mode, then run ./tinytop rust serve."
+    cmd_stop
+    cmd_start "$@"
   fi
 }
 
@@ -838,10 +977,16 @@ cmd_stop() {
   if unit_installed "tinytop.service" || unit_installed "tinytop-collector.service" || unit_installed "tinytop-writer.service" || unit_installed "tinytop-dashboard.service"; then
     cmd_systemd_action stop
   else
-    say "No TinyTop systemd units installed. Stop foreground TinyTop processes with Ctrl-C."
-    if command -v pgrep >/dev/null 2>&1; then
-      pgrep -af '(src/server\.ts|legacy/bun-collector\.ts|src/collector-daemon\.ts)' || true
+    local -a pids
+    mapfile -t pids < <(foreground_tinytop_pids)
+    if [[ "${#pids[@]}" -eq 0 ]]; then
+      say "No TinyTop systemd units installed and no foreground TinyTop runtime was detected."
+      return 0
     fi
+    info "Stopping foreground TinyTop runtime process(es): ${pids[*]}"
+    kill "${pids[@]}" 2>/dev/null || true
+    clear_runtime_pid_file
+    ok "Stopped foreground TinyTop runtime process(es)."
   fi
 }
 
@@ -868,7 +1013,7 @@ case "$command_name" in
   check) cmd_check ;;
   start) cmd_start "$@" ;;
   start:split) cmd_start_split "$@" ;;
-  restart) cmd_restart ;;
+  restart) cmd_restart "$@" ;;
   stop) cmd_stop ;;
   logs) cmd_logs ;;
   monitor) cmd_monitor "$@" ;;

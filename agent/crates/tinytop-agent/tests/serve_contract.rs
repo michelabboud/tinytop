@@ -2,6 +2,7 @@ use std::{
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    path::PathBuf,
     process::{Child, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -119,6 +120,136 @@ fn serve_respects_empty_explicit_history_bounds() {
     result.expect("server should preserve explicit empty history bounds");
 }
 
+#[test]
+fn serve_exposes_version_identity() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+            "--no-dashboard",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get(port, "/api/version"))
+        .map(|response| {
+            let version = product_version();
+            assert!(
+                response.contains(&format!(r#""version":"{version}""#)),
+                "version endpoint should report product version {version}, got {response}"
+            );
+            assert!(response.contains(r#""runtime":"rust""#));
+            assert!(response.contains(r#""component":"collector-dashboard-daemon""#));
+            assert!(response.contains(r#""dashboard":"disabled""#));
+        })
+        .and_then(|_| http_get(port, "/version"))
+        .map(|response| {
+            assert!(response.contains(r#""runtime":"rust""#));
+            assert!(response.contains(r#""component":"collector-dashboard-daemon""#));
+        });
+
+    stop_child(&mut child);
+
+    result.expect("server should expose version identity");
+}
+
+#[test]
+fn serve_persists_dashboard_settings_api() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+            "--no-dashboard",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let settings = r#"{"defaultTheme":"aurora","defaultGraphMode":"heatmap","pollIntervalMs":3000,"defaultHistoryWindow":"1h","retentionHours":96,"rollupRetentionDays":30,"topProcessCount":12,"redactionDefault":true,"thresholds":{"cpuWarn":75,"memoryWarn":82,"diskWarn":88},"enabledSections":{"overview":true,"history":true,"filesystem":true,"pressure":true,"processes":true}}"#;
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get(port, "/api/settings"))
+        .map(|response| {
+            assert!(response.contains(r#""defaultTheme":"midnight""#));
+            assert!(response.contains(r#""pollIntervalMs":1500"#));
+        })
+        .and_then(|_| http_request(port, "PUT", "/api/settings", Some(settings)))
+        .map(|response| {
+            assert!(response.contains(r#""defaultTheme":"aurora""#));
+            assert!(response.contains(r#""defaultGraphMode":"heatmap""#));
+            assert!(response.contains(r#""pollIntervalMs":3000"#));
+            assert!(response.contains(r#""redactionDefault":true"#));
+        })
+        .and_then(|_| http_get(port, "/api/settings"))
+        .map(|response| {
+            assert!(response.contains(r#""defaultTheme":"aurora""#));
+            assert!(response.contains(r#""retentionHours":96"#));
+            assert!(response.contains(r#""topProcessCount":12"#));
+        });
+
+    stop_child(&mut child);
+
+    result.expect("server should persist dashboard settings through the API");
+}
+
+#[test]
+fn serve_rejects_invalid_dashboard_settings_api() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+            "--no-dashboard",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let settings = r#"{"defaultTheme":"midnight","defaultGraphMode":"line","pollIntervalMs":100,"defaultHistoryWindow":"live","retentionHours":72,"rollupRetentionDays":30,"topProcessCount":8,"redactionDefault":false,"thresholds":{"cpuWarn":80,"memoryWarn":85,"diskWarn":85},"enabledSections":{"overview":true,"history":true,"filesystem":true,"pressure":true,"processes":true}}"#;
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_request(port, "PUT", "/api/settings", Some(settings)))
+        .map(|response| {
+            assert!(
+                response.starts_with("HTTP/1.1 400"),
+                "invalid settings should return HTTP 400, got {response}"
+            );
+            assert!(response.contains("pollIntervalMs"));
+        });
+
+    stop_child(&mut child);
+
+    result.expect("server should reject invalid dashboard settings");
+}
+
 fn reserve_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should reserve a local port");
     listener
@@ -152,6 +283,14 @@ fn temp_public_dir() -> std::path::PathBuf {
     dir
 }
 
+fn product_version() -> String {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    fs::read_to_string(manifest_dir.join("../../../VERSION"))
+        .expect("workspace VERSION should be readable")
+        .trim()
+        .to_string()
+}
+
 fn wait_for_server(port: u16) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -166,15 +305,28 @@ fn wait_for_server(port: u16) -> Result<(), String> {
 }
 
 fn http_get(port: u16, path: &str) -> Result<String, String> {
+    http_request(port, "GET", path, None)
+}
+
+fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| error.to_string())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .map_err(|error| error.to_string())?;
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-    )
-    .map_err(|error| error.to_string())?;
+    if let Some(body) = body {
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .map_err(|error| error.to_string())?;
+    } else {
+        write!(
+            stream,
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        )
+        .map_err(|error| error.to_string())?;
+    }
     let mut response = String::new();
     stream
         .read_to_string(&mut response)

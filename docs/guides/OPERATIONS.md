@@ -42,18 +42,26 @@ Check health:
 curl -fsS http://127.0.0.1:4274/health
 ```
 
-## Start And Stop
-
-Start the Rust foreground daemon:
+Check the exact running runtime and product version:
 
 ```bash
-./tinytop rust serve
+./tinytop status
+curl -fsS http://127.0.0.1:4274/api/version
 ```
 
-Start Bun development mode:
+## Start And Stop
+
+Start the foreground runtime. The command center auto-selects the Rust collector/dashboard daemon when a Rust binary or Cargo is available:
 
 ```bash
 ./tinytop start
+```
+
+Force Rust or legacy Bun explicitly:
+
+```bash
+TINYTOP_RUNTIME=rust ./tinytop start
+TINYTOP_RUNTIME=legacy ./tinytop start
 ```
 
 Start Bun split mode:
@@ -62,7 +70,13 @@ Start Bun split mode:
 ./tinytop start:split
 ```
 
-Stop foreground processes with `Ctrl-C`.
+Stop foreground processes:
+
+```bash
+./tinytop stop
+```
+
+`Ctrl-C` in the foreground terminal still works for interactive runs.
 
 Stop systemd services when installed:
 
@@ -184,6 +198,7 @@ Check daemon health:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/health
+curl -fsS http://127.0.0.1:4274/api/version
 ```
 
 Check public history proxy:
@@ -212,6 +227,8 @@ Try:
 
 - hard refresh the page
 - switch theme or graph mode to confirm JS is live
+- check the sidebar version line or `curl -fsS http://127.0.0.1:4274/api/version`
+- check the settings API with `curl -fsS http://127.0.0.1:4274/api/settings`
 - inspect `/app.js` response timestamp through browser dev tools if needed
 
 ## Daemon Fails To Start
@@ -232,6 +249,8 @@ Common causes:
 ## Data Growth
 
 Automatic retention is not implemented yet. The Rust daemon and legacy Bun collector keep raw SQLite rows until you manually archive or reset the database. The dashboard's selected timestamp range and browser rendering cap control what is loaded and drawn; they do not prune SQLite.
+
+The Settings panel can save retention and rollup defaults in SQLite, but those values are not enforced until the retention/rollup storage slice lands.
 
 Monitor database size:
 

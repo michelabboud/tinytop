@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.21`
+- Version: `0.1.22`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed timestamp-range history browsing, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed timestamp-range history browsing, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -203,22 +203,34 @@
 - [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 - [x] Added dashboard timeline regression coverage and embedded Rust smoke evidence.
 
+### 0.1.22 - Runtime Auto-Detect And Version Identity
+
+- [x] Added `/api/version` for the Rust collector/dashboard daemon and legacy Bun dashboard.
+- [x] Added `/version` on collector-compatible APIs for the Rust daemon and legacy Bun collector.
+- [x] Added a sidebar version line showing the serving collector/dashboard runtime and product version.
+- [x] Added the SQLite `app_settings` table for daemon dashboard defaults.
+- [x] Added `GET /api/settings` and `PUT /api/settings` to the Rust collector/dashboard daemon.
+- [x] Added a Settings panel with `This Browser` local preferences and `This Daemon` SQLite-backed defaults.
+- [x] Added legacy Bun fallback settings handling so the shared dashboard remains usable in legacy mode.
+- [x] Changed `./tinytop start` to auto-select Rust when available and honor `TINYTOP_RUNTIME=legacy|bun` for the legacy fallback.
+- [x] Updated `./tinytop status` to read `/api/version` and report the running daemon runtime, component, version, and dashboard asset mode.
+- [x] Added foreground `./tinytop stop` and `./tinytop restart` handling for detected Rust and legacy Bun processes when systemd units are absent.
+- [x] Aligned Rust crate package versions with the product checkpoint version.
+
 ## Known Limitations
 
 - SQLite retention is not implemented yet. The collector stores raw samples indefinitely until the database is manually archived or reset.
 - Rollup tables for longer time ranges are planned but not implemented.
+- Retention and rollup defaults can be saved in settings, but automatic pruning and rollup enforcement are not implemented yet.
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
 - The dashboard can browse timestamp presets up to 24h, but long-range rollups are not implemented yet.
 - The app is designed for loopback/local use, not remote multi-user deployment.
-- `./tinytop start` still runs the Bun development runtime; persistent installs default to the Rust daemon.
 - Native Windows and macOS collectors are planned but not implemented yet.
 
 ## Recommended Next Work
 
 - [ ] Add raw history retention, defaulting to a configurable 24 to 72 hour window.
 - [ ] Add one-minute rollups for longer history ranges.
-- [ ] Add SQLite-backed daemon defaults for theme, graph mode, check interval, retention, thresholds, and enabled sections.
-- [ ] Add a settings UI that separates browser-local preferences from daemon-wide SQLite settings.
 - [ ] Add a collector/daemon health indicator in the UI when the internal collector API is unreachable.
 - [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
 - [ ] Add native Windows collector support.

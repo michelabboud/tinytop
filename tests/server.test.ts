@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createFetchHandler } from "../src/server";
 import type { SystemSnapshot } from "../src/collector";
+import { createCollectorFetchHandler } from "../legacy/bun-collector";
 import { makeSnapshot } from "./fixtures";
+
+const productVersion = readFileSync("VERSION", "utf8").trim();
 
 const snapshot: SystemSnapshot = {
   timestamp: "2026-06-24T12:00:00.000Z",
@@ -78,6 +82,65 @@ describe("createFetchHandler", () => {
     expect(await response.text()).toBe("ok");
   });
 
+  test("serves legacy dashboard version metadata", async () => {
+    const handler = createFetchHandler({
+      publicDir: "/missing",
+      writerFetch: async (pathnameWithSearch) => {
+        if (pathnameWithSearch === "/version") {
+          return Response.json({
+            version: productVersion,
+            runtime: "legacy-bun",
+            component: "collector",
+            dashboard: "none",
+          });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    });
+
+    const response = await handler(new Request("http://127.0.0.1:4274/api/version"));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.version).toBe(productVersion);
+    expect(body.runtime).toBe("legacy-bun");
+    expect(body.component).toBe("dashboard");
+    expect(body.dashboard).toBe("legacy");
+    expect(body.collector.component).toBe("collector");
+  });
+
+  test("serves legacy dashboard settings metadata", async () => {
+    const handler = createFetchHandler({
+      publicDir: "/missing",
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+    });
+
+    const defaultResponse = await handler(new Request("http://127.0.0.1:4274/api/settings"));
+    const defaults = await defaultResponse.json();
+
+    expect(defaultResponse.status).toBe(200);
+    expect(defaults.defaultTheme).toBe("midnight");
+    expect(defaults.pollIntervalMs).toBe(1500);
+
+    const updateResponse = await handler(
+      new Request("http://127.0.0.1:4274/api/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          ...defaults,
+          defaultTheme: "aurora",
+          defaultGraphMode: "heatmap",
+          pollIntervalMs: 3000,
+        }),
+      }),
+    );
+    const updated = await updateResponse.json();
+
+    expect(updateResponse.status).toBe(200);
+    expect(updated.defaultTheme).toBe("aurora");
+    expect(updated.defaultGraphMode).toBe("heatmap");
+    expect(updated.pollIntervalMs).toBe(3000);
+  });
+
   test("serves the live snapshot JSON API", async () => {
     const handler = createFetchHandler({
       publicDir: "/missing",
@@ -133,5 +196,28 @@ describe("createFetchHandler", () => {
     const response = await handler(new Request("http://127.0.0.1:4274/api/nope"));
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe("createCollectorFetchHandler", () => {
+  test("serves legacy collector version metadata", async () => {
+    const handler = createCollectorFetchHandler({
+      store: {
+        insertSnapshot: (nextSnapshot) => ({ capturedAtMs: Date.parse(nextSnapshot.timestamp), snapshot: nextSnapshot }),
+        latestSnapshot: () => null,
+        readHistory: () => [],
+        close: () => {},
+      },
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+    });
+
+    const response = await handler(new Request("http://127.0.0.1:4276/version"));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.version).toBe(productVersion);
+    expect(body.runtime).toBe("legacy-bun");
+    expect(body.component).toBe("collector");
+    expect(body.dashboard).toBe("none");
   });
 });

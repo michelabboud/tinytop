@@ -10,3 +10,4 @@ This directory tracks architectural decisions that are expensive to reverse or l
 | [0004](0004-rust-agent-sqlx-store.md) | Accepted | Add an additive Rust collector/agent path and use SQLx for Rust-side storage. |
 | [0005](0005-rust-single-daemon-systemd-runtime.md) | Accepted | Use a single Rust daemon as the default systemd runtime while keeping the Bun split path as fallback. |
 | [0006](0006-embedded-dashboard-assets.md) | Accepted | Embed dashboard assets in the Rust collector while keeping the legacy Bun dashboard asset tree. |
+| [0007](0007-daemon-and-browser-dashboard-settings.md) | Accepted | Split dashboard settings between browser-local preferences and SQLite-backed daemon defaults. |

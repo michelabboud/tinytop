@@ -274,6 +274,12 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.brand-block .daemon-version {
+  color: var(--subtle);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
 .rail-nav {
   display: grid;
   gap: 0.35rem;
@@ -621,6 +627,98 @@ h1 {
 .panel {
   min-width: 0;
   padding: 1rem;
+}
+
+.settings-panel {
+  display: grid;
+  gap: 1rem;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.6fr);
+  gap: 1rem;
+  min-width: 0;
+}
+
+.settings-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 0.75rem;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  padding: 0.9rem;
+}
+
+.settings-group legend {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  padding: 0 0.3rem;
+  text-transform: uppercase;
+}
+
+.daemon-settings-group {
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.settings-group label {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.settings-group label > span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.settings-group select,
+.settings-group input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+  padding: 0.35rem 0.5rem;
+}
+
+.settings-group select:focus,
+.settings-group input[type="number"]:focus {
+  border-color: var(--cyan);
+  outline: 0;
+}
+
+.settings-group .toggle-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  align-content: center;
+  gap: 0.55rem;
+  min-height: 36px;
+}
+
+.settings-group input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--cyan);
+}
+
+#settings-status {
+  color: var(--muted);
 }
 
 .mini-stat {
@@ -1005,7 +1103,8 @@ td {
   }
 
   .overview-grid,
-  .content-grid {
+  .content-grid,
+  .settings-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1055,6 +1154,11 @@ td {
   }
 
   .filesystem-item {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-group,
+  .daemon-settings-group {
     grid-template-columns: 1fr;
   }
 

@@ -99,19 +99,20 @@ cat ~/.config/fleet/ports/tinytop.toml
 
 ## Start The Dashboard
 
-The Rust foreground daemon command is:
-
-```bash
-./tinytop rust serve
-```
-
-The Bun development command is:
+The foreground command auto-selects the Rust collector/dashboard daemon when a Rust binary or Cargo is available:
 
 ```bash
 ./tinytop start
 ```
 
-The Bun development command starts:
+Force a runtime explicitly when needed:
+
+```bash
+TINYTOP_RUNTIME=rust ./tinytop start
+TINYTOP_RUNTIME=legacy ./tinytop start
+```
+
+The legacy Bun path starts:
 
 - the legacy Bun dashboard process on `127.0.0.1:4274`
 - the internal legacy Bun collector process on `127.0.0.1:4276`
@@ -156,6 +157,7 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 | `HISTORY_WRITER_PORT` | `4276` | collector and dashboard proxy URL | Collector port; env name retained for compatibility |
 | `HISTORY_WRITER_URL` | unset | dashboard | Full URL for an existing collector; disables auto-spawn |
 | `HISTORY_POLL_MS` | `1500` | Rust daemon and legacy Bun collector | Collection interval in milliseconds |
+| `TINYTOP_RUNTIME` | `auto` | command center | Runtime selection for `./tinytop start`: `auto`, `rust`, `legacy`, or `bun` |
 | `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | Rust daemon and legacy Bun collector | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running legacy Bun collector |
 | `TINYTOP_PUBLIC_DIR` | unset | Rust daemon | Optional development override for dashboard assets; unset uses embedded assets |
@@ -188,6 +190,12 @@ History retention:
 - The collector stores raw samples until you manually archive or reset the database.
 - The dashboard's recent history window limits what it reads and renders; it does not prune SQLite.
 
+Dashboard settings:
+
+- Browser-local active theme, graph mode, and history range are stored in `localStorage`.
+- Rust daemon defaults are stored in SQLite through `/api/settings`.
+- Retention and rollup defaults can be saved now; automatic pruning and rollup enforcement are planned next.
+
 ## Verify Installation
 
 Run the automated checks:
@@ -216,6 +224,7 @@ Check HTTP endpoints:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/health
+curl -fsS http://127.0.0.1:4274/api/version
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=3&window_seconds=300'
 ```
 
@@ -231,8 +240,8 @@ ok
 2. Pull or apply the new code.
 3. Run `./tinytop deps`.
 4. Run `./tinytop check`.
-5. Start `./tinytop systemd start` or `./tinytop rust serve`.
-6. Open the dashboard and confirm History hydrates after a browser refresh.
+5. Start `./tinytop systemd start` or `./tinytop start`.
+6. Open the dashboard and confirm the sidebar version line plus History hydration after a browser refresh.
 
 The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. There is no explicit migration table or automatic retention job yet.
 

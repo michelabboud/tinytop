@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.22 - 2026-06-26
+
+- Added `/api/version` to the Rust collector/dashboard daemon and legacy Bun dashboard, plus `/version` to collector-compatible APIs.
+- Added SQLite-backed daemon dashboard defaults with `GET /api/settings` and `PUT /api/settings`.
+- Added a Settings panel with separate `This Browser` local preferences and `This Daemon` daemon defaults.
+- Added typed settings validation for theme, graph mode, history window, refresh interval, retention defaults, thresholds, and enabled sections.
+- Added a dashboard sidebar version line so users can see whether Rust or legacy Bun is serving the page.
+- Changed `./tinytop start` to auto-select the Rust collector/dashboard daemon when available, with `TINYTOP_RUNTIME=legacy` or `TINYTOP_RUNTIME=bun` as explicit legacy overrides.
+- Updated `./tinytop status` to report the running daemon runtime, component, product version, and dashboard asset mode from `/api/version`.
+- Added foreground `./tinytop stop`/`restart` awareness for Rust and legacy Bun processes when systemd units are not installed.
+- Aligned Rust crate package versions with the product checkpoint version.
+
 ## 0.1.21 - 2026-06-26
 
 - Saved the dashboard timeline/settings implementation plan under `docs/superpowers/plans/`.

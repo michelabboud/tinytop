@@ -9,7 +9,7 @@ This guide documents the local HTTP APIs used by TinyTop.
 | Rust collector/dashboard daemon | `http://127.0.0.1:4274` | Browser, local user, and legacy collector API clients |
 | Legacy Bun collector | `http://127.0.0.1:4276` | Internal dashboard process when using Bun split mode |
 
-TinyTop APIs support only `GET` requests. Other methods return JSON errors with HTTP `405`.
+Most TinyTop APIs are `GET` requests. `PUT /api/settings` is the supported write endpoint for daemon dashboard defaults. Unsupported methods return JSON errors with HTTP `405`.
 
 ## Public Dashboard API
 
@@ -21,6 +21,50 @@ Response:
 
 ```text
 ok
+```
+
+### GET /api/version
+
+Identifies the dashboard-serving runtime and product version. Use this when checking whether the new Rust collector/dashboard daemon or the legacy Bun dashboard is serving `127.0.0.1:4274`.
+
+Example:
+
+```bash
+curl -fsS http://127.0.0.1:4274/api/version
+```
+
+Rust response:
+
+```json
+{
+  "status": "ok",
+  "app": "tinytop",
+  "version": "0.1.22",
+  "runtime": "rust",
+  "component": "collector-dashboard-daemon",
+  "dashboard": "embedded"
+}
+```
+
+Legacy Bun response:
+
+```json
+{
+  "status": "ok",
+  "app": "tinytop",
+  "version": "0.1.22",
+  "runtime": "legacy-bun",
+  "component": "dashboard",
+  "dashboard": "legacy",
+  "collector": {
+    "status": "ok",
+    "app": "tinytop",
+    "version": "0.1.22",
+    "runtime": "legacy-bun",
+    "component": "collector",
+    "dashboard": "none"
+  }
+}
 ```
 
 ### GET /api/snapshot
@@ -88,6 +132,62 @@ Response shape:
 
 The example above is shortened. Real responses include full CPU times, filesystem rows, pressure data when present, and process rows.
 
+### GET /api/settings
+
+Returns dashboard defaults from the Rust daemon's SQLite `app_settings` table. In legacy Bun fallback mode the dashboard exposes the same shape in memory so the UI remains usable, but durable settings are owned by the Rust daemon.
+
+Example:
+
+```bash
+curl -fsS http://127.0.0.1:4274/api/settings
+```
+
+Response:
+
+```json
+{
+  "defaultTheme": "midnight",
+  "defaultGraphMode": "line",
+  "pollIntervalMs": 1500,
+  "defaultHistoryWindow": "live",
+  "retentionHours": 72,
+  "rollupRetentionDays": 30,
+  "topProcessCount": 8,
+  "redactionDefault": false,
+  "thresholds": {
+    "cpuWarn": 80,
+    "memoryWarn": 85,
+    "diskWarn": 85
+  },
+  "enabledSections": {
+    "overview": true,
+    "history": true,
+    "filesystem": true,
+    "pressure": true,
+    "processes": true
+  }
+}
+```
+
+### PUT /api/settings
+
+Persists daemon dashboard defaults. The payload must use the same shape returned by `GET /api/settings`. Invalid enum values or out-of-range numbers return HTTP `400`.
+
+Example:
+
+```bash
+curl -fsS -X PUT http://127.0.0.1:4274/api/settings \
+  -H 'content-type: application/json' \
+  --data '{"defaultTheme":"aurora","defaultGraphMode":"heatmap","pollIntervalMs":3000,"defaultHistoryWindow":"1h","retentionHours":96,"rollupRetentionDays":30,"topProcessCount":12,"redactionDefault":false,"thresholds":{"cpuWarn":80,"memoryWarn":85,"diskWarn":85},"enabledSections":{"overview":true,"history":true,"filesystem":true,"pressure":true,"processes":true}}'
+```
+
+The settings UI separates browser-local choices from daemon defaults:
+
+| Scope | Storage |
+| --- | --- |
+| Active theme, graph mode, and history window for this browser | `localStorage` |
+| Default theme, graph mode, refresh interval, retention/rollup defaults, thresholds, and enabled sections | SQLite `app_settings` |
+
 ### GET /api/history
 
 Returns persisted recent history from the Rust daemon or legacy Bun collector process. The query parameters bound the read result only; they do not prune SQLite history.
@@ -151,6 +251,23 @@ Response:
 
 ```text
 ok
+```
+
+### GET /version
+
+Identifies the collector-compatible API runtime. The Rust daemon exposes this on `127.0.0.1:4274`; the legacy Bun collector exposes it on `127.0.0.1:4276`.
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "app": "tinytop",
+  "version": "0.1.22",
+  "runtime": "rust",
+  "component": "collector-dashboard-daemon",
+  "dashboard": "embedded"
+}
 ```
 
 ### GET /snapshot/latest

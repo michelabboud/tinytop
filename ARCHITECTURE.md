@@ -12,6 +12,8 @@ Browser
   | GET /, /app.js, /styles.css, /vendor/echarts.min.js
   | GET /api/snapshot
   | GET /api/history
+  | GET /api/version
+  | GET/PUT /api/settings
   v
 Rust daemon: tinytop-agent serve
   127.0.0.1:4274
@@ -22,24 +24,24 @@ Rust daemon: tinytop-agent serve
 SQLite: ~/.local/share/tinytop/history.sqlite
 ```
 
-`./tinytop systemd install` defaults to this Rust collector/dashboard service. The daemon also keeps the legacy collector-compatible routes (`/snapshot/latest`, `/snapshot/collect`, and `/history`) on the same port for API continuity.
+`./tinytop systemd install` defaults to this Rust collector/dashboard service. The daemon also keeps the legacy collector-compatible routes (`/snapshot/latest`, `/snapshot/collect`, `/history`, and `/version`) on the same port for API continuity.
 
 For development, `bun run dev` starts `src/server.ts`, and that process spawns `legacy/bun-collector.ts`. For split supervision, start the legacy Bun collector separately with `bun run collector`, then start the dashboard with `TINYTOP_DISABLE_WRITER_SPAWN=1`.
 
-The supported operator entrypoint is the root `./tinytop` Bash command center.
-It works before Bun is installed for help and bootstrap, then hands off to
-`bun run setup` for the richer setup wizard.
+The supported operator entrypoint is the root `./tinytop` Bash command center. It works before Bun is installed for help and bootstrap, auto-selects the Rust collector/dashboard daemon for `./tinytop start` when a release binary or Cargo is available, and supports `TINYTOP_RUNTIME=legacy` for the Bun fallback.
 
 ## Data Flow
 
 1. The browser loads embedded Rust dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, and `app.js`.
-2. `app.js` reads browser-local theme, graph-mode, and history-range settings from `localStorage`.
-3. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for the selected timeline range.
-4. The frontend polls `/api/snapshot` every 1500 ms.
-5. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
-6. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
-7. `tinytop-store` writes one row per sample into SQLite through SQLx.
-8. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates gauges, and redraws ECharts views.
+2. `app.js` requests `/api/settings` for SQLite-backed daemon defaults.
+3. `app.js` reads browser-local theme, graph-mode, and history-range overrides from `localStorage`.
+4. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for the selected timeline range.
+5. The frontend requests `/api/version` once to display the serving runtime and product version.
+6. The frontend polls `/api/snapshot` on the configured browser refresh interval.
+7. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
+8. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
+9. `tinytop-store` writes samples and daemon defaults into SQLite through SQLx.
+10. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates gauges, and redraws ECharts views.
 
 ## Modules
 
@@ -48,6 +50,8 @@ It works before Bun is installed for help and bootstrap, then hands off to
 | `src/parsers.ts` | Pure parsing and normalization for `/proc`, pressure, load, filesystems, and runtime detection |
 | `src/collector.ts` | Live host reads from Linux/WSL sources and `SystemSnapshot` construction |
 | `src/history-store.ts` | SQLite setup, pragmas, indexes, prepared inserts, latest reads, range reads |
+| `src/settings.ts` | Legacy Bun settings shape and validation for the fallback dashboard server |
+| `src/version.ts` | Shared legacy Bun runtime/version metadata used by the dashboard and collector APIs |
 | `legacy/bun-collector.ts` | Legacy Bun collector HTTP API, scheduled collection loop, SQLite ownership |
 | `src/server.ts` | Legacy Bun HTTP server, static assets, ECharts route, collector proxy |
 | `src/ops.ts` | SQLite maintenance helpers for stats, integrity checks, and vacuum |
@@ -81,6 +85,9 @@ The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun
 The Rust daemon and legacy Bun dashboard expose:
 
 - `GET /health`
+- `GET /api/version`
+- `GET /api/settings`
+- `PUT /api/settings`
 - `GET /api/snapshot`
 - `GET /api/history?limit=&window_seconds=&since_ms=&until_ms=`
 - `GET /vendor/echarts.min.js`
@@ -93,6 +100,7 @@ See [docs/guides/API.md](docs/guides/API.md) for request and response details.
 The Rust daemon exposes these routes on `127.0.0.1:4274`. The legacy split Bun collector exposes the same routes on `127.0.0.1:4276`:
 
 - `GET /health`
+- `GET /version`
 - `GET /snapshot/latest`
 - `GET /snapshot/collect`
 - `GET /history?limit=&window_seconds=&since_ms=&until_ms=`
@@ -154,9 +162,17 @@ CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
   ON metric_samples (runtime_kind, captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  setting_key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
 ```
 
-The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. This supports refresh-safe chart hydration and selected-sample detail rendering. There is no automatic retention or delete job yet, so raw rows remain in `metric_samples` until the user archives or resets the database. Normalized filesystem/process/pressure child tables, raw retention, and rollups are planned for future longer-range analytics.
+The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. It also stores dashboard daemon defaults as typed JSON in `app_settings` under `setting_key = 'dashboard'`. This supports refresh-safe chart hydration, selected-sample detail rendering, and shared daemon defaults for future dashboard loads.
+
+There is no automatic retention or delete job yet, so raw rows remain in `metric_samples` until the user archives or resets the database. Retention and rollup settings are saved in `app_settings`, but enforcement is planned for the next storage slice. Normalized filesystem/process/pressure child tables, raw retention, and rollups are planned for future longer-range analytics.
 
 ## Frontend State
 
@@ -165,6 +181,19 @@ Browser-local settings:
 - `tinytop.theme`
 - `tinytop.graphMode`
 - `tinytop.historyWindow`
+
+SQLite-backed daemon defaults:
+
+- `defaultTheme`
+- `defaultGraphMode`
+- `pollIntervalMs`
+- `defaultHistoryWindow`
+- `retentionHours`
+- `rollupRetentionDays`
+- `topProcessCount`
+- `redactionDefault`
+- `thresholds`
+- `enabledSections`
 
 In-memory session state:
 
@@ -217,3 +246,4 @@ Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
 - [0004 - Additive Rust Agent With SQLx Store](docs/adr/0004-rust-agent-sqlx-store.md)
 - [0005 - Rust Single-Daemon Systemd Runtime](docs/adr/0005-rust-single-daemon-systemd-runtime.md)
 - [0006 - Embed Dashboard Assets In The Rust Collector](docs/adr/0006-embedded-dashboard-assets.md)
+- [0007 - Daemon And Browser Dashboard Settings](docs/adr/0007-daemon-and-browser-dashboard-settings.md)

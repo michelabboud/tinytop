@@ -1,24 +1,29 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 13:00 Asia/Jerusalem
+Date: 2026-06-26 14:17 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.21`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.21`
-- Working tree before the v0.1.21 dashboard timeline change: clean and aligned with `origin/main` at `v0.1.20`
+- Current checkpoint version: `0.1.22`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.22`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.22`
+- Working tree before the v0.1.22 runtime auto-detect/version change: clean and aligned with `origin/main` at `v0.1.21`
 
 ## Runtime State
 
 - Dashboard URL when running: `http://127.0.0.1:4274`
 - Health endpoint when running: `http://127.0.0.1:4274/health`
-- Health status at handoff refresh time: running, `ok`
+- Version endpoint when running: `http://127.0.0.1:4274/api/version`
+- Settings endpoint when running: `http://127.0.0.1:4274/api/settings`
+- Health status at handoff refresh time: running
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.22 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `331250`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1079395`
+- Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
 
 ## Rust Collector Confirmation
 
@@ -29,6 +34,8 @@ Evidence:
 - `ARCHITECTURE.md` states `tinytop-agent serve` serves the dashboard, returns the latest stored sample or collects a fresh one, and collects telemetry through `tinytop-collectors`.
 - `tinytop-agent serve` embeds dashboard assets from `agent/assets/dashboard/` by default.
 - `./tinytop systemd install` defaults to the single Rust collector/dashboard daemon.
+- `./tinytop start` now auto-selects the Rust collector/dashboard daemon when a release binary or Cargo is available.
+- `./tinytop status` reads `/api/version` to show the running runtime, component, version, and dashboard asset mode.
 - The legacy Bun collector now lives at `legacy/bun-collector.ts` and is available only through explicit Bun development or `--bun` systemd mode.
 - The legacy Bun dashboard assets now live at `legacy/dashboard/`.
 
@@ -101,6 +108,21 @@ Evidence:
 - Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
 - Added `tests/dashboard-timeline.test.ts`.
 - Added a Rust serve-contract regression for explicit empty history bounds.
+
+### v0.1.22 - Runtime Auto-Detect And Version Identity
+
+- Added `/api/version` to the Rust collector/dashboard daemon and legacy Bun dashboard.
+- Added `/version` to collector-compatible APIs for the Rust daemon and legacy Bun collector.
+- Added a sidebar version line so users can see the serving runtime and product version in the dashboard.
+- Added SQLite-backed daemon dashboard defaults with typed Rust validation.
+- Added `GET /api/settings` and `PUT /api/settings` to the Rust collector/dashboard daemon.
+- Added a Settings panel with `This Browser` local preferences and `This Daemon` SQLite-backed defaults.
+- Added ADR 0007 for the browser-local versus daemon-wide settings split.
+- Changed `./tinytop start` to auto-select Rust when available, with `TINYTOP_RUNTIME=legacy` or `TINYTOP_RUNTIME=bun` as explicit legacy overrides.
+- Updated `./tinytop status` to report the running daemon runtime, component, product version, and dashboard asset mode.
+- Added foreground `./tinytop stop` and `./tinytop restart` detection for Rust and legacy Bun runtimes when systemd units are not installed.
+- Aligned Rust crate package versions with the product checkpoint version.
+- Added `docs/reports/2026-06-26-runtime-auto-detect-version.md`.
 
 ### Release Binary Asset Check
 
@@ -202,13 +224,48 @@ Evidence:
 - `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies, no vulnerabilities reported
 - `git diff --check`: clean
 
+## Verification Evidence From v0.1.22 Runtime Auto-Detect And Version Identity
+
+- Red/green focused tests:
+  - `bun test tests/tinytop-script.test.ts tests/server.test.ts tests/dashboard-timeline.test.ts`: `24 pass`, `0 fail`
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-agent --test serve_contract serve_exposes_version_identity`: `1 pass`, `0 fail`
+- Settings focused tests:
+  - `bun test tests/dashboard-settings.test.ts tests/server.test.ts tests/dashboard-timeline.test.ts tests/dashboard-assets.test.ts`: `17 pass`, `0 fail`
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-store sqlite_store_persists_dashboard_settings`: `1 pass`, `0 fail`
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-agent --test serve_contract serve_`: `6 pass`, `0 fail`
+- `./tinytop check`
+  - Bun tests: `62 pass`, `0 fail`, `231 expect() calls`
+  - `src/server.ts --check`: `status: ok`
+  - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
+  - Rust fmt check and workspace tests passed
+  - Browser bundle built `legacy/dashboard/app.js` successfully
+- `diff -qr agent/assets/dashboard legacy/dashboard`: no differences
+- `bun audit`: no vulnerabilities found
+- `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies, no vulnerabilities reported
+- `git diff --check`: clean
+- `./tinytop rust build`: built `agent/target/release/tinytop-agent`
+- Embedded dashboard smoke through `./tinytop start` on alternate port `4285`
+  - `/api/version`: returned `{"status":"ok","app":"tinytop","version":"0.1.22","runtime":"rust","component":"collector-dashboard-daemon","dashboard":"embedded"}`
+  - `/`: contained `id="daemon-version"`
+  - `/app.js`: contained `fetch("/api/version"` and `renderVersion`
+  - `PORT=4285 ./tinytop status`: reported `rust collector-dashboard-daemon v0.1.22 (embedded dashboard)`
+  - Alternate-port smoke daemon stopped after verification
+- Default daemon refreshed through `./tinytop start`
+  - `curl -fsS http://127.0.0.1:4274/api/version`: returned Rust `0.1.22` embedded dashboard identity
+  - `curl -fsS http://127.0.0.1:4274/api/settings`: returned default daemon settings from SQLite-backed API
+  - `/`: contains `id="settings"`, `This Browser`, and `This Daemon`
+  - `/app.js`: contains `fetchSettings`, `saveDaemonSettings`, and `restartPollingTimer`
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.22 (embedded dashboard)`
+
 ## Useful Commands
 
 ```bash
 cd /home/michel/projects/tinytop
 ./tinytop help
-./tinytop rust serve
+./tinytop start
 curl -fsS http://127.0.0.1:4274/health
+curl -fsS http://127.0.0.1:4274/api/version
+curl -fsS http://127.0.0.1:4274/api/settings
 curl -fsS http://127.0.0.1:4274/api/snapshot
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 ./tinytop check
@@ -216,16 +273,15 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 
 ## Next Useful Work
 
-- Add SQLite-backed daemon settings for default theme, default graph mode, poll interval, default history window, retention, thresholds, and enabled sections.
-- Add a settings UI that separates `This Browser` local preferences from `This Daemon` SQLite-backed defaults.
 - Add SQLite raw-history retention with a configurable 24 to 72 hour default.
 - Add one-minute rollups for longer history ranges.
+- Apply saved settings to daemon-side collection and retention enforcement where appropriate.
 - Add a collector/daemon health indicator in the UI if history or snapshot APIs degrade.
 - Add native Windows and macOS collectors when the project moves beyond Linux/WSL.
 
 ## Notes For Resuming
 
-- TinyTop Rust daemon PID `331250` is running at this handoff refresh. Stop it with `kill 331250` if you need the default dashboard port free.
+- TinyTop Rust daemon PID `1079395` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` or `kill 1079395` if you need the default dashboard port free.
 - WSL user systemd was previously unavailable in this environment, so foreground Rust daemon mode is the known-working path.
 - The dashboard is loopback-only by design.
 - `legacy/dashboard/vendor/echarts.min.js` and `agent/assets/dashboard/vendor/echarts.min.js` are vendored third-party code and should stay excluded from local UI policy scans.

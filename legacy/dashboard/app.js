@@ -1,4 +1,4 @@
-const POLL_MS = 1500;
+const DEFAULT_POLL_MS = 1500;
 const MAX_HISTORY_PAGE_SIZE = 10_000;
 const MAX_HISTORY_PAGE_COUNT = 8;
 const MAX_HISTORY_RENDER_SAMPLES = 1_200;
@@ -33,6 +33,28 @@ const HISTORY_WINDOWS = {
   "24h": { label: "24h", durationMs: 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE },
 };
 const HISTORY_WINDOW_KEYS = new Set(Object.keys(HISTORY_WINDOWS));
+const DEFAULT_DAEMON_SETTINGS = {
+  defaultTheme: "midnight",
+  defaultGraphMode: "line",
+  pollIntervalMs: DEFAULT_POLL_MS,
+  defaultHistoryWindow: "live",
+  retentionHours: 72,
+  rollupRetentionDays: 30,
+  topProcessCount: 8,
+  redactionDefault: false,
+  thresholds: {
+    cpuWarn: 80,
+    memoryWarn: 85,
+    diskWarn: 85,
+  },
+  enabledSections: {
+    overview: true,
+    history: true,
+    filesystem: true,
+    pressure: true,
+    processes: true,
+  },
+};
 
 const state = {
   paused: false,
@@ -41,6 +63,8 @@ const state = {
   activeConfirmation: null,
   confirmationReturnFocus: null,
   historyChartInstance: null,
+  pollMs: DEFAULT_POLL_MS,
+  daemonSettings: cloneSettings(DEFAULT_DAEMON_SETTINGS),
   theme: "midnight",
   graphMode: "line",
   historyWindowKey: "live",
@@ -60,6 +84,7 @@ const elements = {
   liveDot: document.querySelector("#live-dot"),
   liveLabel: document.querySelector("#live-label"),
   runtimeSummary: document.querySelector("#runtime-summary"),
+  daemonVersion: document.querySelector("#daemon-version"),
   hostName: document.querySelector("#host-name"),
   kernelName: document.querySelector("#kernel-name"),
   distroName: document.querySelector("#distro-name"),
@@ -96,6 +121,22 @@ const elements = {
   themeButtons: Array.from(document.querySelectorAll("[data-theme-option]")),
   graphButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   historyWindowButtons: Array.from(document.querySelectorAll("[data-history-window]")),
+  browserThemeSetting: document.querySelector("#browser-theme-setting"),
+  browserGraphSetting: document.querySelector("#browser-graph-setting"),
+  browserHistoryWindowSetting: document.querySelector("#browser-history-window-setting"),
+  daemonDefaultTheme: document.querySelector("#daemon-default-theme"),
+  daemonDefaultGraph: document.querySelector("#daemon-default-graph"),
+  daemonDefaultWindow: document.querySelector("#daemon-default-window"),
+  daemonPollInterval: document.querySelector("#daemon-poll-interval"),
+  daemonRetentionHours: document.querySelector("#daemon-retention-hours"),
+  daemonRollupRetentionDays: document.querySelector("#daemon-rollup-retention-days"),
+  daemonTopProcessCount: document.querySelector("#daemon-top-process-count"),
+  daemonCpuWarn: document.querySelector("#daemon-cpu-warn"),
+  daemonMemoryWarn: document.querySelector("#daemon-memory-warn"),
+  daemonDiskWarn: document.querySelector("#daemon-disk-warn"),
+  daemonRedactionDefault: document.querySelector("#daemon-redaction-default"),
+  saveSettingsButton: document.querySelector("#save-settings-button"),
+  settingsStatus: document.querySelector("#settings-status"),
   historyScrubber: document.querySelector("#history-scrubber"),
   historyPositionLabel: document.querySelector("#history-position-label"),
   historyStartLabel: document.querySelector("#history-start-label"),
@@ -119,6 +160,15 @@ function readStoredValue(key, fallback, allowed) {
   }
 }
 
+function readStoredOptionalValue(key, allowed) {
+  try {
+    const value = window.localStorage.getItem(key);
+    return value && allowed.has(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function storeValue(key, value) {
   try {
     window.localStorage.setItem(key, value);
@@ -127,26 +177,62 @@ function storeValue(key, value) {
   }
 }
 
+function cloneSettings(settings = DEFAULT_DAEMON_SETTINGS) {
+  return {
+    ...settings,
+    thresholds: { ...settings.thresholds },
+    enabledSections: { ...settings.enabledSections },
+  };
+}
+
+function normalizeSettings(settings) {
+  const fallback = cloneSettings(DEFAULT_DAEMON_SETTINGS);
+  if (!settings || typeof settings !== "object") return fallback;
+
+  return {
+    ...fallback,
+    ...settings,
+    thresholds: {
+      ...fallback.thresholds,
+      ...(settings.thresholds ?? {}),
+    },
+    enabledSections: {
+      ...fallback.enabledSections,
+      ...(settings.enabledSections ?? {}),
+    },
+  };
+}
+
 function syncPressed(buttons, dataKey, activeValue) {
   for (const button of buttons) {
     button.setAttribute("aria-pressed", String(button.dataset[dataKey] === activeValue));
   }
 }
 
-function applyTheme(theme) {
+function setControlValue(control, value) {
+  if (control) control.value = String(value);
+}
+
+function setCheckboxValue(control, checked) {
+  if (control) control.checked = Boolean(checked);
+}
+
+function applyTheme(theme, { persist = true } = {}) {
   const nextTheme = THEMES.has(theme) ? theme : "midnight";
   state.theme = nextTheme;
   document.body.dataset.theme = nextTheme;
   syncPressed(elements.themeButtons, "themeOption", nextTheme);
-  storeValue(STORAGE_KEYS.theme, nextTheme);
+  setControlValue(elements.browserThemeSetting, nextTheme);
+  if (persist) storeValue(STORAGE_KEYS.theme, nextTheme);
   redrawCharts();
 }
 
-function setGraphMode(mode) {
+function setGraphMode(mode, { persist = true } = {}) {
   const nextMode = Object.hasOwn(GRAPH_MODES, mode) ? mode : "line";
   state.graphMode = nextMode;
   syncPressed(elements.graphButtons, "graphMode", nextMode);
-  storeValue(STORAGE_KEYS.graphMode, nextMode);
+  setControlValue(elements.browserGraphSetting, nextMode);
+  if (persist) storeValue(STORAGE_KEYS.graphMode, nextMode);
   drawHistoryChart();
 }
 
@@ -1093,6 +1179,133 @@ function setLiveStatus(kind, label) {
   setText(elements.liveLabel, label);
 }
 
+function versionComponentLabel(metadata) {
+  if (metadata.runtime === "rust") return "Rust collector/dashboard";
+  if (metadata.component === "collector") return "Legacy Bun collector";
+  return "Legacy Bun dashboard";
+}
+
+function renderVersion(metadata) {
+  const label = versionComponentLabel(metadata);
+  const version = metadata.version ? `v${metadata.version}` : "version unknown";
+  setText(elements.daemonVersion, `${label} ${version}`);
+  if (elements.daemonVersion) {
+    elements.daemonVersion.title = metadata.dashboard ? `Dashboard assets: ${metadata.dashboard}` : label;
+  }
+}
+
+async function fetchVersion() {
+  try {
+    const response = await fetch("/api/version", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Version failed with HTTP ${response.status}`);
+    renderVersion(await response.json());
+  } catch {
+    setText(elements.daemonVersion, "Version unavailable");
+  }
+}
+
+function renderSettingsStatus(message) {
+  setText(elements.settingsStatus, message);
+}
+
+function populateDaemonSettings(settings) {
+  const nextSettings = normalizeSettings(settings);
+  state.daemonSettings = cloneSettings(nextSettings);
+  state.pollMs = Math.max(250, Number(nextSettings.pollIntervalMs) || DEFAULT_POLL_MS);
+
+  setControlValue(elements.daemonDefaultTheme, nextSettings.defaultTheme);
+  setControlValue(elements.daemonDefaultGraph, nextSettings.defaultGraphMode);
+  setControlValue(elements.daemonDefaultWindow, nextSettings.defaultHistoryWindow);
+  setControlValue(elements.daemonPollInterval, nextSettings.pollIntervalMs);
+  setControlValue(elements.daemonRetentionHours, nextSettings.retentionHours);
+  setControlValue(elements.daemonRollupRetentionDays, nextSettings.rollupRetentionDays);
+  setControlValue(elements.daemonTopProcessCount, nextSettings.topProcessCount);
+  setControlValue(elements.daemonCpuWarn, nextSettings.thresholds.cpuWarn);
+  setControlValue(elements.daemonMemoryWarn, nextSettings.thresholds.memoryWarn);
+  setControlValue(elements.daemonDiskWarn, nextSettings.thresholds.diskWarn);
+  setCheckboxValue(elements.daemonRedactionDefault, nextSettings.redactionDefault);
+}
+
+function numberControlValue(control, fallback) {
+  const value = Number(control?.value);
+  return Number.isFinite(value) ? Math.round(value) : fallback;
+}
+
+function collectDaemonSettingsFromForm() {
+  return {
+    ...cloneSettings(state.daemonSettings),
+    defaultTheme: elements.daemonDefaultTheme?.value ?? "midnight",
+    defaultGraphMode: elements.daemonDefaultGraph?.value ?? "line",
+    defaultHistoryWindow: elements.daemonDefaultWindow?.value ?? "live",
+    pollIntervalMs: numberControlValue(elements.daemonPollInterval, DEFAULT_POLL_MS),
+    retentionHours: numberControlValue(elements.daemonRetentionHours, 72),
+    rollupRetentionDays: numberControlValue(elements.daemonRollupRetentionDays, 30),
+    topProcessCount: numberControlValue(elements.daemonTopProcessCount, 8),
+    redactionDefault: Boolean(elements.daemonRedactionDefault?.checked),
+    thresholds: {
+      cpuWarn: numberControlValue(elements.daemonCpuWarn, 80),
+      memoryWarn: numberControlValue(elements.daemonMemoryWarn, 85),
+      diskWarn: numberControlValue(elements.daemonDiskWarn, 85),
+    },
+  };
+}
+
+function applyInitialBrowserSettings(settings) {
+  const graphModes = new Set(Object.keys(GRAPH_MODES));
+  applyTheme(readStoredValue(STORAGE_KEYS.theme, settings.defaultTheme, THEMES), { persist: false });
+  setGraphMode(readStoredValue(STORAGE_KEYS.graphMode, settings.defaultGraphMode, graphModes), { persist: false });
+  setHistoryWindow(readStoredValue(STORAGE_KEYS.historyWindow, settings.defaultHistoryWindow, HISTORY_WINDOW_KEYS), {
+    fetch: false,
+    persist: false,
+  });
+}
+
+async function fetchSettings() {
+  try {
+    const response = await fetch("/api/settings", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Settings failed with HTTP ${response.status}`);
+    const settings = normalizeSettings(await response.json());
+    populateDaemonSettings(settings);
+    renderSettingsStatus("Daemon defaults loaded.");
+    return settings;
+  } catch (error) {
+    const settings = cloneSettings(DEFAULT_DAEMON_SETTINGS);
+    populateDaemonSettings(settings);
+    renderSettingsStatus(error instanceof Error ? error.message : "Settings unavailable.");
+    return settings;
+  }
+}
+
+function restartPollingTimer() {
+  if (!state.timer) return;
+  window.clearInterval(state.timer);
+  state.timer = window.setInterval(fetchSnapshot, state.pollMs);
+}
+
+async function saveDaemonSettings() {
+  const settings = collectDaemonSettingsFromForm();
+  if (elements.saveSettingsButton) elements.saveSettingsButton.disabled = true;
+  renderSettingsStatus("Saving daemon defaults.");
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(settings),
+    });
+    if (!response.ok) throw new Error(`Settings save failed with HTTP ${response.status}`);
+    const saved = normalizeSettings(await response.json());
+    populateDaemonSettings(saved);
+    restartPollingTimer();
+    renderSettingsStatus("Daemon defaults saved.");
+  } catch (error) {
+    renderSettingsStatus(error instanceof Error ? error.message : "Settings save failed.");
+  } finally {
+    if (elements.saveSettingsButton) elements.saveSettingsButton.disabled = false;
+  }
+}
+
 async function fetchSnapshot() {
   if (state.loading || state.paused) return;
   state.loading = true;
@@ -1164,6 +1377,7 @@ function setHistoryWindow(key, { fetch = true, persist = true } = {}) {
   state.historyWindowKey = nextWindow;
   state.selectedAtMs = null;
   syncPressed(elements.historyWindowButtons, "historyWindow", nextWindow);
+  setControlValue(elements.browserHistoryWindowSetting, nextWindow);
   if (persist) storeValue(STORAGE_KEYS.historyWindow, nextWindow);
   updateHistoryControls();
   if (fetch) fetchHistoryWindow();
@@ -1225,6 +1439,22 @@ for (const button of elements.historyWindowButtons) {
   });
 }
 
+elements.browserThemeSetting?.addEventListener("change", () => {
+  applyTheme(elements.browserThemeSetting.value);
+});
+
+elements.browserGraphSetting?.addEventListener("change", () => {
+  setGraphMode(elements.browserGraphSetting.value);
+});
+
+elements.browserHistoryWindowSetting?.addEventListener("change", () => {
+  setHistoryWindow(elements.browserHistoryWindowSetting.value);
+});
+
+elements.saveSettingsButton?.addEventListener("click", () => {
+  saveDaemonSettings();
+});
+
 elements.historyScrubber?.addEventListener("input", () => {
   selectHistoryTimestamp(Number(elements.historyScrubber.value));
 });
@@ -1282,14 +1512,13 @@ window.addEventListener("resize", () => {
   redrawCharts();
 });
 
-applyTheme(readStoredValue(STORAGE_KEYS.theme, "midnight", THEMES));
-setGraphMode(readStoredValue(STORAGE_KEYS.graphMode, "line", new Set(Object.keys(GRAPH_MODES))));
-setHistoryWindow(readStoredValue(STORAGE_KEYS.historyWindow, "live", HISTORY_WINDOW_KEYS), { fetch: false, persist: false });
-
 async function startDashboard() {
+  const settings = await fetchSettings();
+  applyInitialBrowserSettings(settings);
+  await fetchVersion();
   await fetchHistory();
   await fetchSnapshot();
-  state.timer = window.setInterval(fetchSnapshot, POLL_MS);
+  state.timer = window.setInterval(fetchSnapshot, state.pollMs);
 }
 
 startDashboard();

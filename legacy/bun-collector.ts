@@ -7,6 +7,7 @@ import {
   type HistorySample,
   type HistoryStore,
 } from "../src/history-store";
+import { versionMetadata } from "../src/version";
 
 const DEFAULT_WRITER_HOST = "127.0.0.1";
 const DEFAULT_WRITER_PORT = 4276;
@@ -79,6 +80,18 @@ export function createCollectorFetchHandler(options: CollectorHandlerOptions): (
     if (url.pathname === "/health") {
       return new Response("ok", {
         headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    if (url.pathname === "/version") {
+      return Response.json(await versionMetadata({
+        runtime: "legacy-bun",
+        component: "collector",
+        dashboard: "none",
+      }), {
+        headers: {
+          "cache-control": "no-store",
+        },
       });
     }
 

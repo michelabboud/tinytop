@@ -14,7 +14,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tinytop_collectors::linux::LinuxCollector;
-use tinytop_store::{HistoryQuery, HistorySample, SqliteHistoryStore};
+use tinytop_store::{DashboardSettings, HistoryQuery, HistorySample, SqliteHistoryStore};
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
 const DEFAULT_WINDOW_SECONDS: i64 = 300;
@@ -57,6 +57,16 @@ struct HistoryResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct VersionResponse {
+    status: &'static str,
+    app: &'static str,
+    version: String,
+    runtime: &'static str,
+    component: &'static str,
+    dashboard: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
 }
@@ -93,6 +103,9 @@ fn router(state: AppState) -> Router {
         .route("/snapshot/latest", get(latest_snapshot))
         .route("/snapshot/collect", get(collect_snapshot))
         .route("/history", get(history))
+        .route("/version", get(version))
+        .route("/api/version", get(version))
+        .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/snapshot", get(latest_snapshot))
         .route("/api/history", get(history))
         .route("/", get(static_file))
@@ -111,6 +124,28 @@ async fn health() -> impl IntoResponse {
         )],
         "ok",
     )
+}
+
+async fn version(State(state): State<AppState>) -> Response {
+    no_store(Json(VersionResponse {
+        status: "ok",
+        app: "tinytop",
+        version: product_version(),
+        runtime: "rust",
+        component: "collector-dashboard-daemon",
+        dashboard: dashboard_asset_label(&state.dashboard_assets),
+    }))
+}
+
+async fn get_settings(State(state): State<AppState>) -> Result<Response, ServeError> {
+    Ok(no_store(Json(state.store.get_settings().await?)).into_response())
+}
+
+async fn update_settings(
+    State(state): State<AppState>,
+    Json(settings): Json<DashboardSettings>,
+) -> Result<Response, ServeError> {
+    Ok(no_store(Json(state.store.put_settings(&settings).await?)).into_response())
 }
 
 async fn latest_snapshot(State(state): State<AppState>) -> Result<Response, ServeError> {
@@ -267,6 +302,18 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
+fn product_version() -> String {
+    include_str!("../../../../VERSION").trim().to_string()
+}
+
+fn dashboard_asset_label(assets: &DashboardAssets) -> &'static str {
+    match assets {
+        DashboardAssets::Embedded => "embedded",
+        DashboardAssets::Directory(_) => "directory",
+        DashboardAssets::Disabled => "disabled",
+    }
+}
+
 fn no_store<T: IntoResponse>(response: T) -> Response {
     let mut response = response.into_response();
     response
@@ -316,6 +363,7 @@ impl ServeError {
     fn status_code(&self) -> StatusCode {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Store(tinytop_store::StoreError::Validation(_)) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
