@@ -9,8 +9,15 @@ export type DashboardSettings = {
   redactionDefault: boolean;
   thresholds: {
     cpuWarn: number;
+    cpuCritical: number;
     memoryWarn: number;
+    memoryCritical: number;
     diskWarn: number;
+    diskCritical: number;
+    loadWarn: number;
+    loadCritical: number;
+    pressureWarn: number;
+    pressureCritical: number;
   };
   enabledSections: {
     overview: boolean;
@@ -32,8 +39,15 @@ export const DEFAULT_DASHBOARD_SETTINGS: DashboardSettings = {
   redactionDefault: false,
   thresholds: {
     cpuWarn: 80,
+    cpuCritical: 95,
     memoryWarn: 85,
+    memoryCritical: 95,
     diskWarn: 85,
+    diskCritical: 95,
+    loadWarn: 80,
+    loadCritical: 100,
+    pressureWarn: 10,
+    pressureCritical: 25,
   },
   enabledSections: {
     overview: true,
@@ -73,8 +87,15 @@ export function normalizeDashboardSettings(value: unknown): DashboardSettings {
   next.redactionDefault = Boolean(incoming.redactionDefault);
   next.thresholds = {
     cpuWarn: numberValue(incoming.thresholds?.cpuWarn, next.thresholds.cpuWarn),
+    cpuCritical: numberValue(incoming.thresholds?.cpuCritical, next.thresholds.cpuCritical),
     memoryWarn: numberValue(incoming.thresholds?.memoryWarn, next.thresholds.memoryWarn),
+    memoryCritical: numberValue(incoming.thresholds?.memoryCritical, next.thresholds.memoryCritical),
     diskWarn: numberValue(incoming.thresholds?.diskWarn, next.thresholds.diskWarn),
+    diskCritical: numberValue(incoming.thresholds?.diskCritical, next.thresholds.diskCritical),
+    loadWarn: numberValue(incoming.thresholds?.loadWarn, next.thresholds.loadWarn),
+    loadCritical: numberValue(incoming.thresholds?.loadCritical, next.thresholds.loadCritical),
+    pressureWarn: numberValue(incoming.thresholds?.pressureWarn, next.thresholds.pressureWarn),
+    pressureCritical: numberValue(incoming.thresholds?.pressureCritical, next.thresholds.pressureCritical),
   };
   next.enabledSections = {
     overview: booleanValue(incoming.enabledSections?.overview, next.enabledSections.overview),
@@ -109,8 +130,20 @@ function validateDashboardSettings(settings: DashboardSettings): void {
   validateRange("rollupRetentionDays", settings.rollupRetentionDays, 1, 366);
   validateRange("topProcessCount", settings.topProcessCount, 1, 50);
   validateRange("thresholds.cpuWarn", settings.thresholds.cpuWarn, 0, 100);
+  validateRange("thresholds.cpuCritical", settings.thresholds.cpuCritical, 0, 100);
   validateRange("thresholds.memoryWarn", settings.thresholds.memoryWarn, 0, 100);
+  validateRange("thresholds.memoryCritical", settings.thresholds.memoryCritical, 0, 100);
   validateRange("thresholds.diskWarn", settings.thresholds.diskWarn, 0, 100);
+  validateRange("thresholds.diskCritical", settings.thresholds.diskCritical, 0, 100);
+  validateRange("thresholds.loadWarn", settings.thresholds.loadWarn, 0, 100);
+  validateRange("thresholds.loadCritical", settings.thresholds.loadCritical, 0, 100);
+  validateRange("thresholds.pressureWarn", settings.thresholds.pressureWarn, 0, 100);
+  validateRange("thresholds.pressureCritical", settings.thresholds.pressureCritical, 0, 100);
+  validateThresholdPair("thresholds.cpu", settings.thresholds.cpuWarn, settings.thresholds.cpuCritical);
+  validateThresholdPair("thresholds.memory", settings.thresholds.memoryWarn, settings.thresholds.memoryCritical);
+  validateThresholdPair("thresholds.disk", settings.thresholds.diskWarn, settings.thresholds.diskCritical);
+  validateThresholdPair("thresholds.load", settings.thresholds.loadWarn, settings.thresholds.loadCritical);
+  validateThresholdPair("thresholds.pressure", settings.thresholds.pressureWarn, settings.thresholds.pressureCritical);
 }
 
 function validateOneOf(field: string, value: string, allowed: Set<string>): void {
@@ -122,5 +155,11 @@ function validateOneOf(field: string, value: string, allowed: Set<string>): void
 function validateRange(field: string, value: number, min: number, max: number): void {
   if (!Number.isInteger(value) || value < min || value > max) {
     throw new Error(`${field} must be between ${min} and ${max}`);
+  }
+}
+
+function validateThresholdPair(field: string, warn: number, critical: number): void {
+  if (warn > critical) {
+    throw new Error(`${field} warning threshold must be less than or equal to critical threshold`);
   }
 }

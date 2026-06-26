@@ -30,11 +30,12 @@ The dashboard is organized for quick scanning:
 1. Left rail: runtime summary, collector/dashboard version, navigation, Settings button, live status.
 2. Top identity strip: host, kernel, distro, uptime.
 3. Display controls: theme selection.
-4. Overview gauges: CPU, RAM, swap, and load.
-5. History: graph-type nav, range presets, ECharts chart, timeline scrubber.
-6. Metric band: load, thread count, root filesystem, runtime.
-7. Filesystem and pressure panels.
-8. Process table.
+4. Operator strip: current Healthy, Warning, Critical, or Stale state, worst offender, and last-sample age.
+5. Overview gauges: CPU, RAM, swap, and load.
+6. History: graph-type nav, range presets, ECharts chart, timeline rail, coverage, and selected sample values.
+7. Metric band: load, thread count, root filesystem, runtime.
+8. Filesystem and pressure panels.
+9. Process table.
 
 ## Live Status
 
@@ -44,7 +45,14 @@ The rail status shows the polling state:
 - `Paused` - polling paused by the user.
 - `Error` - latest fetch failed; the inline status message explains the failure.
 
-The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.24`. The same identity is available from:
+The operator strip shows:
+
+- `Healthy` - all tracked metrics are below warning thresholds.
+- `Warning` - at least one metric crossed its warning threshold.
+- `Critical` - at least one metric crossed its critical threshold or the current snapshot fetch failed.
+- `Stale` - the latest collector sample is older than the expected polling window.
+
+The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.25`. The same identity is available from:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/api/version
@@ -78,8 +86,8 @@ Themes affect the browser only. They do not change collection, SQLite, or system
 
 The Settings dialog opens from the left rail and is split by scope:
 
-- `This Browser` controls the active theme, graph mode, and history window for the current browser profile. These values are stored in `localStorage`.
-- `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, and warning thresholds.
+- `This Browser` controls the active theme, graph mode, and history window for the current browser profile. Additional browser-local state includes visible chart series, process table filter/sort/density, filesystem system-mount toggle, and last-used section.
+- `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, warning/critical thresholds, and enabled dashboard sections.
 
 Saving daemon defaults uses `PUT /api/settings`. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
 
@@ -123,10 +131,11 @@ Shows the selected or latest sample as proportional blocks. Use it for a compact
 The timeline row sits below the chart.
 
 - Choose `Live`, `15m`, `1h`, `6h`, or `24h` to load that timestamp range.
-- Drag the slider to inspect the nearest loaded sample by timestamp.
+- Drag the timeline rail to inspect the nearest loaded sample by timestamp.
 - The main gauges and detail panels update to the selected sample.
 - The position label shows the selected local datetime.
-- Click `Live` beside the slider to return to the newest sample in the loaded range.
+- The coverage row shows oldest sample, newest sample, database size, and rollup bucket count when the Rust daemon serves `/api/history/coverage`.
+- Click `Now` beside the rail to return to the newest sample in the loaded range.
 - Click `Clear` to empty the current tab's session buffer after confirming.
 
 Keyboard controls on the chart:
@@ -144,18 +153,25 @@ Persisted in SQLite:
 - timestamp
 - graph metric columns
 - full snapshot JSON for UI hydration
+- daemon dashboard defaults
+- one-minute metric rollups in the Rust daemon
 
 SQLite retention:
 
-- Automatic retention is not implemented yet.
-- Raw samples remain in the database until you archive or reset local history.
-- `/api/history` query windows limit what is returned to the browser; they do not delete older rows.
+- The Rust daemon prunes raw samples by `retentionHours`.
+- The Rust daemon prunes one-minute rollups by `rollupRetentionDays`.
+- Legacy Bun split mode keeps raw samples until you archive or reset local history.
+- `/api/history` query windows limit what is returned to the browser; retention settings control pruning.
 
 Persisted in browser `localStorage`:
 
 - theme
 - graph mode
 - selected history range
+- visible history series
+- process table filter, sort, and density
+- filesystem system-mount toggle
+- last section
 
 Not persisted:
 

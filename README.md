@@ -6,12 +6,12 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.24`
+- Version: `0.1.25`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
-- SQLite retention: stored until manual archive/reset; automatic retention is not implemented yet
+- SQLite retention: Rust daemon prunes raw samples by the saved retention window and keeps one-minute rollups by the saved rollup window
 - Runtime identity: `./tinytop status` and `GET /api/version`
 - Settings: browser-local display preferences plus SQLite-backed daemon defaults at `GET`/`PUT /api/settings`
 - Network exposure: loopback only by default
@@ -162,11 +162,14 @@ For persistent background collection, install user-space systemd services:
 - Responsive Bar mode that keeps a minimum bar width and rolls the visible window left as new samples arrive
 - SQLite-backed recent history so browser refreshes refill History instead of starting empty
 - Timestamp-based timeline with Live, 15m, 1h, 6h, and 24h range presets
-- Timeline scrubber with selected datetime context, compact metric values, and a return-to-live control
+- Timeline rail with overview trace, selected datetime context, compact metric values, history coverage, and a return-to-now control
+- Operator status strip with Healthy, Warning, Critical, and Stale states from saved thresholds
+- Process search, sort, density controls, and process detail dialog
+- Filesystem root card, system-mount toggle, and threshold-colored filesystem bars
 - Visible collector/dashboard runtime and version metadata in the sidebar
 - In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
-- Browser-local display preferences for theme, graph mode, and selected history range
-- Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults
+- Browser-local display preferences for theme, graph mode, selected history range, visible series, process table controls, filesystem toggle, and last section
+- Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults, including thresholds and enabled dashboard sections
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, and a no-Bun systemd path
 
 ## Common Commands
@@ -239,7 +242,9 @@ Implementation notes:
 | [docs/reports/2026-06-26-runtime-auto-detect-version.md](docs/reports/2026-06-26-runtime-auto-detect-version.md) | Runtime auto-detection and API/sidebar version identity |
 | [docs/reports/2026-06-26-settings-dialog.md](docs/reports/2026-06-26-settings-dialog.md) | Settings dialog presentation change and focused UI verification |
 | [docs/reports/2026-06-26-load-gauge.md](docs/reports/2026-06-26-load-gauge.md) | Load overview gauge implementation and verification |
+| [docs/reports/2026-06-26-dashboard-operator-console.md](docs/reports/2026-06-26-dashboard-operator-console.md) | Operator console dashboard slice, retention enforcement, rollups, and verification |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
+| [docs/superpowers/plans/2026-06-26-dashboard-operator-console.md](docs/superpowers/plans/2026-06-26-dashboard-operator-console.md) | Executed plan for operator status, Timeline V2, settings application, process/filesystem controls, and history backend follow-through |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
@@ -273,13 +278,13 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API.
 
-TinyTop currently has no automatic SQLite retention job. Raw samples stay in `metric_samples` until you manually archive or reset the database with the command-center DB tools.
+In the Rust daemon, raw samples are pruned from `metric_samples` using `retentionHours` from `/api/settings`. One-minute rollup buckets are maintained in `metric_rollups_1m` and pruned using `rollupRetentionDays`. Legacy Bun split mode keeps the older manual archive/reset behavior.
 
-Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, thresholds, and enabled sections. Active theme, graph mode, and history range still stay in this browser's `localStorage`.
+Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, warning/critical thresholds, and enabled sections. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
 
 The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. The range presets are Live, 15m, 1h, 6h, and 24h. Large responses are paged with `/api/history?since_ms=...&until_ms=...`, deduplicated by timestamp, and downsampled for browser rendering when needed. These query windows do not delete older SQLite rows.
 
-The current SQLite implementation stores indexed metric columns plus the complete snapshot JSON. Retention and rollup tables are planned but not implemented yet, so the database grows until manually archived or reset.
+The current Rust SQLite implementation stores indexed metric columns plus the complete snapshot JSON, maintains one-minute metric rollups, and exposes history coverage through `GET /api/history/coverage`.
 
 ## Verification
 

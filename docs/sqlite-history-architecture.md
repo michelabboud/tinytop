@@ -11,8 +11,8 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current history shape: one `metric_samples` table with indexed metric columns and full snapshot JSON
-- Current retention: no automatic pruning; rows remain until manual archive/reset
+- Current history shape: `metric_samples` with indexed metric columns and full snapshot JSON, plus Rust-maintained one-minute rollups in `metric_rollups_1m`
+- Current retention: Rust daemon prunes raw rows by `retentionHours` and rollups by `rollupRetentionDays`; legacy Bun split mode remains manual archive/reset
 
 ## Process Boundary
 
@@ -108,6 +108,25 @@ CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
   ON metric_samples (runtime_kind, captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS metric_rollups_1m (
+  bucket_start_ms INTEGER PRIMARY KEY,
+  first_captured_at_ms INTEGER NOT NULL,
+  newest_captured_at_ms INTEGER NOT NULL,
+  sample_count INTEGER NOT NULL,
+  avg_cpu_usage_percent REAL NOT NULL,
+  max_cpu_usage_percent REAL NOT NULL,
+  avg_memory_used_percent REAL NOT NULL,
+  max_memory_used_percent REAL NOT NULL,
+  avg_swap_used_percent REAL NOT NULL,
+  max_swap_used_percent REAL NOT NULL,
+  avg_load_percent REAL NOT NULL,
+  max_load_percent REAL NOT NULL,
+  avg_root_used_percent REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
+  ON metric_rollups_1m (newest_captured_at_ms DESC);
 ```
 
 ## Why Store Snapshot JSON
@@ -167,24 +186,38 @@ The browser then:
 
 This is why browser refresh now refills History instead of starting from one sample.
 
-## Retention
+## Rollups And Coverage
 
-Retention is not implemented yet. The current database grows until manually archived or reset.
+The Rust daemon rebuilds the affected one-minute rollup bucket after each sample insert. Rollups are additive to the raw history table; `/api/history` still returns raw samples today.
+
+`GET /api/history/coverage` reports:
+
+- raw sample count
+- oldest raw sample timestamp
+- newest raw sample timestamp
+- configured raw retention hours
+- configured rollup retention days
+- one-minute rollup bucket count
+- SQLite database size in bytes
+
+## Retention
 
 Current behavior:
 
-- Every successful scheduled or manual collection writes one raw row into `metric_samples`.
-- `/api/history` and `/history` select bounded windows for callers, but they never delete older rows.
+- Every successful scheduled or manual Rust collection writes one raw row into `metric_samples`.
+- The Rust daemon deletes raw rows older than the configured `retentionHours` cutoff.
+- The Rust daemon deletes rollup buckets older than the configured `rollupRetentionDays` cutoff.
+- `/api/history` and `/history` select bounded windows for callers; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
 - The dashboard hydrates the browser-selected timestamp window, currently Live, 15m, 1h, 6h, or 24h. Large windows are paged through `/api/history`, deduplicated by captured timestamp, and downsampled only for browser rendering; that is a rendering limit, not a storage limit.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
+- Legacy Bun split mode keeps the earlier manual archive/reset behavior.
 
-Recommended future retention:
+Current defaults:
 
-- Raw samples: configurable, default 24 to 72 hours.
+- Raw samples: configurable, default 72 hours.
 - One-minute rollups: 30 days.
-- Longer rollups: only if the UI adds longer-range browsing.
 
-When retention is implemented, it should delete by `captured_at_ms` from `metric_samples`. Future child tables should use cascading foreign keys.
+Future child tables should use cascading foreign keys if normalized process/filesystem/pressure tables land.
 
 ## Future Tables
 
@@ -193,7 +226,6 @@ Potential future normalized tables:
 - `pressure_samples`
 - `filesystem_samples`
 - `process_samples`
-- `metric_rollups_1m`
 
 These were deliberately not implemented in the first persistence slice because the current UI hydrates full snapshots. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
 

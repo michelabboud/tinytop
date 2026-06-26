@@ -250,6 +250,46 @@ fn serve_rejects_invalid_dashboard_settings_api() {
     result.expect("server should reject invalid dashboard settings");
 }
 
+#[test]
+fn serve_exposes_history_coverage_api() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+            "--no-dashboard",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get(port, "/api/history/coverage"))
+        .map(|response| {
+            assert!(
+                response.starts_with("HTTP/1.1 200"),
+                "coverage endpoint should return HTTP 200, got {response}"
+            );
+            assert!(response.contains(r#""sampleCount":"#));
+            assert!(response.contains(r#""retentionHours":72"#));
+            assert!(response.contains(r#""rollupRetentionDays":30"#));
+            assert!(response.contains(r#""rollupBucketCount":"#));
+            assert!(response.contains(r#""databaseBytes":"#));
+        });
+
+    stop_child(&mut child);
+
+    result.expect("server should expose history coverage");
+}
+
 fn reserve_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should reserve a local port");
     listener

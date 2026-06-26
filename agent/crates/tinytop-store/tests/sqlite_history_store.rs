@@ -1,4 +1,4 @@
-use tinytop_store::{DashboardSettings, HistoryQuery, SqliteHistoryStore};
+use tinytop_store::{DashboardSettings, DashboardThresholds, HistoryQuery, SqliteHistoryStore};
 use tinytop_types::{
     CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
     PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
@@ -220,4 +220,101 @@ async fn sqlite_store_persists_dashboard_settings() {
     assert_eq!(persisted.top_process_count, 12);
 
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn sqlite_store_persists_load_and_critical_thresholds() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+
+    let settings = DashboardSettings {
+        thresholds: DashboardThresholds {
+            cpu_warn: 70,
+            cpu_critical: 90,
+            memory_warn: 72,
+            memory_critical: 92,
+            disk_warn: 74,
+            disk_critical: 94,
+            load_warn: 65,
+            load_critical: 88,
+            pressure_warn: 10,
+            pressure_critical: 25,
+        },
+        ..DashboardSettings::default()
+    };
+
+    store
+        .put_settings(&settings)
+        .await
+        .expect("settings should persist");
+
+    let persisted = store.get_settings().await.expect("settings");
+    assert_eq!(persisted.thresholds.cpu_critical, 90);
+    assert_eq!(persisted.thresholds.memory_critical, 92);
+    assert_eq!(persisted.thresholds.disk_critical, 94);
+    assert_eq!(persisted.thresholds.load_warn, 65);
+    assert_eq!(persisted.thresholds.load_critical, 88);
+    assert_eq!(persisted.thresholds.pressure_warn, 10);
+    assert_eq!(persisted.thresholds.pressure_critical, 25);
+}
+
+#[tokio::test]
+async fn sqlite_store_prunes_raw_history_by_cutoff() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+
+    store
+        .insert_snapshot(1_000, &snapshot("2026-06-24T12:00:01Z", 10.0))
+        .await
+        .expect("old insert");
+    store
+        .insert_snapshot(2_000, &snapshot("2026-06-24T12:00:02Z", 20.0))
+        .await
+        .expect("new insert");
+
+    let deleted = store.prune_raw_history(1_500).await.expect("prune");
+    assert_eq!(deleted, 1);
+
+    let history = store
+        .read_history(HistoryQuery {
+            since_ms: Some(0),
+            until_ms: None,
+            limit: Some(10),
+        })
+        .await
+        .expect("history");
+
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].captured_at_ms, 2_000);
+}
+
+#[tokio::test]
+async fn sqlite_store_tracks_one_minute_rollups_and_coverage() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+
+    store
+        .insert_snapshot(60_100, &snapshot("2026-06-24T12:01:00Z", 10.0))
+        .await
+        .expect("insert one");
+    store
+        .insert_snapshot(60_900, &snapshot("2026-06-24T12:01:01Z", 30.0))
+        .await
+        .expect("insert two");
+
+    let coverage = store
+        .history_coverage(&DashboardSettings::default())
+        .await
+        .expect("coverage");
+
+    assert_eq!(coverage.sample_count, 2);
+    assert_eq!(coverage.rollup_bucket_count, 1);
+    assert_eq!(coverage.oldest_captured_at_ms, Some(60_100));
+    assert_eq!(coverage.newest_captured_at_ms, Some(60_900));
+    assert_eq!(coverage.retention_hours, 72);
+    assert_eq!(coverage.rollup_retention_days, 30);
+    assert!(coverage.database_bytes >= 0);
 }

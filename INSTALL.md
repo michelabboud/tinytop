@@ -186,15 +186,16 @@ history.sqlite-shm
 
 History retention:
 
-- Automatic SQLite retention is not implemented yet.
-- The collector stores raw samples until you manually archive or reset the database.
-- The dashboard's recent history window limits what it reads and renders; it does not prune SQLite.
+- The Rust daemon prunes raw samples according to `retentionHours` saved in `/api/settings`.
+- The Rust daemon keeps one-minute rollups according to `rollupRetentionDays` saved in `/api/settings`.
+- The dashboard's recent history window limits what it reads and renders; the retention settings control database pruning.
+- Legacy Bun split mode keeps raw samples until you manually archive or reset the database.
 
 Dashboard settings:
 
-- Browser-local active theme, graph mode, and history range are stored in `localStorage`.
+- Browser-local active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section are stored in `localStorage`.
 - Rust daemon defaults are stored in SQLite through `/api/settings`.
-- Retention and rollup defaults can be saved now; automatic pruning and rollup enforcement are planned next.
+- Retention, rollup, warning/critical threshold, and enabled-section defaults are applied by the Rust daemon/dashboard.
 
 ## Verify Installation
 
@@ -225,6 +226,7 @@ Check HTTP endpoints:
 ```bash
 curl -fsS http://127.0.0.1:4274/health
 curl -fsS http://127.0.0.1:4274/api/version
+curl -fsS http://127.0.0.1:4274/api/history/coverage
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=3&window_seconds=300'
 ```
 
@@ -243,7 +245,7 @@ ok
 5. Start `./tinytop systemd start` or `./tinytop start`.
 6. Open the dashboard and confirm the sidebar version line plus History hydration after a browser refresh.
 
-The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. There is no explicit migration table or automatic retention job yet.
+The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. The Rust daemon adds the `app_settings` and `metric_rollups_1m` tables automatically when it starts.
 
 ## Reset Local History
 

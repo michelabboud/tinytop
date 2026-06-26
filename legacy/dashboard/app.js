@@ -10,6 +10,12 @@ const STORAGE_KEYS = {
   theme: "tinytop.theme",
   graphMode: "tinytop.graphMode",
   historyWindow: "tinytop.historyWindow",
+  visibleSeries: "tinytop.visibleSeries",
+  processFilter: "tinytop.processFilter",
+  processSort: "tinytop.processSort",
+  processDensity: "tinytop.processDensity",
+  filesystemShowSystem: "tinytop.filesystemShowSystem",
+  lastSection: "tinytop.lastSection",
 };
 const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
 const GRAPH_MODES = {
@@ -33,6 +39,29 @@ const HISTORY_WINDOWS = {
   "24h": { label: "24h", durationMs: 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE },
 };
 const HISTORY_WINDOW_KEYS = new Set(Object.keys(HISTORY_WINDOWS));
+const HISTORY_SERIES_KEYS = new Set(HISTORY_METRICS.map((metric) => metric.key));
+const PROCESS_SORT_KEYS = new Set(["pid", "cpu", "memory", "rss"]);
+const PROCESS_DENSITIES = new Set(["comfortable", "compact"]);
+const SYSTEM_FILESYSTEM_TYPES = new Set([
+  "autofs",
+  "binfmt_misc",
+  "bpf",
+  "cgroup",
+  "cgroup2",
+  "configfs",
+  "debugfs",
+  "devpts",
+  "devtmpfs",
+  "efivarfs",
+  "fusectl",
+  "mqueue",
+  "proc",
+  "pstore",
+  "securityfs",
+  "sysfs",
+  "tmpfs",
+  "tracefs",
+]);
 const DEFAULT_DAEMON_SETTINGS = {
   defaultTheme: "midnight",
   defaultGraphMode: "line",
@@ -44,8 +73,15 @@ const DEFAULT_DAEMON_SETTINGS = {
   redactionDefault: false,
   thresholds: {
     cpuWarn: 80,
+    cpuCritical: 95,
     memoryWarn: 85,
+    memoryCritical: 95,
     diskWarn: 85,
+    diskCritical: 95,
+    loadWarn: 80,
+    loadCritical: 100,
+    pressureWarn: 10,
+    pressureCritical: 25,
   },
   enabledSections: {
     overview: true,
@@ -69,6 +105,18 @@ const state = {
   theme: "midnight",
   graphMode: "line",
   historyWindowKey: "live",
+  visibleSeries: new Set(HISTORY_METRICS.map((metric) => metric.key)),
+  processFilter: "",
+  processSort: {
+    key: "cpu",
+    direction: "desc",
+  },
+  processDensity: "comfortable",
+  filesystemShowSystem: false,
+  timelineDragging: false,
+  lastSnapshot: null,
+  lastSnapshotAtMs: null,
+  historyCoverage: null,
   historyFetchToken: 0,
   snapshots: [],
   selectedAtMs: null,
@@ -106,6 +154,15 @@ const elements = {
   loadValue: document.querySelector("#load-value"),
   loadCapacity: document.querySelector("#load-capacity"),
   loadSpark: document.querySelector("#load-spark"),
+  operatorStatus: document.querySelector("#operator-status"),
+  operatorState: document.querySelector("#operator-state"),
+  operatorSummary: document.querySelector("#operator-summary"),
+  operatorAge: document.querySelector("#operator-age"),
+  operatorOffender: document.querySelector("#operator-offender"),
+  cpuPanel: document.querySelector("#cpu-panel"),
+  ramPanel: document.querySelector("#ram-panel"),
+  swapPanel: document.querySelector("#swap-panel"),
+  loadPanel: document.querySelector("#load-panel"),
   loadOne: document.querySelector("#load-one"),
   loadContext: document.querySelector("#load-context"),
   threadCount: document.querySelector("#thread-count"),
@@ -116,11 +173,31 @@ const elements = {
   runtimeConfidence: document.querySelector("#runtime-confidence"),
   filesystemCount: document.querySelector("#filesystem-count"),
   filesystemList: document.querySelector("#filesystem-list"),
+  filesystemShowSystem: document.querySelector("#filesystem-show-system"),
+  rootFilesystemCard: document.querySelector("#root-filesystem-card"),
+  rootFilesystemName: document.querySelector("#root-filesystem-name"),
+  rootFilesystemUsage: document.querySelector("#root-filesystem-usage"),
+  rootFilesystemBar: document.querySelector("#root-filesystem-bar"),
   pressureList: document.querySelector("#pressure-list"),
   historyChart: document.querySelector("#history-chart"),
+  timelineRail: document.querySelector("#timeline-rail"),
+  historyCoverage: document.querySelector("#history-coverage"),
+  historyOldest: document.querySelector("#history-oldest"),
+  historyNewest: document.querySelector("#history-newest"),
+  historyDbSize: document.querySelector("#history-db-size"),
+  historyRollups: document.querySelector("#history-rollups"),
+  historySeriesInputs: Array.from(document.querySelectorAll("[data-history-series]")),
   sampleCount: document.querySelector("#sample-count"),
   processCount: document.querySelector("#process-count"),
   processRows: document.querySelector("#process-rows"),
+  processPanel: document.querySelector("#processes"),
+  processSearch: document.querySelector("#process-search"),
+  processDensity: document.querySelector("#process-density"),
+  processSortButtons: Array.from(document.querySelectorAll("[data-process-sort]")),
+  processDetailDialog: document.querySelector("#process-detail-dialog"),
+  processDetailTitle: document.querySelector("#process-detail-title"),
+  processDetailBody: document.querySelector("#process-detail-body"),
+  closeProcessDetailButton: document.querySelector("#close-process-detail-button"),
   refreshButton: document.querySelector("#refresh-button"),
   pauseButton: document.querySelector("#pause-button"),
   themeButtons: Array.from(document.querySelectorAll("[data-theme-option]")),
@@ -141,12 +218,23 @@ const elements = {
   daemonRollupRetentionDays: document.querySelector("#daemon-rollup-retention-days"),
   daemonTopProcessCount: document.querySelector("#daemon-top-process-count"),
   daemonCpuWarn: document.querySelector("#daemon-cpu-warn"),
+  daemonCpuCritical: document.querySelector("#daemon-cpu-critical"),
   daemonMemoryWarn: document.querySelector("#daemon-memory-warn"),
+  daemonMemoryCritical: document.querySelector("#daemon-memory-critical"),
   daemonDiskWarn: document.querySelector("#daemon-disk-warn"),
+  daemonDiskCritical: document.querySelector("#daemon-disk-critical"),
+  daemonLoadWarn: document.querySelector("#daemon-load-warn"),
+  daemonLoadCritical: document.querySelector("#daemon-load-critical"),
+  daemonPressureWarn: document.querySelector("#daemon-pressure-warn"),
+  daemonPressureCritical: document.querySelector("#daemon-pressure-critical"),
   daemonRedactionDefault: document.querySelector("#daemon-redaction-default"),
+  daemonSectionOverview: document.querySelector("#daemon-section-overview"),
+  daemonSectionHistory: document.querySelector("#daemon-section-history"),
+  daemonSectionFilesystem: document.querySelector("#daemon-section-filesystem"),
+  daemonSectionPressure: document.querySelector("#daemon-section-pressure"),
+  daemonSectionProcesses: document.querySelector("#daemon-section-processes"),
   saveSettingsButton: document.querySelector("#save-settings-button"),
   settingsStatus: document.querySelector("#settings-status"),
-  historyScrubber: document.querySelector("#history-scrubber"),
   historyPositionLabel: document.querySelector("#history-position-label"),
   historyStartLabel: document.querySelector("#history-start-label"),
   historyEndLabel: document.querySelector("#history-end-label"),
@@ -158,6 +246,14 @@ const elements = {
   confirmationMessage: document.querySelector("#confirmation-message"),
   confirmationCancelButton: document.querySelector("#confirmation-cancel"),
   confirmationConfirmButton: document.querySelector("#confirmation-confirm"),
+  sectionNodes: {
+    overview: Array.from(document.querySelectorAll('[data-section="overview"]')),
+    history: Array.from(document.querySelectorAll('[data-section="history"]')),
+    filesystem: Array.from(document.querySelectorAll('[data-section="filesystem"]')),
+    pressure: Array.from(document.querySelectorAll('[data-section="pressure"]')),
+    processes: Array.from(document.querySelectorAll('[data-section="processes"]')),
+  },
+  sectionLinks: Array.from(document.querySelectorAll("[data-section-link]")),
 };
 
 function readStoredValue(key, fallback, allowed) {
@@ -178,9 +274,45 @@ function readStoredOptionalValue(key, allowed) {
   }
 }
 
+function readStoredString(key, fallback = "") {
+  try {
+    return window.localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredBoolean(key, fallback = false) {
+  try {
+    const value = window.localStorage.getItem(key);
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readStoredJson(key, fallback) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function storeValue(key, value) {
   try {
     window.localStorage.setItem(key, value);
+  } catch {
+    // localStorage can be disabled; the controls should still work for the current session.
+  }
+}
+
+function storeJson(key, value) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
   } catch {
     // localStorage can be disabled; the controls should still work for the current session.
   }
@@ -194,6 +326,13 @@ function cloneSettings(settings = DEFAULT_DAEMON_SETTINGS) {
   };
 }
 
+function normalizeThresholds(thresholds = {}) {
+  return {
+    ...DEFAULT_DAEMON_SETTINGS.thresholds,
+    ...(thresholds ?? {}),
+  };
+}
+
 function normalizeSettings(settings) {
   const fallback = cloneSettings(DEFAULT_DAEMON_SETTINGS);
   if (!settings || typeof settings !== "object") return fallback;
@@ -201,10 +340,7 @@ function normalizeSettings(settings) {
   return {
     ...fallback,
     ...settings,
-    thresholds: {
-      ...fallback.thresholds,
-      ...(settings.thresholds ?? {}),
-    },
+    thresholds: normalizeThresholds(settings.thresholds),
     enabledSections: {
       ...fallback.enabledSections,
       ...(settings.enabledSections ?? {}),
@@ -258,6 +394,38 @@ function loadPercent(snapshot) {
   return clampPercent((snapshot.load.one / Math.max(1, snapshot.cpu.cores)) * 100);
 }
 
+function metricStatus(value, warn, critical) {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "unknown";
+  if (numericValue >= critical) return "critical";
+  if (numericValue >= warn) return "warning";
+  return "healthy";
+}
+
+function statusRank(status) {
+  if (status === "critical") return 3;
+  if (status === "warning") return 2;
+  if (status === "stale") return 1;
+  return 0;
+}
+
+function statusLabel(status) {
+  if (status === "critical") return "Critical";
+  if (status === "warning") return "Warning";
+  if (status === "stale") return "Stale";
+  if (status === "unknown") return "Unknown";
+  return "Healthy";
+}
+
+function formatDurationMs(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -303,6 +471,10 @@ function setText(node, value) {
 
 function setHidden(node, hidden) {
   if (node) node.hidden = hidden;
+}
+
+function setDatasetStatus(node, status) {
+  if (node) node.setAttribute("data-status", status);
 }
 
 function setGauge(node, value) {
@@ -393,10 +565,10 @@ function chartPalette() {
 function historySeries() {
   const palette = chartPalette();
   return [
-    { label: "CPU", values: state.history.cpu, color: palette.cpu, dashed: false },
-    { label: "RAM", values: state.history.ram, color: palette.ram, dashed: false },
-    { label: "SWAP", values: state.history.swap, color: palette.swap, dashed: false },
-    { label: "LOAD", values: state.history.load, color: palette.load, dashed: true },
+    { key: "cpu", label: "CPU", values: state.history.cpu, color: palette.cpu, dashed: false },
+    { key: "ram", label: "RAM", values: state.history.ram, color: palette.ram, dashed: false },
+    { key: "swap", label: "SWAP", values: state.history.swap, color: palette.swap, dashed: false },
+    { key: "load", label: "LOAD", values: state.history.load, color: palette.load, dashed: true },
   ];
 }
 
@@ -406,6 +578,7 @@ function redrawCharts() {
   drawSparkline(elements.ramSpark, state.history.ram, palette.ram);
   drawSparkline(elements.swapSpark, state.history.swap, palette.swap);
   drawSparkline(elements.loadSpark, state.history.load, palette.load);
+  drawTimelineRail();
   drawHistoryChart();
 }
 
@@ -556,6 +729,106 @@ function drawSparkline(canvas, values, color) {
   context.stroke();
 }
 
+function drawTimelineRail() {
+  const canvas = elements.timelineRail;
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  const palette = chartPalette();
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth || canvas.width;
+  const height = canvas.clientHeight || canvas.height;
+  canvas.width = Math.floor(width * ratio);
+  canvas.height = Math.floor(height * ratio);
+  context.scale(ratio, ratio);
+  context.clearRect(0, 0, width, height);
+
+  context.fillStyle = cssColor("--surface-2") || "#111827";
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = palette.grid;
+  context.lineWidth = 1;
+  context.strokeRect(0.5, 0.5, width - 1, height - 1);
+
+  const samples = state.snapshots;
+  if (samples.length < 2) {
+    context.fillStyle = palette.muted;
+    context.font = "700 12px system-ui, sans-serif";
+    context.fillText(samples.length === 1 ? "One sample loaded" : "No history loaded", 14, Math.round(height / 2));
+    return;
+  }
+
+  const first = samples[0].capturedAt;
+  const latest = samples[samples.length - 1].capturedAt;
+  const span = Math.max(1, latest - first);
+  const thresholds = normalizeThresholds(state.daemonSettings.thresholds);
+  const warnY = height - (clampPercent(thresholds.cpuWarn) / 100) * height;
+  const criticalY = height - (clampPercent(thresholds.cpuCritical) / 100) * height;
+
+  context.globalAlpha = 0.32;
+  context.setLineDash([5, 4]);
+  context.strokeStyle = cssColor("--amber") || "#f59e0b";
+  context.beginPath();
+  context.moveTo(0, warnY);
+  context.lineTo(width, warnY);
+  context.stroke();
+  context.strokeStyle = cssColor("--red") || "#ef4444";
+  context.beginPath();
+  context.moveTo(0, criticalY);
+  context.lineTo(width, criticalY);
+  context.stroke();
+  context.setLineDash([]);
+  context.globalAlpha = 1;
+
+  context.strokeStyle = palette.cpu;
+  context.lineWidth = 2;
+  context.beginPath();
+  samples.forEach((sample, index) => {
+    const x = ((sample.capturedAt - first) / span) * width;
+    const y = height - (clampPercent(state.history.cpu[index] ?? 0) / 100) * (height - 16) - 8;
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  });
+  context.stroke();
+
+  const range = visibleHistoryRange();
+  const visibleFirst = samples[range.start]?.capturedAt ?? first;
+  const visibleLatest = samples[Math.max(range.start, range.end - 1)]?.capturedAt ?? latest;
+  const selectionX = ((visibleFirst - first) / span) * width;
+  const selectionWidth = Math.max(6, ((visibleLatest - visibleFirst) / span) * width);
+  context.fillStyle = "rgba(56, 189, 248, 0.12)";
+  context.fillRect(selectionX, 0, selectionWidth, height);
+
+  const active = selectedSample() ?? samples[samples.length - 1];
+  const markerX = ((active.capturedAt - first) / span) * width;
+  context.strokeStyle = state.selectedAtMs === null ? cssColor("--green") || palette.cpu : palette.text;
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(markerX, 0);
+  context.lineTo(markerX, height);
+  context.stroke();
+}
+
+function timelineTimestampFromPointer(event) {
+  const canvas = elements.timelineRail;
+  if (!canvas || state.snapshots.length === 0) return null;
+  const rect = canvas.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+  const first = state.snapshots[0].capturedAt;
+  const latest = state.snapshots[state.snapshots.length - 1].capturedAt;
+  const percent = rect.width <= 0 ? 1 : x / rect.width;
+  return first + (latest - first) * percent;
+}
+
+function handleTimelinePointer(event) {
+  if (event.type === "pointermove" && !state.timelineDragging) return;
+  if (event.type === "pointerdown") {
+    state.timelineDragging = true;
+    elements.timelineRail?.setPointerCapture?.(event.pointerId);
+  }
+  event.preventDefault();
+  const timestamp = timelineTimestampFromPointer(event);
+  if (timestamp !== null) selectHistoryTimestamp(timestamp);
+}
+
 function visibleHistoryRange() {
   const total = state.snapshots.length;
   if (total === 0) return { start: 0, end: 0, total, visible: 0 };
@@ -584,10 +857,12 @@ function visibleHistoryCapacity() {
 }
 
 function visibleHistorySeries(series, range) {
-  return series.map((item) => ({
-    ...item,
-    values: item.values.slice(range.start, range.end),
-  }));
+  return series
+    .filter((item) => state.visibleSeries.has(item.key))
+    .map((item) => ({
+      ...item,
+      values: item.values.slice(range.start, range.end),
+    }));
 }
 
 function echartsApi() {
@@ -605,18 +880,18 @@ function historyChartInstance() {
   return state.historyChartInstance;
 }
 
-function historyChartColors(palette) {
-  return [palette.cpu, palette.ram, palette.swap, palette.load];
+function historyChartColors(palette, series = historySeries()) {
+  return series.map((item) => item.color ?? palette[item.key]).filter(Boolean);
 }
 
 function historyCategories(range) {
   return state.snapshots.slice(range.start, range.end).map((sample) => formatSampleTime(sample.capturedAt));
 }
 
-function baseCartesianOption(palette, range) {
+function baseCartesianOption(palette, range, series = historySeries()) {
   return {
     animation: false,
-    color: historyChartColors(palette),
+    color: historyChartColors(palette, series),
     backgroundColor: "transparent",
     grid: {
       top: 42,
@@ -631,7 +906,7 @@ function baseCartesianOption(palette, range) {
       itemWidth: 16,
       itemHeight: 3,
       textStyle: { color: palette.text },
-      data: HISTORY_METRICS.map((metric) => metric.label),
+      data: series.map((metric) => metric.label),
     },
     tooltip: {
       trigger: "axis",
@@ -663,6 +938,32 @@ function baseCartesianOption(palette, range) {
   };
 }
 
+function thresholdMarkers(item) {
+  const thresholds = normalizeThresholds(state.daemonSettings.thresholds);
+  const warningColor = cssColor("--amber") || "#f59e0b";
+  const criticalColor = cssColor("--red") || "#ef4444";
+  const values = {
+    cpu: [thresholds.cpuWarn, thresholds.cpuCritical],
+    ram: [thresholds.memoryWarn, thresholds.memoryCritical],
+    swap: [thresholds.memoryWarn, thresholds.memoryCritical],
+    load: [thresholds.loadWarn, thresholds.loadCritical],
+  }[item.key];
+
+  if (!values) return {};
+
+  return {
+    markLine: {
+      silent: true,
+      symbol: "none",
+      data: [
+        { yAxis: values[0], lineStyle: { color: warningColor, type: "dashed", opacity: 0.42 } },
+        { yAxis: values[1], lineStyle: { color: criticalColor, type: "dashed", opacity: 0.5 } },
+      ],
+      label: { show: false },
+    },
+  };
+}
+
 function lineSeries(series) {
   return series.map((item) => ({
     name: item.label,
@@ -677,6 +978,7 @@ function lineSeries(series) {
       type: item.dashed ? "dashed" : "solid",
     },
     emphasis: { focus: "series" },
+    ...thresholdMarkers(item),
   }));
 }
 
@@ -691,6 +993,7 @@ function areaSeries(series) {
     areaStyle: { opacity: item.label === "LOAD" ? 0.42 : 0.55 },
     lineStyle: { width: 1.8 },
     emphasis: { focus: "series" },
+    ...thresholdMarkers(item),
   }));
 }
 
@@ -707,10 +1010,11 @@ function barSeries(series) {
 }
 
 function buildLineOption(palette, range, series) {
+  const base = baseCartesianOption(palette, range, series);
   return {
-    ...baseCartesianOption(palette, range),
+    ...base,
     yAxis: {
-      ...baseCartesianOption(palette, range).yAxis,
+      ...base.yAxis,
       max: 100,
     },
     series: lineSeries(series),
@@ -718,10 +1022,11 @@ function buildLineOption(palette, range, series) {
 }
 
 function buildAreaOption(palette, range, series) {
+  const base = baseCartesianOption(palette, range, series);
   return {
-    ...baseCartesianOption(palette, range),
+    ...base,
     tooltip: {
-      ...baseCartesianOption(palette, range).tooltip,
+      ...base.tooltip,
       order: "seriesDesc",
     },
     series: areaSeries(series),
@@ -730,7 +1035,7 @@ function buildAreaOption(palette, range, series) {
 
 function buildBarOption(palette, range, series) {
   return {
-    ...baseCartesianOption(palette, range),
+    ...baseCartesianOption(palette, range, series),
     series: barSeries(series),
   };
 }
@@ -812,7 +1117,7 @@ function buildHeatmapOption(palette, range, series) {
 
 function buildTreemapOption(palette) {
   const sample = selectedSample();
-  const colors = historyChartColors(palette);
+  const colors = historyChartColors(palette, historySeries());
   const data = sampleMetricValues(sample).map(([name, value], index) => ({
     name,
     value: Math.max(0.1, clampPercent(value)),
@@ -986,19 +1291,18 @@ function updateHistoryControls() {
   renderHistorySampleValues(activeSample);
   updateHistoryChartTitle(activeSample);
 
-  if (elements.historyScrubber) {
-    elements.historyScrubber.disabled = !firstSample || !latestSample || firstSample.capturedAt === latestSample.capturedAt;
-    elements.historyScrubber.min = String(firstSample?.capturedAt ?? 0);
-    elements.historyScrubber.max = String(latestSample?.capturedAt ?? 0);
-    elements.historyScrubber.value = String(activeSample?.capturedAt ?? latestSample?.capturedAt ?? 0);
-    elements.historyScrubber.setAttribute("aria-valuetext", ariaValueText);
-  }
-
   if (elements.historyChart) {
     elements.historyChart.setAttribute("aria-valuemin", String(firstSample?.capturedAt ?? 0));
     elements.historyChart.setAttribute("aria-valuemax", String(latestSample?.capturedAt ?? 0));
     elements.historyChart.setAttribute("aria-valuenow", String(activeSample?.capturedAt ?? latestSample?.capturedAt ?? 0));
     elements.historyChart.setAttribute("aria-valuetext", ariaValueText);
+  }
+
+  if (elements.timelineRail) {
+    elements.timelineRail.setAttribute("aria-valuemin", String(firstSample?.capturedAt ?? 0));
+    elements.timelineRail.setAttribute("aria-valuemax", String(latestSample?.capturedAt ?? 0));
+    elements.timelineRail.setAttribute("aria-valuenow", String(activeSample?.capturedAt ?? latestSample?.capturedAt ?? 0));
+    elements.timelineRail.setAttribute("aria-valuetext", ariaValueText);
   }
 
   if (elements.liveButton) {
@@ -1008,6 +1312,8 @@ function updateHistoryControls() {
   if (elements.clearSessionButton) {
     elements.clearSessionButton.disabled = sampleCount === 0;
   }
+
+  drawTimelineRail();
 }
 
 function renderSelectedSample() {
@@ -1098,36 +1404,107 @@ function moveHistorySelection(delta) {
   selectHistoryPosition(currentIndex + delta);
 }
 
+function pressureValue(snapshot, key) {
+  return snapshot.pressure[key]?.some?.avg10 ?? 0;
+}
+
+function rootFilesystem(filesystems) {
+  return filesystems.find((fs) => fs.mount === "/") ?? filesystems[0] ?? null;
+}
+
+function filesystemStatus(fs) {
+  const thresholds = normalizeThresholds(state.daemonSettings.thresholds);
+  return metricStatus(fs?.usedPercent ?? 0, thresholds.diskWarn, thresholds.diskCritical);
+}
+
+function pressureStatus(value) {
+  const thresholds = normalizeThresholds(state.daemonSettings.thresholds);
+  return metricStatus(value, thresholds.pressureWarn, thresholds.pressureCritical);
+}
+
+function isSystemFilesystem(fs) {
+  if (!fs || fs.mount === "/") return false;
+  if (SYSTEM_FILESYSTEM_TYPES.has(String(fs.type))) return true;
+  const mount = String(fs.mount);
+  return mount.startsWith("/proc") || mount.startsWith("/sys") || mount.startsWith("/dev");
+}
+
+function filterFilesystems(filesystems) {
+  const source = Array.isArray(filesystems) ? filesystems : [];
+  if (state.filesystemShowSystem) return source;
+  return source.filter((fs) => !isSystemFilesystem(fs));
+}
+
+function createBar(value, status) {
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  bar.dataset.status = status;
+  bar.style.setProperty("--value", String(clampPercent(value)));
+  bar.append(document.createElement("span"));
+  return bar;
+}
+
+function createLabelValue(labelText, valueText) {
+  const row = document.createElement("div");
+  row.className = "bar-label";
+  const label = document.createElement("span");
+  const value = document.createElement("span");
+  label.textContent = labelText;
+  value.textContent = valueText;
+  row.append(label, value);
+  return row;
+}
+
+function renderRootFilesystem(fs) {
+  const status = filesystemStatus(fs);
+  setDatasetStatus(elements.rootFilesystemCard, status);
+  setText(elements.rootFilesystemName, fs ? `${fs.mount} on ${fs.filesystem}` : "-");
+  setText(elements.rootFilesystemUsage, fs ? formatPercent(fs.usedPercent) : "-");
+  if (elements.rootFilesystemBar) {
+    elements.rootFilesystemBar.dataset.status = status;
+    elements.rootFilesystemBar.style.setProperty("--value", String(clampPercent(fs?.usedPercent ?? 0)));
+  }
+}
+
 function renderFilesystems(filesystems) {
-  setText(elements.filesystemCount, `${filesystems.length} mounts`);
+  const visible = filterFilesystems(filesystems).slice(0, 12);
+  setText(elements.filesystemCount, `${visible.length} / ${filesystems.length} mounts`);
+  if (!elements.filesystemList) return;
+
   elements.filesystemList.replaceChildren(
-    ...filesystems.map((fs) => {
+    ...visible.map((fs) => {
       const item = document.createElement("div");
+      const status = filesystemStatus(fs);
       item.className = "filesystem-item";
+      item.dataset.status = status;
+
+      const name = document.createElement("div");
+      name.className = "fs-name";
+      const mount = document.createElement("strong");
+      mount.title = fs.mount;
+      mount.textContent = fs.mount;
+      const meta = document.createElement("span");
+      meta.textContent = `${fs.filesystem} - ${fs.type} - ${formatBytes(fs.usedBytes)} / ${formatBytes(fs.sizeBytes)}`;
+      name.append(mount, meta);
+
+      const bars = document.createElement("div");
+      bars.className = "bar-group";
+      const capacity = document.createElement("div");
+      capacity.append(createLabelValue("Capacity", formatPercent(fs.usedPercent)), createBar(fs.usedPercent, status));
+
       const inodeValue = fs.inodeUsedPercent ?? 0;
-      item.innerHTML = `
-        <div class="fs-name">
-          <strong title="${fs.mount}">${fs.mount}</strong>
-          <span>${fs.filesystem} - ${fs.type} - ${formatBytes(fs.usedBytes)} / ${formatBytes(fs.sizeBytes)}</span>
-        </div>
-        <div class="bar-group">
-          <div>
-            <div class="bar-label"><span>Capacity</span><span>${formatPercent(fs.usedPercent)}</span></div>
-            <div class="bar ${fs.usedPercent >= 85 ? "warn" : ""}" style="--value:${clampPercent(fs.usedPercent)}"><span></span></div>
-          </div>
-          <div>
-            <div class="bar-label"><span>Inodes</span><span>${fs.inodeUsedPercent === null ? "n/a" : formatPercent(inodeValue)}</span></div>
-            <div class="bar ${inodeValue >= 85 ? "warn" : ""}" style="--value:${clampPercent(inodeValue)}"><span></span></div>
-          </div>
-        </div>
-      `;
+      const inodeStatus = fs.inodeUsedPercent === null ? "unknown" : filesystemStatus({ usedPercent: inodeValue });
+      const inodes = document.createElement("div");
+      inodes.append(
+        createLabelValue("Inodes", fs.inodeUsedPercent === null ? "n/a" : formatPercent(inodeValue)),
+        createBar(inodeValue, inodeStatus),
+      );
+
+      bars.append(capacity, inodes);
+      item.append(name, bars);
       return item;
     }),
   );
-}
-
-function pressureValue(snapshot, key) {
-  return snapshot.pressure[key]?.some?.avg10 ?? 0;
 }
 
 function renderPressure(snapshot) {
@@ -1136,42 +1513,235 @@ function renderPressure(snapshot) {
     ["Memory", pressureValue(snapshot, "memory"), "Allocation stalls"],
     ["I/O", pressureValue(snapshot, "io"), "Storage wait"],
   ];
+  if (!elements.pressureList) return;
   elements.pressureList.replaceChildren(
     ...items.map(([name, value, description]) => {
       const item = document.createElement("div");
+      const status = pressureStatus(value);
       item.className = "pressure-item";
-      item.innerHTML = `
-        <div class="pressure-top">
-          <strong>${name}</strong>
-          <span>${Number(value).toFixed(2)} avg10</span>
-        </div>
-        <div class="bar ${value >= 10 ? "warn" : ""}" style="--value:${clampPercent(value * 5)}"><span></span></div>
-        <span class="label">${description}</span>
-      `;
+      item.dataset.status = status;
+
+      const top = document.createElement("div");
+      top.className = "pressure-top";
+      const strong = document.createElement("strong");
+      const amount = document.createElement("span");
+      strong.textContent = name;
+      amount.textContent = `${Number(value).toFixed(2)} avg10`;
+      top.append(strong, amount);
+
+      const descriptionNode = document.createElement("span");
+      descriptionNode.className = "label";
+      descriptionNode.textContent = description;
+      item.append(top, createBar(value * 5, status), descriptionNode);
       return item;
     }),
   );
 }
 
+function sortProcesses(processes) {
+  const sortKey = PROCESS_SORT_KEYS.has(state.processSort.key) ? state.processSort.key : "cpu";
+  const direction = state.processSort.direction === "asc" ? 1 : -1;
+  return [...processes].sort((left, right) => {
+    const leftValue =
+      sortKey === "pid"
+        ? left.pid
+        : sortKey === "memory"
+          ? left.memoryPercent
+          : sortKey === "rss"
+            ? left.rssBytes
+            : left.cpuPercent;
+    const rightValue =
+      sortKey === "pid"
+        ? right.pid
+        : sortKey === "memory"
+          ? right.memoryPercent
+          : sortKey === "rss"
+            ? right.rssBytes
+            : right.cpuPercent;
+    return (Number(leftValue) - Number(rightValue)) * direction;
+  });
+}
+
+function filteredProcesses(processes) {
+  const filter = state.processFilter.trim().toLowerCase();
+  if (!filter) return processes;
+  return processes.filter((process) => {
+    return String(process.pid).includes(filter) || String(process.command).toLowerCase().includes(filter);
+  });
+}
+
+function syncProcessSortButtons() {
+  for (const button of elements.processSortButtons) {
+    const active = button.dataset.processSort === state.processSort.key;
+    button.setAttribute("aria-pressed", String(active));
+    button.title = active ? `Sorted ${state.processSort.direction}` : "Sort";
+  }
+}
+
+function renderProcessDetail(process) {
+  if (!elements.processDetailDialog || !elements.processDetailBody) return;
+  setText(elements.processDetailTitle, `PID ${process.pid}`);
+  const rows = [
+    ["Command", process.command],
+    ["CPU", `${process.cpuPercent.toFixed(1)}%`],
+    ["RAM", `${process.memoryPercent.toFixed(1)}%`],
+    ["RSS", formatBytes(process.rssBytes)],
+  ];
+  elements.processDetailBody.replaceChildren(
+    ...rows.map(([labelText, valueText]) => {
+      const row = document.createElement("div");
+      row.className = "process-detail-row";
+      const label = document.createElement("span");
+      const value = document.createElement("strong");
+      label.textContent = labelText;
+      value.textContent = valueText;
+      row.append(label, value);
+      return row;
+    }),
+  );
+  if (typeof elements.processDetailDialog.showModal === "function") {
+    elements.processDetailDialog.showModal();
+  } else {
+    elements.processDetailDialog.setAttribute("open", "");
+  }
+}
+
 function renderProcesses(processes) {
-  setText(elements.processCount, `${processes.length} rows`);
+  const visible = filteredProcesses(sortProcesses(processes));
+  setText(elements.processCount, `${visible.length} / ${processes.length} rows`);
+  syncProcessSortButtons();
+  if (!elements.processRows) return;
+
+  if (visible.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 6;
+    cell.textContent = "No matching processes";
+    row.append(cell);
+    elements.processRows.replaceChildren(row);
+    return;
+  }
+
   elements.processRows.replaceChildren(
-    ...processes.map((process) => {
+    ...visible.map((process) => {
       const row = document.createElement("tr");
-      row.innerHTML = `
-        <td>${process.pid}</td>
-        <td class="command-cell" title="${process.command}">${process.command}</td>
-        <td>${process.cpuPercent.toFixed(1)}%</td>
-        <td>${process.memoryPercent.toFixed(1)}%</td>
-        <td>${formatBytes(process.rssBytes)}</td>
-      `;
+      const pid = document.createElement("td");
+      const command = document.createElement("td");
+      const cpu = document.createElement("td");
+      const memory = document.createElement("td");
+      const rss = document.createElement("td");
+      const details = document.createElement("td");
+      const detailButton = document.createElement("button");
+
+      pid.textContent = String(process.pid);
+      command.className = "command-cell";
+      command.title = process.command;
+      command.textContent = process.command;
+      cpu.textContent = `${process.cpuPercent.toFixed(1)}%`;
+      memory.textContent = `${process.memoryPercent.toFixed(1)}%`;
+      rss.textContent = formatBytes(process.rssBytes);
+      detailButton.className = "mini-button secondary";
+      detailButton.type = "button";
+      detailButton.textContent = "Open";
+      detailButton.addEventListener("click", () => renderProcessDetail(process));
+      details.append(detailButton);
+
+      row.append(pid, command, cpu, memory, rss, details);
       return row;
     }),
   );
 }
 
+function applyMetricStatuses(snapshot) {
+  const thresholds = normalizeThresholds(state.daemonSettings.thresholds);
+  setDatasetStatus(elements.cpuPanel, metricStatus(snapshot.cpu.usagePercent, thresholds.cpuWarn, thresholds.cpuCritical));
+  setDatasetStatus(elements.ramPanel, metricStatus(snapshot.memory.usedPercent, thresholds.memoryWarn, thresholds.memoryCritical));
+  setDatasetStatus(elements.swapPanel, metricStatus(snapshot.swap.usedPercent, thresholds.memoryWarn, thresholds.memoryCritical));
+  setDatasetStatus(elements.loadPanel, metricStatus(loadPercent(snapshot), thresholds.loadWarn, thresholds.loadCritical));
+}
+
+function computeSnapshotStatus(snapshot, nowMs = Date.now()) {
+  if (!snapshot) {
+    return {
+      status: "stale",
+      stateLabel: "Stale",
+      summary: "Waiting for collector data",
+      offender: "-",
+      ageMs: 0,
+    };
+  }
+
+  const thresholds = normalizeThresholds(state.daemonSettings.thresholds);
+  const loadCritical = thresholds.loadCritical;
+  const pressureCritical = thresholds.pressureCritical;
+  const ageMs = Math.max(0, nowMs - snapshotCapturedAtMs(snapshot));
+  const staleAfterMs = Math.max(10_000, state.pollMs * 4);
+  if (ageMs > staleAfterMs) {
+    return {
+      status: "stale",
+      stateLabel: "Stale",
+      summary: "Last collector sample is old",
+      offender: "collector",
+      ageMs,
+    };
+  }
+
+  const rootFs = rootFilesystem(snapshot.filesystems);
+  const pressureMax = Math.max(pressureValue(snapshot, "cpu"), pressureValue(snapshot, "memory"), pressureValue(snapshot, "io"));
+  const candidates = [
+    {
+      name: "CPU",
+      value: snapshot.cpu.usagePercent,
+      formatted: formatPercent(snapshot.cpu.usagePercent),
+      status: metricStatus(snapshot.cpu.usagePercent, thresholds.cpuWarn, thresholds.cpuCritical),
+    },
+    {
+      name: "RAM",
+      value: snapshot.memory.usedPercent,
+      formatted: formatPercent(snapshot.memory.usedPercent),
+      status: metricStatus(snapshot.memory.usedPercent, thresholds.memoryWarn, thresholds.memoryCritical),
+    },
+    {
+      name: "Load",
+      value: loadPercent(snapshot),
+      formatted: formatPercent(loadPercent(snapshot)),
+      status: metricStatus(loadPercent(snapshot), thresholds.loadWarn, loadCritical),
+    },
+    {
+      name: "Disk",
+      value: rootFs?.usedPercent ?? 0,
+      formatted: rootFs ? formatPercent(rootFs.usedPercent) : "-",
+      status: rootFs ? metricStatus(rootFs.usedPercent, thresholds.diskWarn, thresholds.diskCritical) : "unknown",
+    },
+    {
+      name: "PSI",
+      value: pressureMax,
+      formatted: `${pressureMax.toFixed(2)} avg10`,
+      status: metricStatus(pressureMax, thresholds.pressureWarn, pressureCritical),
+    },
+  ];
+  const worst = candidates.sort((left, right) => statusRank(right.status) - statusRank(left.status) || right.value - left.value)[0];
+  const status = worst?.status === "unknown" ? "healthy" : (worst?.status ?? "healthy");
+  return {
+    status,
+    stateLabel: statusLabel(status),
+    summary: status === "healthy" ? "All tracked thresholds are below warning" : `${worst.name} at ${worst.formatted}`,
+    offender: status === "healthy" ? "-" : worst.name,
+    ageMs,
+  };
+}
+
+function renderOperatorStatus(snapshot, override) {
+  const result = override ?? computeSnapshotStatus(snapshot);
+  setDatasetStatus(elements.operatorStatus, result.status);
+  setText(elements.operatorState, result.stateLabel ?? statusLabel(result.status));
+  setText(elements.operatorSummary, result.summary ?? "-");
+  setText(elements.operatorOffender, result.offender ?? "-");
+  setText(elements.operatorAge, formatDurationMs(result.ageMs ?? 0));
+}
+
 function renderSnapshotDetails(snapshot) {
-  const rootFs = snapshot.filesystems.find((fs) => fs.mount === "/") ?? snapshot.filesystems[0];
+  const rootFs = rootFilesystem(snapshot.filesystems);
   const loadPressure = loadPercent(snapshot);
 
   setText(elements.hostName, snapshot.identity.hostname);
@@ -1205,7 +1775,9 @@ function renderSnapshotDetails(snapshot) {
   setText(elements.rootUsed, rootFs ? formatPercent(rootFs.usedPercent) : "-");
   setText(elements.rootMount, rootFs ? `${rootFs.mount} on ${rootFs.filesystem}` : "-");
 
-  renderFilesystems(snapshot.filesystems.slice(0, 8));
+  applyMetricStatuses(snapshot);
+  renderRootFilesystem(rootFs);
+  renderFilesystems(snapshot.filesystems);
   renderPressure(snapshot);
   renderProcesses(snapshot.processes);
 }
@@ -1250,6 +1822,23 @@ function renderSettingsStatus(message) {
   setText(elements.settingsStatus, message);
 }
 
+function applyEnabledSections(settings) {
+  const enabledSections = {
+    ...DEFAULT_DAEMON_SETTINGS.enabledSections,
+    ...(settings.enabledSections ?? {}),
+  };
+
+  for (const [section, nodes] of Object.entries(elements.sectionNodes)) {
+    const enabled = Boolean(enabledSections[section]);
+    for (const node of nodes) setHidden(node, !enabled);
+  }
+
+  for (const link of elements.sectionLinks) {
+    const enabled = Boolean(enabledSections[link.dataset.sectionLink]);
+    setHidden(link, !enabled);
+  }
+}
+
 function populateDaemonSettings(settings) {
   const nextSettings = normalizeSettings(settings);
   state.daemonSettings = cloneSettings(nextSettings);
@@ -1263,9 +1852,23 @@ function populateDaemonSettings(settings) {
   setControlValue(elements.daemonRollupRetentionDays, nextSettings.rollupRetentionDays);
   setControlValue(elements.daemonTopProcessCount, nextSettings.topProcessCount);
   setControlValue(elements.daemonCpuWarn, nextSettings.thresholds.cpuWarn);
+  setControlValue(elements.daemonCpuCritical, nextSettings.thresholds.cpuCritical);
   setControlValue(elements.daemonMemoryWarn, nextSettings.thresholds.memoryWarn);
+  setControlValue(elements.daemonMemoryCritical, nextSettings.thresholds.memoryCritical);
   setControlValue(elements.daemonDiskWarn, nextSettings.thresholds.diskWarn);
+  setControlValue(elements.daemonDiskCritical, nextSettings.thresholds.diskCritical);
+  setControlValue(elements.daemonLoadWarn, nextSettings.thresholds.loadWarn);
+  setControlValue(elements.daemonLoadCritical, nextSettings.thresholds.loadCritical);
+  setControlValue(elements.daemonPressureWarn, nextSettings.thresholds.pressureWarn);
+  setControlValue(elements.daemonPressureCritical, nextSettings.thresholds.pressureCritical);
   setCheckboxValue(elements.daemonRedactionDefault, nextSettings.redactionDefault);
+  setCheckboxValue(elements.daemonSectionOverview, nextSettings.enabledSections.overview);
+  setCheckboxValue(elements.daemonSectionHistory, nextSettings.enabledSections.history);
+  setCheckboxValue(elements.daemonSectionFilesystem, nextSettings.enabledSections.filesystem);
+  setCheckboxValue(elements.daemonSectionPressure, nextSettings.enabledSections.pressure);
+  setCheckboxValue(elements.daemonSectionProcesses, nextSettings.enabledSections.processes);
+  applyEnabledSections(nextSettings);
+  if (state.lastSnapshot) renderOperatorStatus(state.lastSnapshot);
 }
 
 function numberControlValue(control, fallback) {
@@ -1286,10 +1889,48 @@ function collectDaemonSettingsFromForm() {
     redactionDefault: Boolean(elements.daemonRedactionDefault?.checked),
     thresholds: {
       cpuWarn: numberControlValue(elements.daemonCpuWarn, 80),
+      cpuCritical: numberControlValue(elements.daemonCpuCritical, 95),
       memoryWarn: numberControlValue(elements.daemonMemoryWarn, 85),
+      memoryCritical: numberControlValue(elements.daemonMemoryCritical, 95),
       diskWarn: numberControlValue(elements.daemonDiskWarn, 85),
+      diskCritical: numberControlValue(elements.daemonDiskCritical, 95),
+      loadWarn: numberControlValue(elements.daemonLoadWarn, 80),
+      loadCritical: numberControlValue(elements.daemonLoadCritical, 100),
+      pressureWarn: numberControlValue(elements.daemonPressureWarn, 10),
+      pressureCritical: numberControlValue(elements.daemonPressureCritical, 25),
+    },
+    enabledSections: {
+      overview: Boolean(elements.daemonSectionOverview?.checked),
+      history: Boolean(elements.daemonSectionHistory?.checked),
+      filesystem: Boolean(elements.daemonSectionFilesystem?.checked),
+      pressure: Boolean(elements.daemonSectionPressure?.checked),
+      processes: Boolean(elements.daemonSectionProcesses?.checked),
     },
   };
+}
+
+function readStoredVisibleSeries() {
+  const stored = readStoredJson(STORAGE_KEYS.visibleSeries, null);
+  if (!Array.isArray(stored)) return new Set(HISTORY_METRICS.map((metric) => metric.key));
+  const values = stored.filter((key) => HISTORY_SERIES_KEYS.has(key));
+  return new Set(values.length === 0 ? HISTORY_METRICS.map((metric) => metric.key) : values);
+}
+
+function syncVisibleSeriesControls() {
+  for (const input of elements.historySeriesInputs) {
+    input.checked = state.visibleSeries.has(input.dataset.historySeries);
+  }
+}
+
+function persistVisibleSeries() {
+  storeJson(STORAGE_KEYS.visibleSeries, Array.from(state.visibleSeries));
+}
+
+function syncProcessControls() {
+  setControlValue(elements.processSearch, state.processFilter);
+  setControlValue(elements.processDensity, state.processDensity);
+  if (elements.processPanel) elements.processPanel.dataset.density = state.processDensity;
+  syncProcessSortButtons();
 }
 
 function applyInitialBrowserSettings(settings) {
@@ -1300,6 +1941,20 @@ function applyInitialBrowserSettings(settings) {
     fetch: false,
     persist: false,
   });
+  state.visibleSeries = readStoredVisibleSeries();
+  syncVisibleSeriesControls();
+  state.processFilter = readStoredString(STORAGE_KEYS.processFilter, "");
+  const storedSort = readStoredJson(STORAGE_KEYS.processSort, state.processSort);
+  if (storedSort && PROCESS_SORT_KEYS.has(storedSort.key)) {
+    state.processSort = {
+      key: storedSort.key,
+      direction: storedSort.direction === "asc" ? "asc" : "desc",
+    };
+  }
+  state.processDensity = readStoredValue(STORAGE_KEYS.processDensity, "comfortable", PROCESS_DENSITIES);
+  state.filesystemShowSystem = readStoredBoolean(STORAGE_KEYS.filesystemShowSystem, false);
+  setCheckboxValue(elements.filesystemShowSystem, state.filesystemShowSystem);
+  syncProcessControls();
 }
 
 async function fetchSettings() {
@@ -1340,6 +1995,7 @@ async function saveDaemonSettings() {
     const saved = normalizeSettings(await response.json());
     populateDaemonSettings(saved);
     restartPollingTimer();
+    fetchHistoryCoverage();
     renderSettingsStatus("Daemon defaults saved.");
   } catch (error) {
     renderSettingsStatus(error instanceof Error ? error.message : "Settings save failed.");
@@ -1355,12 +2011,23 @@ async function fetchSnapshot() {
     const response = await fetch("/api/snapshot", { cache: "no-store" });
     if (!response.ok) throw new Error(`Snapshot failed with HTTP ${response.status}`);
     const snapshot = await response.json();
+    state.lastSnapshot = snapshot;
+    state.lastSnapshotAtMs = Date.now();
     setHidden(elements.statusMessage, true);
     renderSnapshot(snapshot);
+    renderOperatorStatus(snapshot);
+    fetchHistoryCoverage();
     setLiveStatus("live", "Live");
   } catch (error) {
     setHidden(elements.statusMessage, false);
     setText(elements.statusMessage, error instanceof Error ? error.message : "Snapshot failed");
+    renderOperatorStatus(null, {
+      status: "critical",
+      stateLabel: "Critical",
+      summary: error instanceof Error ? error.message : "Snapshot failed",
+      offender: "collector",
+      ageMs: state.lastSnapshotAtMs ? Date.now() - state.lastSnapshotAtMs : 0,
+    });
     setLiveStatus("error", "Error");
   } finally {
     state.loading = false;
@@ -1369,6 +2036,32 @@ async function fetchSnapshot() {
 
 async function fetchHistory() {
   return fetchHistoryWindow();
+}
+
+function formatCoverageTime(timestampMs) {
+  const numeric = Number(timestampMs);
+  return Number.isFinite(numeric) && numeric > 0 ? formatSampleDateTime(numeric) : "-";
+}
+
+function renderHistoryCoverage(coverage) {
+  state.historyCoverage = coverage;
+  setText(elements.historyOldest, formatCoverageTime(coverage?.oldestCapturedAtMs));
+  setText(elements.historyNewest, formatCoverageTime(coverage?.newestCapturedAtMs));
+  setText(elements.historyDbSize, formatBytes(Number(coverage?.databaseBytes ?? 0)));
+  setText(elements.historyRollups, `${Number(coverage?.rollupBucketCount ?? 0)} buckets`);
+}
+
+async function fetchHistoryCoverage() {
+  try {
+    const response = await fetch("/api/history/coverage", { cache: "no-store" });
+    if (!response.ok) throw new Error(`History coverage failed with HTTP ${response.status}`);
+    const coverage = await response.json();
+    renderHistoryCoverage(coverage);
+    return coverage;
+  } catch {
+    renderHistoryCoverage(null);
+    return null;
+  }
 }
 
 async function fetchHistoryPage({ sinceMs, untilMs, limit }) {
@@ -1422,7 +2115,10 @@ function setHistoryWindow(key, { fetch = true, persist = true } = {}) {
   setControlValue(elements.browserHistoryWindowSetting, nextWindow);
   if (persist) storeValue(STORAGE_KEYS.historyWindow, nextWindow);
   updateHistoryControls();
-  if (fetch) fetchHistoryWindow();
+  if (fetch) {
+    fetchHistoryWindow();
+    fetchHistoryCoverage();
+  }
 }
 
 function setPaused(paused) {
@@ -1518,8 +2214,96 @@ elements.saveSettingsButton?.addEventListener("click", () => {
   saveDaemonSettings();
 });
 
-elements.historyScrubber?.addEventListener("input", () => {
-  selectHistoryTimestamp(Number(elements.historyScrubber.value));
+for (const input of elements.historySeriesInputs) {
+  input.addEventListener("change", () => {
+    const key = input.dataset.historySeries;
+    if (!HISTORY_SERIES_KEYS.has(key)) return;
+    if (input.checked) state.visibleSeries.add(key);
+    else state.visibleSeries.delete(key);
+    if (state.visibleSeries.size === 0) {
+      state.visibleSeries.add(key);
+      input.checked = true;
+    }
+    persistVisibleSeries();
+    redrawCharts();
+  });
+}
+
+elements.filesystemShowSystem?.addEventListener("change", () => {
+  state.filesystemShowSystem = Boolean(elements.filesystemShowSystem.checked);
+  storeValue(STORAGE_KEYS.filesystemShowSystem, String(state.filesystemShowSystem));
+  renderSelectedSample();
+});
+
+elements.processSearch?.addEventListener("input", () => {
+  state.processFilter = elements.processSearch.value;
+  storeValue(STORAGE_KEYS.processFilter, state.processFilter);
+  renderSelectedSample();
+});
+
+elements.processDensity?.addEventListener("change", () => {
+  state.processDensity = PROCESS_DENSITIES.has(elements.processDensity.value) ? elements.processDensity.value : "comfortable";
+  storeValue(STORAGE_KEYS.processDensity, state.processDensity);
+  syncProcessControls();
+});
+
+for (const button of elements.processSortButtons) {
+  button.addEventListener("click", () => {
+    const key = button.dataset.processSort;
+    if (!PROCESS_SORT_KEYS.has(key)) return;
+    state.processSort = {
+      key,
+      direction: state.processSort.key === key && state.processSort.direction === "desc" ? "asc" : "desc",
+    };
+    storeJson(STORAGE_KEYS.processSort, state.processSort);
+    renderSelectedSample();
+  });
+}
+
+elements.closeProcessDetailButton?.addEventListener("click", () => {
+  if (elements.processDetailDialog?.open) elements.processDetailDialog.close();
+  else elements.processDetailDialog?.removeAttribute("open");
+});
+
+elements.processDetailDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  if (elements.processDetailDialog.open) elements.processDetailDialog.close();
+});
+
+elements.processDetailDialog?.addEventListener("click", (event) => {
+  if (event.target === elements.processDetailDialog) elements.processDetailDialog.close();
+});
+
+elements.timelineRail?.addEventListener("pointerdown", handleTimelinePointer);
+elements.timelineRail?.addEventListener("pointermove", handleTimelinePointer);
+elements.timelineRail?.addEventListener("pointerup", (event) => {
+  state.timelineDragging = false;
+  elements.timelineRail?.releasePointerCapture?.(event.pointerId);
+});
+elements.timelineRail?.addEventListener("pointercancel", () => {
+  state.timelineDragging = false;
+});
+
+for (const link of elements.sectionLinks) {
+  link.addEventListener("click", () => {
+    storeValue(STORAGE_KEYS.lastSection, link.dataset.sectionLink ?? "");
+  });
+}
+
+elements.timelineRail?.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    moveHistorySelection(-1);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    moveHistorySelection(1);
+  } else if (event.key === "Home") {
+    event.preventDefault();
+    selectHistoryPosition(0);
+  } else if (event.key === "End") {
+    event.preventDefault();
+    returnToLiveHistory();
+  }
 });
 
 elements.liveButton?.addEventListener("click", () => {
@@ -1580,6 +2364,7 @@ async function startDashboard() {
   applyInitialBrowserSettings(settings);
   await fetchVersion();
   await fetchHistory();
+  await fetchHistoryCoverage();
   await fetchSnapshot();
   state.timer = window.setInterval(fetchSnapshot, state.pollMs);
 }

@@ -205,6 +205,7 @@ Check public history proxy:
 
 ```bash
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=3&window_seconds=300'
+curl -fsS http://127.0.0.1:4274/api/history/coverage
 ```
 
 Check the database:
@@ -248,14 +249,17 @@ Common causes:
 
 ## Data Growth
 
-Automatic retention is not implemented yet. The Rust daemon and legacy Bun collector keep raw SQLite rows until you manually archive or reset the database. The dashboard's selected timestamp range and browser rendering cap control what is loaded and drawn; they do not prune SQLite.
+The Rust daemon prunes raw SQLite rows according to `retentionHours` from `/api/settings` after successful collection or settings updates. It also maintains one-minute rollups in `metric_rollups_1m` and prunes them according to `rollupRetentionDays`.
 
-The Settings dialog can save retention and rollup defaults in SQLite, but those values are not enforced until the retention/rollup storage slice lands.
+The dashboard's selected timestamp range and browser rendering cap control what is loaded and drawn; those read windows are separate from database pruning.
+
+Legacy Bun split mode keeps raw SQLite rows until you manually archive or reset the database.
 
 Monitor database size:
 
 ```bash
 ./tinytop db stats
+curl -fsS http://127.0.0.1:4274/api/history/coverage
 ```
 
-Archive or reset history when needed until retention lands.
+Archive or reset history manually when you need to force cleanup outside the configured Rust retention window.

@@ -27,6 +27,11 @@ describe("dashboard settings", () => {
 
   test("keeps browser preferences local and daemon settings API-backed", () => {
     expect(app).toContain("tinytop.theme");
+    expect(app).toContain("tinytop.visibleSeries");
+    expect(app).toContain("tinytop.processFilter");
+    expect(app).toContain("tinytop.processDensity");
+    expect(app).toContain("tinytop.filesystemShowSystem");
+    expect(app).toContain("tinytop.lastSection");
     expect(app).toContain("fetchSettings");
     expect(app).toContain("saveDaemonSettings");
     expect(app).toContain("openSettingsDialog");
@@ -34,5 +39,29 @@ describe("dashboard settings", () => {
     expect(app).toContain('fetch("/api/settings"');
     expect(app).toContain('method: "PUT"');
     expect(app).toContain("restartPollingTimer");
+  });
+
+  test("renders daemon section toggles and expanded threshold settings", () => {
+    for (const id of [
+      "daemon-cpu-critical",
+      "daemon-memory-critical",
+      "daemon-disk-critical",
+      "daemon-load-warn",
+      "daemon-load-critical",
+      "daemon-pressure-warn",
+      "daemon-pressure-critical",
+      "daemon-section-overview",
+      "daemon-section-history",
+      "daemon-section-filesystem",
+      "daemon-section-pressure",
+      "daemon-section-processes",
+    ]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+
+    expect(app).toContain("function normalizeThresholds");
+    expect(app).toContain("function applyEnabledSections");
+    expect(app).toContain("function metricStatus");
+    expect(app).toContain("enabledSections");
   });
 });

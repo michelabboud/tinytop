@@ -107,6 +107,7 @@ fn router(state: AppState) -> Router {
         .route("/api/version", get(version))
         .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/snapshot", get(latest_snapshot))
+        .route("/api/history/coverage", get(history_coverage))
         .route("/api/history", get(history))
         .route("/", get(static_file))
         .route("/index.html", get(static_file))
@@ -145,7 +146,9 @@ async fn update_settings(
     State(state): State<AppState>,
     Json(settings): Json<DashboardSettings>,
 ) -> Result<Response, ServeError> {
-    Ok(no_store(Json(state.store.put_settings(&settings).await?)).into_response())
+    let saved = state.store.put_settings(&settings).await?;
+    maintain_history(&state, &saved).await?;
+    Ok(no_store(Json(saved)).into_response())
 }
 
 async fn latest_snapshot(State(state): State<AppState>) -> Result<Response, ServeError> {
@@ -168,6 +171,12 @@ async fn history(
 ) -> Result<Response, ServeError> {
     let samples = read_history_with_backfill(&state, params).await?;
     Ok(no_store(Json(HistoryResponse { samples })).into_response())
+}
+
+async fn history_coverage(State(state): State<AppState>) -> Result<Response, ServeError> {
+    let settings = state.store.get_settings().await?;
+    let coverage = state.store.history_coverage(&settings).await?;
+    Ok(no_store(Json(coverage)).into_response())
 }
 
 async fn static_file(
@@ -241,11 +250,30 @@ async fn collect_and_store(state: &AppState) -> Result<HistorySample, ServeError
         let mut collector = state.collector.lock().await;
         collector.collect()?
     };
-    state
+    let sample = state
         .store
         .insert_snapshot(now_ms()?, &snapshot)
         .await
-        .map_err(ServeError::from)
+        .map_err(ServeError::from)?;
+    let settings = state.store.get_settings().await?;
+    maintain_history(state, &settings).await?;
+    Ok(sample)
+}
+
+async fn maintain_history(
+    state: &AppState,
+    settings: &DashboardSettings,
+) -> Result<(), ServeError> {
+    let now = now_ms()?;
+    let raw_cutoff = now.saturating_sub(settings.retention_hours.saturating_mul(60 * 60 * 1000));
+    let rollup_cutoff = now.saturating_sub(
+        settings
+            .rollup_retention_days
+            .saturating_mul(24 * 60 * 60 * 1000),
+    );
+    state.store.prune_raw_history(raw_cutoff).await?;
+    state.store.prune_rollups(rollup_cutoff).await?;
+    Ok(())
 }
 
 fn spawn_collection_loop(state: AppState, poll_ms: u64) -> JoinHandle<()> {

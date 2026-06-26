@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 16:56 Asia/Jerusalem
+Date: 2026-06-26 18:13 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.24`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.24`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.24`
-- The `v0.1.24` checkpoint adds a Load overview gauge while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
+- Current checkpoint version: `0.1.25`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.25`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.25`
+- The `v0.1.25` checkpoint adds the operator-console dashboard slice, Rust raw-history pruning, one-minute rollups, and history coverage while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
 
 ## Runtime State
 
@@ -18,11 +18,12 @@ Date: 2026-06-26 16:56 Asia/Jerusalem
 - Health endpoint when running: `http://127.0.0.1:4274/health`
 - Version endpoint when running: `http://127.0.0.1:4274/api/version`
 - Settings endpoint when running: `http://127.0.0.1:4274/api/settings`
+- History coverage endpoint when running: `http://127.0.0.1:4274/api/history/coverage`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.24 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.25 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1283644`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1428510`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
 
 ## Rust Collector Confirmation
@@ -142,6 +143,21 @@ Evidence:
 - Kept the raw 1m/5m/15m load stat tile for detail context.
 - Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
 - Added `tests/dashboard-overview.test.ts` and `docs/reports/2026-06-26-load-gauge.md`.
+
+### v0.1.25 - Dashboard Operator Console And Retention
+
+- Saved `docs/superpowers/plans/2026-06-26-dashboard-operator-console.md` for the approved operator-console implementation.
+- Added a top operator strip with Healthy, Warning, Critical, and Stale states.
+- Replaced the native history scrubber with a canvas timeline rail, visible-window shading, selected timestamp marker, visible-series controls, and history coverage row.
+- Added Rust `/api/history/coverage`.
+- Added Rust raw-history pruning by `retentionHours`.
+- Added Rust one-minute rollup buckets and pruning by `rollupRetentionDays`.
+- Expanded daemon thresholds to CPU/RAM/disk/load/pressure warning and critical values.
+- Applied enabled-section settings to Overview, History, Filesystem, Pressure, and Processes.
+- Added process search/sort/density controls and a process detail dialog.
+- Added filesystem root card, system-mount toggle, and threshold-colored filesystem/pressure states.
+- Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
+- Added `tests/dashboard-operator-alert.test.ts` and `tests/dashboard-process-filesystem.test.ts`.
 
 ### Release Binary Asset Check
 
@@ -344,6 +360,45 @@ Evidence:
   - Covered desktop Load gauge rendering, mobile Load gauge rendering, four overview cards, bounded gauge percentage, no page errors, and no mobile horizontal overflow.
   - Screenshots saved outside the repo at `/tmp/tinytop-load-gauge-desktop.png` and `/tmp/tinytop-load-gauge-mobile.png`.
 
+## Verification Evidence From v0.1.25 Dashboard Operator Console And Retention
+
+- Focused dashboard tests:
+  - `bun test tests/dashboard-settings.test.ts tests/dashboard-operator-alert.test.ts tests/dashboard-timeline.test.ts tests/dashboard-process-filesystem.test.ts`: `16 pass`, `0 fail`, `112 expect() calls`.
+- Focused asset/overview/dialog/server checks:
+  - `bun test tests/dashboard-assets.test.ts tests/dashboard-overview.test.ts tests/webui-dialogs.test.ts`: `7 pass`, `0 fail`, `39 expect() calls`.
+  - `bun test tests/server.test.ts`: `8 pass`, `0 fail`, `39 expect() calls`.
+- JavaScript syntax:
+  - `node --check legacy/dashboard/app.js`
+  - `node --check agent/assets/dashboard/app.js`
+- Rust focused checks already run during implementation:
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-store sqlite_store_persists_load_and_critical_thresholds`: passed.
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-store sqlite_store_prunes_raw_history_by_cutoff`: passed.
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-store sqlite_store_tracks_one_minute_rollups_and_coverage`: passed.
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-agent --test serve_contract serve_exposes_history_coverage_api`: passed.
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-store`: `7 pass`, `0 fail`.
+- Full command-center verification:
+  - `./tinytop check`: Bun tests `73 pass`, `0 fail`, `329 expect() calls`; Rust workspace tests passed; browser bundle built.
+- Additional checks:
+  - `git diff --check`: clean.
+  - `diff -qr agent/assets/dashboard legacy/dashboard`: no differences.
+  - `bun build legacy/dashboard/app.js --target=browser --outdir=/tmp/tinytop-dashboard-operator-console-check`: built `app.js`.
+  - `bun audit`: no vulnerabilities found.
+  - `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies with no vulnerabilities reported.
+- Release build:
+  - `./tinytop rust build`: built `/home/michel/projects/tinytop/agent/target/release/tinytop-agent` with embedded v0.1.25 dashboard assets.
+- Live embedded dashboard smoke on `http://127.0.0.1:4274`
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.25 (embedded dashboard)`.
+  - `/health`: returned `ok`.
+  - `/api/version`: returned Rust `0.1.25` embedded dashboard identity.
+  - `/api/history/coverage`: returned coverage metadata with `retentionHours`, `rollupRetentionDays`, `rollupBucketCount`, and `databaseBytes`.
+  - `/api/settings`: returned expanded CPU/RAM/disk/load/pressure warn and critical thresholds plus enabled sections.
+  - `/`: contains `id="operator-status"`, `id="timeline-rail"`, `id="root-filesystem-card"`, `id="process-search"`, and `id="daemon-cpu-critical"`.
+  - `/app.js`: contains `fetch("/api/history/coverage"`, `computeSnapshotStatus`, `drawTimelineRail`, `sortProcesses`, and `filterFilesystems`.
+- Rendered browser smoke through Playwright MCP:
+  - Desktop viewport `1440x980`: title `TinyTop`, operator strip rendered `Critical` from real root disk pressure, timeline rail `1006x96`, history coverage rendered, process search/root card present, no horizontal overflow.
+  - Mobile viewport `390x844`: timeline rail `332x96`, process search/root card present, no horizontal overflow.
+  - Screenshots were generated during the Playwright MCP smoke run and then left out of the repo as generated artifacts.
+
 ## Useful Commands
 
 ```bash
@@ -353,6 +408,7 @@ cd /home/michel/projects/tinytop
 curl -fsS http://127.0.0.1:4274/health
 curl -fsS http://127.0.0.1:4274/api/version
 curl -fsS http://127.0.0.1:4274/api/settings
+curl -fsS http://127.0.0.1:4274/api/history/coverage
 curl -fsS http://127.0.0.1:4274/api/snapshot
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 ./tinytop check
@@ -360,15 +416,14 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 
 ## Next Useful Work
 
-- Add SQLite raw-history retention with a configurable 24 to 72 hour default.
-- Add one-minute rollups for longer history ranges.
-- Apply saved settings to daemon-side collection and retention enforcement where appropriate.
-- Add a collector/daemon health indicator in the UI if history or snapshot APIs degrade.
+- Use one-minute rollups to serve longer history ranges instead of only reporting coverage.
+- Add configurable database-size/coverage goals in Settings.
+- Add a collector/daemon health detail drawer if history or snapshot APIs degrade.
 - Add native Windows and macOS collectors when the project moves beyond Linux/WSL.
 
 ## Notes For Resuming
 
-- TinyTop Rust daemon PID `1283644` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` or `kill 1283644` if you need the default dashboard port free.
+- TinyTop Rust daemon PID `1428510` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` if you need the default dashboard port free.
 - WSL user systemd was previously unavailable in this environment, so foreground Rust daemon mode is the known-working path.
 - The dashboard is loopback-only by design.
 - `legacy/dashboard/vendor/echarts.min.js` and `agent/assets/dashboard/vendor/echarts.min.js` are vendored third-party code and should stay excluded from local UI policy scans.

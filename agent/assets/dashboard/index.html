@@ -24,10 +24,11 @@
         </div>
 
         <nav class="rail-nav">
-          <a href="#overview">Overview</a>
-          <a href="#filesystem">Filesystem</a>
-          <a href="#history">History</a>
-          <a href="#processes">Processes</a>
+          <a href="#overview" data-section-link="overview">Overview</a>
+          <a href="#filesystem" data-section-link="filesystem">Filesystem</a>
+          <a href="#history" data-section-link="history">History</a>
+          <a href="#pressure" data-section-link="pressure">Pressure</a>
+          <a href="#processes" data-section-link="processes">Processes</a>
           <button id="settings-open-button" type="button">Settings</button>
         </nav>
 
@@ -91,8 +92,27 @@
 
         <div class="status-message" id="status-message" role="status" hidden></div>
 
-        <section class="overview-grid" id="overview" aria-label="System overview">
-          <article class="gauge-panel accent-green">
+        <section class="operator-status" id="operator-status" data-status="stale" aria-live="polite">
+          <div>
+            <span class="label">State</span>
+            <strong id="operator-state">Connecting</strong>
+          </div>
+          <div>
+            <span class="label">Summary</span>
+            <strong id="operator-summary">Waiting for first sample</strong>
+          </div>
+          <div>
+            <span class="label">Worst</span>
+            <strong id="operator-offender">-</strong>
+          </div>
+          <div>
+            <span class="label">Age</span>
+            <strong id="operator-age">-</strong>
+          </div>
+        </section>
+
+        <section class="overview-grid" id="overview" data-section="overview" aria-label="System overview">
+          <article class="gauge-panel accent-green" id="cpu-panel" data-status="healthy">
             <div class="panel-heading">
               <span>CPU</span>
               <small id="cpu-cores">- cores</small>
@@ -106,7 +126,7 @@
             <canvas id="cpu-spark" class="sparkline" width="320" height="72" aria-label="CPU history"></canvas>
           </article>
 
-          <article class="gauge-panel accent-cyan">
+          <article class="gauge-panel accent-cyan" id="ram-panel" data-status="healthy">
             <div class="panel-heading">
               <span>RAM</span>
               <small id="ram-total">-</small>
@@ -120,7 +140,7 @@
             <canvas id="ram-spark" class="sparkline" width="320" height="72" aria-label="RAM history"></canvas>
           </article>
 
-          <article class="gauge-panel accent-violet">
+          <article class="gauge-panel accent-violet" id="swap-panel" data-status="healthy">
             <div class="panel-heading">
               <span>SWAP</span>
               <small id="swap-total">-</small>
@@ -134,7 +154,7 @@
             <canvas id="swap-spark" class="sparkline" width="320" height="72" aria-label="Swap history"></canvas>
           </article>
 
-          <article class="gauge-panel accent-amber">
+          <article class="gauge-panel accent-amber" id="load-panel" data-status="healthy">
             <div class="panel-heading">
               <span>LOAD</span>
               <small id="load-capacity">-</small>
@@ -149,7 +169,7 @@
           </article>
         </section>
 
-        <section class="panel history-panel" id="history">
+        <section class="panel history-panel" id="history" data-section="history">
           <div class="section-heading">
             <div>
               <h2>History</h2>
@@ -183,35 +203,51 @@
               <strong id="history-position-label">Live</strong>
             </div>
             <nav class="history-window-nav" aria-label="History range">
-              <button type="button" data-history-window="live" aria-pressed="true">Live</button>
+              <button type="button" data-history-window="live" aria-pressed="true">Now</button>
               <button type="button" data-history-window="15m" aria-pressed="false">15m</button>
               <button type="button" data-history-window="1h" aria-pressed="false">1h</button>
               <button type="button" data-history-window="6h" aria-pressed="false">6h</button>
               <button type="button" data-history-window="24h" aria-pressed="false">24h</button>
             </nav>
+            <fieldset class="history-series-toggles">
+              <legend>Visible history series</legend>
+              <label><input type="checkbox" data-history-series="cpu" checked /> CPU</label>
+              <label><input type="checkbox" data-history-series="ram" checked /> RAM</label>
+              <label><input type="checkbox" data-history-series="swap" checked /> SWAP</label>
+              <label><input type="checkbox" data-history-series="load" checked /> LOAD</label>
+            </fieldset>
             <div class="history-scrubber-row">
-              <input
-                id="history-scrubber"
-                type="range"
-                min="0"
-                max="0"
-                value="0"
-                step="1"
-                aria-label="Browse history timeline by timestamp"
-                disabled
-              />
-              <button class="mini-button" id="live-button" type="button" disabled>Live</button>
+              <canvas
+                id="timeline-rail"
+                class="timeline-rail"
+                width="960"
+                height="96"
+                tabindex="0"
+                role="slider"
+                aria-valuemin="0"
+                aria-valuemax="0"
+                aria-valuenow="0"
+                aria-valuetext="Live"
+                aria-label="History timeline rail"
+              ></canvas>
+              <button class="mini-button" id="live-button" type="button" disabled>Now</button>
               <button class="mini-button secondary" id="clear-session-button" type="button" disabled>Clear</button>
             </div>
             <div class="history-scrubber-scale" aria-hidden="true">
               <span id="history-start-label">-</span>
               <span id="history-end-label">Live</span>
             </div>
+            <div class="history-coverage" id="history-coverage">
+              <span>Oldest <strong id="history-oldest">-</strong></span>
+              <span>Newest <strong id="history-newest">-</strong></span>
+              <span>DB <strong id="history-db-size">-</strong></span>
+              <span>Rollups <strong id="history-rollups">-</strong></span>
+            </div>
             <div class="history-sample-values" id="history-sample-values"></div>
           </div>
         </section>
 
-        <section class="metric-band" aria-label="Live metrics">
+        <section class="metric-band" data-section="overview" aria-label="Live metrics">
           <article>
             <span class="label">Load 1m</span>
             <strong id="load-one">-</strong>
@@ -235,18 +271,37 @@
         </section>
 
         <section class="content-grid">
-          <article class="panel filesystem-panel" id="filesystem">
+          <article class="panel filesystem-panel" id="filesystem" data-section="filesystem">
             <div class="section-heading">
               <div>
                 <h2>Filesystem</h2>
                 <p>Capacity and inode pressure by mount.</p>
               </div>
-              <span class="mini-stat" id="filesystem-count">0 mounts</span>
+              <div class="section-actions">
+                <label class="inline-toggle">
+                  <input id="filesystem-show-system" type="checkbox" />
+                  <span>System mounts</span>
+                </label>
+                <span class="mini-stat" id="filesystem-count">0 mounts</span>
+              </div>
+            </div>
+            <div class="root-filesystem-card" id="root-filesystem-card" data-status="healthy">
+              <div>
+                <span class="label">Root Filesystem</span>
+                <strong id="root-filesystem-name">-</strong>
+              </div>
+              <div>
+                <span class="label">Used</span>
+                <strong id="root-filesystem-usage">-</strong>
+              </div>
+              <div class="root-filesystem-meter">
+                <div class="bar" id="root-filesystem-bar" style="--value:0"><span></span></div>
+              </div>
             </div>
             <div class="filesystem-list" id="filesystem-list"></div>
           </article>
 
-          <article class="panel pressure-panel">
+          <article class="panel pressure-panel" id="pressure" data-section="pressure">
             <div class="section-heading">
               <div>
                 <h2>Pressure</h2>
@@ -257,7 +312,7 @@
           </article>
         </section>
 
-        <section class="panel process-panel" id="processes">
+        <section class="panel process-panel" id="processes" data-section="processes">
           <div class="section-heading">
             <div>
               <h2>Processes</h2>
@@ -265,15 +320,29 @@
             </div>
             <span class="mini-stat" id="process-count">0 rows</span>
           </div>
+          <div class="process-controls">
+            <label>
+              <span class="label">Search</span>
+              <input id="process-search" type="search" autocomplete="off" placeholder="PID or command" />
+            </label>
+            <label>
+              <span class="label">Density</span>
+              <select id="process-density">
+                <option value="comfortable">Comfortable</option>
+                <option value="compact">Compact</option>
+              </select>
+            </label>
+          </div>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th scope="col">PID</th>
+                  <th scope="col"><button type="button" data-process-sort="pid">PID</button></th>
                   <th scope="col">Command</th>
-                  <th scope="col">CPU</th>
-                  <th scope="col">RAM</th>
-                  <th scope="col">RSS</th>
+                  <th scope="col"><button type="button" data-process-sort="cpu">CPU</button></th>
+                  <th scope="col"><button type="button" data-process-sort="memory">RAM</button></th>
+                  <th scope="col"><button type="button" data-process-sort="rss">RSS</button></th>
+                  <th scope="col">Details</th>
                 </tr>
               </thead>
               <tbody id="process-rows"></tbody>
@@ -383,16 +452,64 @@
                 <input id="daemon-cpu-warn" type="number" min="0" max="100" step="1" />
               </label>
               <label>
+                <span>CPU critical</span>
+                <input id="daemon-cpu-critical" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
                 <span>RAM warn</span>
                 <input id="daemon-memory-warn" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
+                <span>RAM critical</span>
+                <input id="daemon-memory-critical" type="number" min="0" max="100" step="1" />
               </label>
               <label>
                 <span>Disk warn</span>
                 <input id="daemon-disk-warn" type="number" min="0" max="100" step="1" />
               </label>
+              <label>
+                <span>Disk critical</span>
+                <input id="daemon-disk-critical" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
+                <span>Load warn</span>
+                <input id="daemon-load-warn" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
+                <span>Load critical</span>
+                <input id="daemon-load-critical" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
+                <span>Pressure warn</span>
+                <input id="daemon-pressure-warn" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
+                <span>Pressure critical</span>
+                <input id="daemon-pressure-critical" type="number" min="0" max="100" step="1" />
+              </label>
               <label class="toggle-row">
                 <input id="daemon-redaction-default" type="checkbox" />
                 <span>Redact by default</span>
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-section-overview" type="checkbox" />
+                <span>Show overview</span>
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-section-history" type="checkbox" />
+                <span>Show history</span>
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-section-filesystem" type="checkbox" />
+                <span>Show filesystem</span>
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-section-pressure" type="checkbox" />
+                <span>Show pressure</span>
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-section-processes" type="checkbox" />
+                <span>Show processes</span>
               </label>
             </fieldset>
           </div>
@@ -402,6 +519,19 @@
           <button class="mini-button secondary" id="cancel-settings-button" type="button">Cancel</button>
           <button class="mini-button" id="save-settings-button" type="button">Save daemon</button>
         </div>
+      </div>
+    </dialog>
+
+    <dialog class="process-detail-dialog" id="process-detail-dialog" aria-labelledby="process-detail-title">
+      <div class="process-detail-card">
+        <div class="settings-dialog-header">
+          <div>
+            <span class="confirmation-kicker">Process</span>
+            <h2 id="process-detail-title">Process details</h2>
+          </div>
+          <button class="mini-button secondary" id="close-process-detail-button" type="button">Close</button>
+        </div>
+        <div class="process-detail-body" id="process-detail-body"></div>
       </div>
     </dialog>
 

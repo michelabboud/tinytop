@@ -44,8 +44,22 @@ pub struct DashboardSettings {
 #[serde(rename_all = "camelCase")]
 pub struct DashboardThresholds {
     pub cpu_warn: i64,
+    #[serde(default = "default_cpu_critical")]
+    pub cpu_critical: i64,
     pub memory_warn: i64,
+    #[serde(default = "default_memory_critical")]
+    pub memory_critical: i64,
     pub disk_warn: i64,
+    #[serde(default = "default_disk_critical")]
+    pub disk_critical: i64,
+    #[serde(default = "default_load_warn")]
+    pub load_warn: i64,
+    #[serde(default = "default_load_critical")]
+    pub load_critical: i64,
+    #[serde(default = "default_pressure_warn")]
+    pub pressure_warn: i64,
+    #[serde(default = "default_pressure_critical")]
+    pub pressure_critical: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,8 +93,15 @@ impl Default for DashboardThresholds {
     fn default() -> Self {
         Self {
             cpu_warn: 80,
+            cpu_critical: default_cpu_critical(),
             memory_warn: 85,
+            memory_critical: default_memory_critical(),
             disk_warn: 85,
+            disk_critical: default_disk_critical(),
+            load_warn: default_load_warn(),
+            load_critical: default_load_critical(),
+            pressure_warn: default_pressure_warn(),
+            pressure_critical: default_pressure_critical(),
         }
     }
 }
@@ -119,10 +140,84 @@ impl DashboardSettings {
         validate_range("rollupRetentionDays", self.rollup_retention_days, 1, 366)?;
         validate_range("topProcessCount", self.top_process_count, 1, 50)?;
         validate_range("thresholds.cpuWarn", self.thresholds.cpu_warn, 0, 100)?;
+        validate_range(
+            "thresholds.cpuCritical",
+            self.thresholds.cpu_critical,
+            0,
+            100,
+        )?;
         validate_range("thresholds.memoryWarn", self.thresholds.memory_warn, 0, 100)?;
+        validate_range(
+            "thresholds.memoryCritical",
+            self.thresholds.memory_critical,
+            0,
+            100,
+        )?;
         validate_range("thresholds.diskWarn", self.thresholds.disk_warn, 0, 100)?;
+        validate_range(
+            "thresholds.diskCritical",
+            self.thresholds.disk_critical,
+            0,
+            100,
+        )?;
+        validate_range("thresholds.loadWarn", self.thresholds.load_warn, 0, 100)?;
+        validate_range(
+            "thresholds.loadCritical",
+            self.thresholds.load_critical,
+            0,
+            100,
+        )?;
+        validate_range(
+            "thresholds.pressureWarn",
+            self.thresholds.pressure_warn,
+            0,
+            100,
+        )?;
+        validate_range(
+            "thresholds.pressureCritical",
+            self.thresholds.pressure_critical,
+            0,
+            100,
+        )?;
+        validate_threshold_pair(
+            "thresholds.cpu",
+            self.thresholds.cpu_warn,
+            self.thresholds.cpu_critical,
+        )?;
+        validate_threshold_pair(
+            "thresholds.memory",
+            self.thresholds.memory_warn,
+            self.thresholds.memory_critical,
+        )?;
+        validate_threshold_pair(
+            "thresholds.disk",
+            self.thresholds.disk_warn,
+            self.thresholds.disk_critical,
+        )?;
+        validate_threshold_pair(
+            "thresholds.load",
+            self.thresholds.load_warn,
+            self.thresholds.load_critical,
+        )?;
+        validate_threshold_pair(
+            "thresholds.pressure",
+            self.thresholds.pressure_warn,
+            self.thresholds.pressure_critical,
+        )?;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryCoverage {
+    pub sample_count: i64,
+    pub oldest_captured_at_ms: Option<i64>,
+    pub newest_captured_at_ms: Option<i64>,
+    pub retention_hours: i64,
+    pub rollup_retention_days: i64,
+    pub rollup_bucket_count: i64,
+    pub database_bytes: i64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -274,6 +369,9 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
+        self.rebuild_rollup_bucket(bucket_start_ms(captured_at_ms))
+            .await?;
+
         Ok(HistorySample {
             captured_at_ms,
             snapshot: snapshot.clone(),
@@ -344,6 +442,62 @@ impl SqliteHistoryStore {
         })
     }
 
+    pub async fn history_coverage(
+        &self,
+        settings: &DashboardSettings,
+    ) -> Result<HistoryCoverage, StoreError> {
+        settings.validate()?;
+        let stats = self.stats().await?;
+        let row = sqlx::query(
+            r#"
+            SELECT COUNT(*) AS rollup_bucket_count
+            FROM metric_rollups_1m
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(HistoryCoverage {
+            sample_count: stats.sample_count,
+            oldest_captured_at_ms: stats.oldest_captured_at_ms,
+            newest_captured_at_ms: stats.newest_captured_at_ms,
+            retention_hours: settings.retention_hours,
+            rollup_retention_days: settings.rollup_retention_days,
+            rollup_bucket_count: row.try_get::<i64, _>("rollup_bucket_count")?,
+            database_bytes: self.database_bytes().await?,
+        })
+    }
+
+    pub async fn prune_raw_history(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM metric_samples
+            WHERE captured_at_ms < ?
+            "#,
+        )
+        .bind(cutoff_ms)
+        .execute(&self.pool)
+        .await?;
+
+        self.rebuild_rollup_bucket(bucket_start_ms(cutoff_ms))
+            .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn prune_rollups(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM metric_rollups_1m
+            WHERE bucket_start_ms < ?
+            "#,
+        )
+        .bind(bucket_start_ms(cutoff_ms))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn integrity_check(&self) -> Result<String, StoreError> {
         let row = sqlx::query("PRAGMA integrity_check")
             .fetch_one(&self.pool)
@@ -353,6 +507,109 @@ impl SqliteHistoryStore {
 
     pub async fn vacuum(&self) -> Result<(), StoreError> {
         sqlx::query("VACUUM").execute(&self.pool).await?;
+        Ok(())
+    }
+
+    async fn database_bytes(&self) -> Result<i64, StoreError> {
+        let page_count = sqlx::query("PRAGMA page_count")
+            .fetch_one(&self.pool)
+            .await?
+            .try_get::<i64, _>(0)?;
+        let page_size = sqlx::query("PRAGMA page_size")
+            .fetch_one(&self.pool)
+            .await?
+            .try_get::<i64, _>(0)?;
+        Ok(page_count.saturating_mul(page_size))
+    }
+
+    async fn rebuild_rollup_bucket(&self, bucket_start_ms: i64) -> Result<(), StoreError> {
+        let bucket_end_ms = bucket_start_ms.saturating_add(60_000);
+        let row = sqlx::query(
+            r#"
+            SELECT
+              COUNT(*) AS sample_count,
+              MIN(captured_at_ms) AS first_captured_at_ms,
+              MAX(captured_at_ms) AS newest_captured_at_ms,
+              AVG(cpu_usage_percent) AS avg_cpu_usage_percent,
+              MAX(cpu_usage_percent) AS max_cpu_usage_percent,
+              AVG(memory_used_percent) AS avg_memory_used_percent,
+              MAX(memory_used_percent) AS max_memory_used_percent,
+              AVG(swap_used_percent) AS avg_swap_used_percent,
+              MAX(swap_used_percent) AS max_swap_used_percent,
+              AVG(load_percent) AS avg_load_percent,
+              MAX(load_percent) AS max_load_percent,
+              AVG(root_used_percent) AS avg_root_used_percent
+            FROM metric_samples
+            WHERE captured_at_ms >= ? AND captured_at_ms < ?
+            "#,
+        )
+        .bind(bucket_start_ms)
+        .bind(bucket_end_ms)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let sample_count = row.try_get::<i64, _>("sample_count")?;
+        if sample_count == 0 {
+            sqlx::query(
+                r#"
+                DELETE FROM metric_rollups_1m
+                WHERE bucket_start_ms = ?
+                "#,
+            )
+            .bind(bucket_start_ms)
+            .execute(&self.pool)
+            .await?;
+            return Ok(());
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO metric_rollups_1m (
+              bucket_start_ms,
+              first_captured_at_ms,
+              newest_captured_at_ms,
+              sample_count,
+              avg_cpu_usage_percent,
+              max_cpu_usage_percent,
+              avg_memory_used_percent,
+              max_memory_used_percent,
+              avg_swap_used_percent,
+              max_swap_used_percent,
+              avg_load_percent,
+              max_load_percent,
+              avg_root_used_percent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket_start_ms) DO UPDATE SET
+              first_captured_at_ms = excluded.first_captured_at_ms,
+              newest_captured_at_ms = excluded.newest_captured_at_ms,
+              sample_count = excluded.sample_count,
+              avg_cpu_usage_percent = excluded.avg_cpu_usage_percent,
+              max_cpu_usage_percent = excluded.max_cpu_usage_percent,
+              avg_memory_used_percent = excluded.avg_memory_used_percent,
+              max_memory_used_percent = excluded.max_memory_used_percent,
+              avg_swap_used_percent = excluded.avg_swap_used_percent,
+              max_swap_used_percent = excluded.max_swap_used_percent,
+              avg_load_percent = excluded.avg_load_percent,
+              max_load_percent = excluded.max_load_percent,
+              avg_root_used_percent = excluded.avg_root_used_percent
+            "#,
+        )
+        .bind(bucket_start_ms)
+        .bind(row.try_get::<i64, _>("first_captured_at_ms")?)
+        .bind(row.try_get::<i64, _>("newest_captured_at_ms")?)
+        .bind(sample_count)
+        .bind(row.try_get::<f64, _>("avg_cpu_usage_percent")?)
+        .bind(row.try_get::<f64, _>("max_cpu_usage_percent")?)
+        .bind(row.try_get::<f64, _>("avg_memory_used_percent")?)
+        .bind(row.try_get::<f64, _>("max_memory_used_percent")?)
+        .bind(row.try_get::<f64, _>("avg_swap_used_percent")?)
+        .bind(row.try_get::<f64, _>("max_swap_used_percent")?)
+        .bind(row.try_get::<f64, _>("avg_load_percent")?)
+        .bind(row.try_get::<f64, _>("max_load_percent")?)
+        .bind(row.try_get::<Option<f64>, _>("avg_root_used_percent")?)
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -425,6 +682,37 @@ impl SqliteHistoryStore {
               value_json TEXT NOT NULL,
               updated_at_ms INTEGER NOT NULL
             )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS metric_rollups_1m (
+              bucket_start_ms INTEGER PRIMARY KEY,
+              first_captured_at_ms INTEGER NOT NULL,
+              newest_captured_at_ms INTEGER NOT NULL,
+              sample_count INTEGER NOT NULL,
+              avg_cpu_usage_percent REAL NOT NULL,
+              max_cpu_usage_percent REAL NOT NULL,
+              avg_memory_used_percent REAL NOT NULL,
+              max_memory_used_percent REAL NOT NULL,
+              avg_swap_used_percent REAL NOT NULL,
+              max_swap_used_percent REAL NOT NULL,
+              avg_load_percent REAL NOT NULL,
+              max_load_percent REAL NOT NULL,
+              avg_root_used_percent REAL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
+              ON metric_rollups_1m (newest_captured_at_ms DESC)
             "#,
         )
         .execute(&self.pool)
@@ -520,10 +808,51 @@ fn validate_range(field: &str, value: i64, min: i64, max: i64) -> Result<(), Sto
     )))
 }
 
+fn validate_threshold_pair(field: &str, warn: i64, critical: i64) -> Result<(), StoreError> {
+    if warn <= critical {
+        return Ok(());
+    }
+    Err(StoreError::Validation(format!(
+        "{field} warning threshold must be less than or equal to critical threshold"
+    )))
+}
+
 fn load_percent(snapshot: &SystemSnapshot) -> f64 {
     if snapshot.cpu.cores == 0 {
         0.0
     } else {
         ((snapshot.load.one / snapshot.cpu.cores as f64) * 100.0).clamp(0.0, 100.0)
     }
+}
+
+fn bucket_start_ms(captured_at_ms: i64) -> i64 {
+    captured_at_ms.div_euclid(60_000).saturating_mul(60_000)
+}
+
+fn default_cpu_critical() -> i64 {
+    95
+}
+
+fn default_memory_critical() -> i64 {
+    95
+}
+
+fn default_disk_critical() -> i64 {
+    95
+}
+
+fn default_load_warn() -> i64 {
+    80
+}
+
+fn default_load_critical() -> i64 {
+    100
+}
+
+fn default_pressure_warn() -> i64 {
+    10
+}
+
+fn default_pressure_critical() -> i64 {
+    25
 }

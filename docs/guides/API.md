@@ -39,7 +39,7 @@ Rust response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded"
@@ -52,14 +52,14 @@ Legacy Bun response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "runtime": "legacy-bun",
   "component": "dashboard",
   "dashboard": "legacy",
   "collector": {
     "status": "ok",
     "app": "tinytop",
-    "version": "0.1.24",
+    "version": "0.1.25",
     "runtime": "legacy-bun",
     "component": "collector",
     "dashboard": "none"
@@ -156,8 +156,15 @@ Response:
   "redactionDefault": false,
   "thresholds": {
     "cpuWarn": 80,
+    "cpuCritical": 95,
     "memoryWarn": 85,
-    "diskWarn": 85
+    "memoryCritical": 95,
+    "diskWarn": 85,
+    "diskCritical": 95,
+    "loadWarn": 80,
+    "loadCritical": 100,
+    "pressureWarn": 10,
+    "pressureCritical": 25
   },
   "enabledSections": {
     "overview": true,
@@ -178,15 +185,15 @@ Example:
 ```bash
 curl -fsS -X PUT http://127.0.0.1:4274/api/settings \
   -H 'content-type: application/json' \
-  --data '{"defaultTheme":"aurora","defaultGraphMode":"heatmap","pollIntervalMs":3000,"defaultHistoryWindow":"1h","retentionHours":96,"rollupRetentionDays":30,"topProcessCount":12,"redactionDefault":false,"thresholds":{"cpuWarn":80,"memoryWarn":85,"diskWarn":85},"enabledSections":{"overview":true,"history":true,"filesystem":true,"pressure":true,"processes":true}}'
+  --data '{"defaultTheme":"aurora","defaultGraphMode":"heatmap","pollIntervalMs":3000,"defaultHistoryWindow":"1h","retentionHours":96,"rollupRetentionDays":30,"topProcessCount":12,"redactionDefault":false,"thresholds":{"cpuWarn":80,"cpuCritical":95,"memoryWarn":85,"memoryCritical":95,"diskWarn":85,"diskCritical":95,"loadWarn":80,"loadCritical":100,"pressureWarn":10,"pressureCritical":25},"enabledSections":{"overview":true,"history":true,"filesystem":true,"pressure":true,"processes":true}}'
 ```
 
 The Settings dialog separates browser-local choices from daemon defaults:
 
 | Scope | Storage |
 | --- | --- |
-| Active theme, graph mode, and history window for this browser | `localStorage` |
-| Default theme, graph mode, refresh interval, retention/rollup defaults, thresholds, and enabled sections | SQLite `app_settings` |
+| Active theme, graph mode, history window, visible series, process table state, filesystem system-mount toggle, and last section for this browser | `localStorage` |
+| Default theme, graph mode, refresh interval, retention/rollup defaults, warning/critical thresholds, and enabled sections | SQLite `app_settings` |
 
 ### GET /api/history
 
@@ -226,7 +233,31 @@ Response:
 
 Samples are returned oldest first.
 
-Retention note: TinyTop currently keeps raw SQLite rows until manual archive/reset. The dashboard uses explicit `since_ms` and `until_ms` windows for its range presets, while the API default window is 300 seconds when no explicit window is supplied.
+Retention note: The dashboard uses explicit `since_ms` and `until_ms` windows for its range presets, while the API default window is 300 seconds when no explicit window is supplied. In the Rust daemon, raw rows are pruned by the saved `retentionHours` setting after successful collection or settings update. The legacy Bun split path keeps raw SQLite rows until manual archive/reset.
+
+### GET /api/history/coverage
+
+Rust daemon endpoint that returns history coverage metadata for the dashboard rail. Legacy Bun split mode may return `404`; the dashboard handles that by showing unavailable coverage values.
+
+Example:
+
+```bash
+curl -fsS http://127.0.0.1:4274/api/history/coverage
+```
+
+Response:
+
+```json
+{
+  "sampleCount": 120,
+  "oldestCapturedAtMs": 1782292546568,
+  "newestCapturedAtMs": 1782296146568,
+  "retentionHours": 72,
+  "rollupRetentionDays": 30,
+  "rollupBucketCount": 60,
+  "databaseBytes": 1048576
+}
+```
 
 ### GET /vendor/echarts.min.js
 
@@ -263,7 +294,7 @@ Response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.24",
+  "version": "0.1.25",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded"

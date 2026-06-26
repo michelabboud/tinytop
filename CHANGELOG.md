@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.25 - 2026-06-26
+
+- Added an operator status strip with Healthy, Warning, Critical, and Stale states computed from saved daemon thresholds.
+- Replaced the native History range input with a canvas timeline rail, selected timestamp marker, visible-window shading, visible-series preferences, and history coverage display.
+- Added Rust `/api/history/coverage`, raw-history pruning by `retentionHours`, and one-minute rollups pruned by `rollupRetentionDays`.
+- Expanded settings thresholds to CPU/RAM/disk/load/pressure warning and critical values, and applied enabled-section settings to the dashboard layout.
+- Added process search/sort/density controls, a process detail dialog, a root filesystem card, a system-mount toggle, and threshold-colored filesystem/pressure states.
+- Kept Rust embedded dashboard assets and legacy Bun dashboard assets byte-identical.
+
 ## 0.1.24 - 2026-06-26
 
 - Added a Load overview gauge next to CPU, RAM, and swap.

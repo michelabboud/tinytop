@@ -33,6 +33,27 @@ describe("dashboard timestamp timeline", () => {
     expect(app).toContain("storeValue(STORAGE_KEYS.historyWindow");
   });
 
+  test("renders timeline rail and history coverage instead of a native scrubber", () => {
+    expect(html).toContain('id="timeline-rail"');
+    expect(html).toContain('aria-label="History timeline rail"');
+    expect(html).toContain('id="history-coverage"');
+    expect(html).toContain('id="history-oldest"');
+    expect(html).toContain('id="history-newest"');
+    expect(html).toContain('id="history-db-size"');
+    expect(html).not.toContain('id="history-scrubber"');
+  });
+
+  test("draws timeline rail, fetches coverage, and persists visible series locally", () => {
+    expect(app).toContain("timelineRail: document.querySelector(\"#timeline-rail\")");
+    expect(app).toContain("function drawTimelineRail");
+    expect(app).toContain("function timelineTimestampFromPointer");
+    expect(app).toContain("function handleTimelinePointer");
+    expect(app).toContain("function fetchHistoryCoverage");
+    expect(app).toContain("function renderHistoryCoverage");
+    expect(app).toContain('fetch("/api/history/coverage"');
+    expect(app).toContain("tinytop.visibleSeries");
+  });
+
   test("shows collector/dashboard version metadata", () => {
     expect(html).toContain('id="daemon-version"');
     expect(app).toContain('fetch("/api/version"');

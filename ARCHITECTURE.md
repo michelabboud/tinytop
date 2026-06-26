@@ -12,6 +12,7 @@ Browser
   | GET /, /app.js, /styles.css, /vendor/echarts.min.js
   | GET /api/snapshot
   | GET /api/history
+  | GET /api/history/coverage
   | GET /api/version
   | GET/PUT /api/settings
   v
@@ -34,14 +35,15 @@ The supported operator entrypoint is the root `./tinytop` Bash command center. I
 
 1. The browser loads embedded Rust dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, and `app.js`.
 2. `app.js` requests `/api/settings` for SQLite-backed daemon defaults.
-3. `app.js` reads browser-local theme, graph-mode, and history-range overrides from `localStorage`.
+3. `app.js` reads browser-local theme, graph-mode, history-range, visible-series, process-table, filesystem-toggle, and last-section overrides from `localStorage`.
 4. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for the selected timeline range.
-5. The frontend requests `/api/version` once to display the serving runtime and product version.
-6. The frontend polls `/api/snapshot` on the configured browser refresh interval.
-7. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
-8. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
-9. `tinytop-store` writes samples and daemon defaults into SQLite through SQLx.
-10. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, and redraws ECharts views.
+5. The frontend requests `/api/history/coverage` when the Rust daemon is serving the page.
+6. The frontend requests `/api/version` once to display the serving runtime and product version.
+7. The frontend polls `/api/snapshot` on the configured browser refresh interval.
+8. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
+9. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
+10. `tinytop-store` writes samples, one-minute rollups, and daemon defaults into SQLite through SQLx.
+11. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, computes threshold states, and redraws ECharts views.
 
 ## Modules
 
@@ -90,6 +92,7 @@ The Rust daemon and legacy Bun dashboard expose:
 - `PUT /api/settings`
 - `GET /api/snapshot`
 - `GET /api/history?limit=&window_seconds=&since_ms=&until_ms=`
+- `GET /api/history/coverage` in the Rust daemon
 - `GET /vendor/echarts.min.js`
 - static frontend assets: `/`, `/index.html`, `/styles.css`, `/app.js`
 
@@ -168,11 +171,30 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value_json TEXT NOT NULL,
   updated_at_ms INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS metric_rollups_1m (
+  bucket_start_ms INTEGER PRIMARY KEY,
+  first_captured_at_ms INTEGER NOT NULL,
+  newest_captured_at_ms INTEGER NOT NULL,
+  sample_count INTEGER NOT NULL,
+  avg_cpu_usage_percent REAL NOT NULL,
+  max_cpu_usage_percent REAL NOT NULL,
+  avg_memory_used_percent REAL NOT NULL,
+  max_memory_used_percent REAL NOT NULL,
+  avg_swap_used_percent REAL NOT NULL,
+  max_swap_used_percent REAL NOT NULL,
+  avg_load_percent REAL NOT NULL,
+  max_load_percent REAL NOT NULL,
+  avg_root_used_percent REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
+  ON metric_rollups_1m (newest_captured_at_ms DESC);
 ```
 
-The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. It also stores dashboard daemon defaults as typed JSON in `app_settings` under `setting_key = 'dashboard'`. This supports refresh-safe chart hydration, selected-sample detail rendering, and shared daemon defaults for future dashboard loads.
+The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. It also stores dashboard daemon defaults as typed JSON in `app_settings` under `setting_key = 'dashboard'`, maintains one-minute aggregate metric buckets in `metric_rollups_1m`, and exposes coverage metadata through `/api/history/coverage`. This supports refresh-safe chart hydration, selected-sample detail rendering, shared daemon defaults for future dashboard loads, retention enforcement, and history coverage display.
 
-There is no automatic retention or delete job yet, so raw rows remain in `metric_samples` until the user archives or resets the database. Retention and rollup settings are saved in `app_settings`, but enforcement is planned for the next storage slice. Normalized filesystem/process/pressure child tables, raw retention, and rollups are planned for future longer-range analytics.
+In the Rust daemon, every stored sample also refreshes its one-minute rollup bucket. Raw samples are pruned by `retentionHours`; rollup buckets are pruned by `rollupRetentionDays`. The legacy Bun split path still keeps raw rows until manual archive/reset. Normalized filesystem/process/pressure child tables remain future work.
 
 ## Frontend State
 
@@ -181,6 +203,12 @@ Browser-local settings:
 - `tinytop.theme`
 - `tinytop.graphMode`
 - `tinytop.historyWindow`
+- `tinytop.visibleSeries`
+- `tinytop.processFilter`
+- `tinytop.processSort`
+- `tinytop.processDensity`
+- `tinytop.filesystemShowSystem`
+- `tinytop.lastSection`
 
 SQLite-backed daemon defaults:
 
@@ -203,8 +231,9 @@ In-memory session state:
 - pause/loading flags
 - active confirmation dialog resolver and return-focus target
 - active settings dialog focus-return target
+- active process-detail dialog
 
-The browser loads the selected timestamp range with `since_ms` and `until_ms` query parameters. Presets are Live, 15m, 1h, 6h, and 24h. Large ranges are paged through the existing API limit, deduplicated by captured timestamp, and downsampled to a browser rendering cap when needed. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width.
+The browser loads the selected timestamp range with `since_ms` and `until_ms` query parameters. Presets are Live, 15m, 1h, 6h, and 24h. Large ranges are paged through the existing API limit, deduplicated by captured timestamp, and downsampled to a browser rendering cap when needed. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. The timeline rail draws an overview trace from loaded samples and uses timestamp selection rather than sample-index state. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width.
 
 Web UI interaction policy:
 

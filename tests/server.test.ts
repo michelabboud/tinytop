@@ -121,6 +121,9 @@ describe("createFetchHandler", () => {
     expect(defaultResponse.status).toBe(200);
     expect(defaults.defaultTheme).toBe("midnight");
     expect(defaults.pollIntervalMs).toBe(1500);
+    expect(defaults.thresholds.cpuCritical).toBe(95);
+    expect(defaults.thresholds.loadWarn).toBe(80);
+    expect(defaults.thresholds.pressureCritical).toBe(25);
 
     const updateResponse = await handler(
       new Request("http://127.0.0.1:4274/api/settings", {
@@ -130,6 +133,13 @@ describe("createFetchHandler", () => {
           defaultTheme: "aurora",
           defaultGraphMode: "heatmap",
           pollIntervalMs: 3000,
+          thresholds: {
+            ...defaults.thresholds,
+            cpuWarn: 70,
+            cpuCritical: 90,
+            loadWarn: 75,
+            loadCritical: 95,
+          },
         }),
       }),
     );
@@ -139,6 +149,10 @@ describe("createFetchHandler", () => {
     expect(updated.defaultTheme).toBe("aurora");
     expect(updated.defaultGraphMode).toBe("heatmap");
     expect(updated.pollIntervalMs).toBe(3000);
+    expect(updated.thresholds.cpuWarn).toBe(70);
+    expect(updated.thresholds.cpuCritical).toBe(90);
+    expect(updated.thresholds.loadWarn).toBe(75);
+    expect(updated.thresholds.loadCritical).toBe(95);
   });
 
   test("serves the live snapshot JSON API", async () => {
