@@ -109,7 +109,7 @@ Result:
 - Added SQLite table `app_settings (setting_key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL)`.
 - Added typed Rust settings defaults and validation in `tinytop-store`.
 - Added `GET /api/settings` and `PUT /api/settings` in `tinytop-agent serve`.
-- Added a Settings panel with `This Browser` local preferences and `This Daemon` SQLite-backed defaults.
+- Added the first settings UI with `This Browser` local preferences and `This Daemon` SQLite-backed defaults.
 - Kept active theme, graph mode, and history range in browser `localStorage`.
 - Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
 - Added legacy Bun in-memory settings handling so the shared dashboard works in fallback mode.

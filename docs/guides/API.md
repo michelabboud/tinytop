@@ -39,7 +39,7 @@ Rust response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded"
@@ -52,14 +52,14 @@ Legacy Bun response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "runtime": "legacy-bun",
   "component": "dashboard",
   "dashboard": "legacy",
   "collector": {
     "status": "ok",
     "app": "tinytop",
-    "version": "0.1.22",
+    "version": "0.1.23",
     "runtime": "legacy-bun",
     "component": "collector",
     "dashboard": "none"
@@ -181,7 +181,7 @@ curl -fsS -X PUT http://127.0.0.1:4274/api/settings \
   --data '{"defaultTheme":"aurora","defaultGraphMode":"heatmap","pollIntervalMs":3000,"defaultHistoryWindow":"1h","retentionHours":96,"rollupRetentionDays":30,"topProcessCount":12,"redactionDefault":false,"thresholds":{"cpuWarn":80,"memoryWarn":85,"diskWarn":85},"enabledSections":{"overview":true,"history":true,"filesystem":true,"pressure":true,"processes":true}}'
 ```
 
-The settings UI separates browser-local choices from daemon defaults:
+The Settings dialog separates browser-local choices from daemon defaults:
 
 | Scope | Storage |
 | --- | --- |
@@ -263,7 +263,7 @@ Response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.22",
+  "version": "0.1.23",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded"

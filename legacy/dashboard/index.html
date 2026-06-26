@@ -28,7 +28,7 @@
           <a href="#filesystem">Filesystem</a>
           <a href="#history">History</a>
           <a href="#processes">Processes</a>
-          <a href="#settings">Settings</a>
+          <button id="settings-open-button" type="button">Settings</button>
         </nav>
 
         <div class="rail-status" aria-live="polite">
@@ -90,118 +90,6 @@
         </section>
 
         <div class="status-message" id="status-message" role="status" hidden></div>
-
-        <section class="panel settings-panel" id="settings" aria-label="Dashboard settings">
-          <div class="section-heading">
-            <div>
-              <h2>Settings</h2>
-              <p id="settings-status">Loading daemon defaults.</p>
-            </div>
-            <button class="mini-button" id="save-settings-button" type="button">Save daemon</button>
-          </div>
-
-          <div class="settings-grid">
-            <fieldset class="settings-group">
-              <legend>This Browser</legend>
-              <label>
-                <span>Theme</span>
-                <select id="browser-theme-setting">
-                  <option value="midnight">Midnight</option>
-                  <option value="matrix">Matrix</option>
-                  <option value="aurora">Aurora</option>
-                  <option value="solar">Solar</option>
-                  <option value="ember">Ember</option>
-                </select>
-              </label>
-              <label>
-                <span>Graph</span>
-                <select id="browser-graph-setting">
-                  <option value="line">Line</option>
-                  <option value="area">Area</option>
-                  <option value="bar">Bar</option>
-                  <option value="heatmap">Heatmap</option>
-                  <option value="treemap">Treemap</option>
-                </select>
-              </label>
-              <label>
-                <span>Window</span>
-                <select id="browser-history-window-setting">
-                  <option value="live">Live</option>
-                  <option value="15m">15m</option>
-                  <option value="1h">1h</option>
-                  <option value="6h">6h</option>
-                  <option value="24h">24h</option>
-                </select>
-              </label>
-            </fieldset>
-
-            <fieldset class="settings-group daemon-settings-group">
-              <legend>This Daemon</legend>
-              <label>
-                <span>Default theme</span>
-                <select id="daemon-default-theme">
-                  <option value="midnight">Midnight</option>
-                  <option value="matrix">Matrix</option>
-                  <option value="aurora">Aurora</option>
-                  <option value="solar">Solar</option>
-                  <option value="ember">Ember</option>
-                </select>
-              </label>
-              <label>
-                <span>Default graph</span>
-                <select id="daemon-default-graph">
-                  <option value="line">Line</option>
-                  <option value="area">Area</option>
-                  <option value="bar">Bar</option>
-                  <option value="heatmap">Heatmap</option>
-                  <option value="treemap">Treemap</option>
-                </select>
-              </label>
-              <label>
-                <span>Default window</span>
-                <select id="daemon-default-window">
-                  <option value="live">Live</option>
-                  <option value="15m">15m</option>
-                  <option value="1h">1h</option>
-                  <option value="6h">6h</option>
-                  <option value="24h">24h</option>
-                </select>
-              </label>
-              <label>
-                <span>Refresh ms</span>
-                <input id="daemon-poll-interval" type="number" min="250" max="60000" step="250" />
-              </label>
-              <label>
-                <span>History hours</span>
-                <input id="daemon-retention-hours" type="number" min="1" max="8760" step="1" />
-              </label>
-              <label>
-                <span>Rollup days</span>
-                <input id="daemon-rollup-retention-days" type="number" min="1" max="366" step="1" />
-              </label>
-              <label>
-                <span>Processes</span>
-                <input id="daemon-top-process-count" type="number" min="1" max="50" step="1" />
-              </label>
-              <label>
-                <span>CPU warn</span>
-                <input id="daemon-cpu-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>RAM warn</span>
-                <input id="daemon-memory-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>Disk warn</span>
-                <input id="daemon-disk-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-redaction-default" type="checkbox" />
-                <span>Redact by default</span>
-              </label>
-            </fieldset>
-          </div>
-        </section>
 
         <section class="overview-grid" id="overview" aria-label="System overview">
           <article class="gauge-panel accent-green">
@@ -380,6 +268,128 @@
         </section>
       </main>
     </div>
+
+    <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title">
+      <div class="settings-card">
+        <div class="settings-dialog-header">
+          <div>
+            <span class="confirmation-kicker">Dashboard</span>
+            <h2 id="settings-title">Settings</h2>
+            <p id="settings-status">Loading daemon defaults.</p>
+          </div>
+          <button class="mini-button secondary" id="close-settings-button" type="button">Close</button>
+        </div>
+
+        <div class="settings-dialog-body">
+          <div class="settings-grid">
+            <fieldset class="settings-group">
+              <legend>This Browser</legend>
+              <label>
+                <span>Theme</span>
+                <select id="browser-theme-setting">
+                  <option value="midnight">Midnight</option>
+                  <option value="matrix">Matrix</option>
+                  <option value="aurora">Aurora</option>
+                  <option value="solar">Solar</option>
+                  <option value="ember">Ember</option>
+                </select>
+              </label>
+              <label>
+                <span>Graph</span>
+                <select id="browser-graph-setting">
+                  <option value="line">Line</option>
+                  <option value="area">Area</option>
+                  <option value="bar">Bar</option>
+                  <option value="heatmap">Heatmap</option>
+                  <option value="treemap">Treemap</option>
+                </select>
+              </label>
+              <label>
+                <span>Window</span>
+                <select id="browser-history-window-setting">
+                  <option value="live">Live</option>
+                  <option value="15m">15m</option>
+                  <option value="1h">1h</option>
+                  <option value="6h">6h</option>
+                  <option value="24h">24h</option>
+                </select>
+              </label>
+            </fieldset>
+
+            <fieldset class="settings-group daemon-settings-group">
+              <legend>This Daemon</legend>
+              <label>
+                <span>Default theme</span>
+                <select id="daemon-default-theme">
+                  <option value="midnight">Midnight</option>
+                  <option value="matrix">Matrix</option>
+                  <option value="aurora">Aurora</option>
+                  <option value="solar">Solar</option>
+                  <option value="ember">Ember</option>
+                </select>
+              </label>
+              <label>
+                <span>Default graph</span>
+                <select id="daemon-default-graph">
+                  <option value="line">Line</option>
+                  <option value="area">Area</option>
+                  <option value="bar">Bar</option>
+                  <option value="heatmap">Heatmap</option>
+                  <option value="treemap">Treemap</option>
+                </select>
+              </label>
+              <label>
+                <span>Default window</span>
+                <select id="daemon-default-window">
+                  <option value="live">Live</option>
+                  <option value="15m">15m</option>
+                  <option value="1h">1h</option>
+                  <option value="6h">6h</option>
+                  <option value="24h">24h</option>
+                </select>
+              </label>
+              <label>
+                <span>Refresh ms</span>
+                <input id="daemon-poll-interval" type="number" min="250" max="60000" step="250" />
+              </label>
+              <label>
+                <span>History hours</span>
+                <input id="daemon-retention-hours" type="number" min="1" max="8760" step="1" />
+              </label>
+              <label>
+                <span>Rollup days</span>
+                <input id="daemon-rollup-retention-days" type="number" min="1" max="366" step="1" />
+              </label>
+              <label>
+                <span>Processes</span>
+                <input id="daemon-top-process-count" type="number" min="1" max="50" step="1" />
+              </label>
+              <label>
+                <span>CPU warn</span>
+                <input id="daemon-cpu-warn" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
+                <span>RAM warn</span>
+                <input id="daemon-memory-warn" type="number" min="0" max="100" step="1" />
+              </label>
+              <label>
+                <span>Disk warn</span>
+                <input id="daemon-disk-warn" type="number" min="0" max="100" step="1" />
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-redaction-default" type="checkbox" />
+                <span>Redact by default</span>
+              </label>
+            </fieldset>
+          </div>
+        </div>
+
+        <div class="settings-dialog-actions">
+          <button class="mini-button secondary" id="cancel-settings-button" type="button">Cancel</button>
+          <button class="mini-button" id="save-settings-button" type="button">Save daemon</button>
+        </div>
+      </div>
+    </dialog>
 
     <dialog
       class="confirmation-dialog"

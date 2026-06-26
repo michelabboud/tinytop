@@ -62,6 +62,7 @@ const state = {
   timer: null,
   activeConfirmation: null,
   confirmationReturnFocus: null,
+  settingsReturnFocus: null,
   historyChartInstance: null,
   pollMs: DEFAULT_POLL_MS,
   daemonSettings: cloneSettings(DEFAULT_DAEMON_SETTINGS),
@@ -121,6 +122,10 @@ const elements = {
   themeButtons: Array.from(document.querySelectorAll("[data-theme-option]")),
   graphButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
   historyWindowButtons: Array.from(document.querySelectorAll("[data-history-window]")),
+  settingsOpenButton: document.querySelector("#settings-open-button"),
+  settingsDialog: document.querySelector("#settings-dialog"),
+  closeSettingsButton: document.querySelector("#close-settings-button"),
+  cancelSettingsButton: document.querySelector("#cancel-settings-button"),
   browserThemeSetting: document.querySelector("#browser-theme-setting"),
   browserGraphSetting: document.querySelector("#browser-graph-setting"),
   browserHistoryWindowSetting: document.querySelector("#browser-history-window-setting"),
@@ -335,6 +340,30 @@ function requestConfirmation({ title, message, confirmLabel = "Confirm", cancelL
     }
     elements.confirmationCancelButton?.focus();
   });
+}
+
+function closeSettingsDialog() {
+  if (elements.settingsDialog?.open) {
+    elements.settingsDialog.close();
+  } else {
+    elements.settingsDialog?.removeAttribute("open");
+  }
+
+  if (state.settingsReturnFocus instanceof HTMLElement) {
+    state.settingsReturnFocus.focus();
+  }
+  state.settingsReturnFocus = null;
+}
+
+function openSettingsDialog() {
+  if (!elements.settingsDialog) return;
+  state.settingsReturnFocus = document.activeElement;
+  if (typeof elements.settingsDialog.showModal === "function") {
+    elements.settingsDialog.showModal();
+  } else {
+    elements.settingsDialog.setAttribute("open", "");
+  }
+  elements.closeSettingsButton?.focus();
 }
 
 function cssColor(name) {
@@ -1438,6 +1467,27 @@ for (const button of elements.historyWindowButtons) {
     setHistoryWindow(button.dataset.historyWindow);
   });
 }
+
+elements.settingsOpenButton?.addEventListener("click", () => {
+  openSettingsDialog();
+});
+
+elements.closeSettingsButton?.addEventListener("click", () => {
+  closeSettingsDialog();
+});
+
+elements.cancelSettingsButton?.addEventListener("click", () => {
+  closeSettingsDialog();
+});
+
+elements.settingsDialog?.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeSettingsDialog();
+});
+
+elements.settingsDialog?.addEventListener("click", (event) => {
+  if (event.target === elements.settingsDialog) closeSettingsDialog();
+});
 
 elements.browserThemeSetting?.addEventListener("change", () => {
   applyTheme(elements.browserThemeSetting.value);

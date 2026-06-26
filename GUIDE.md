@@ -27,15 +27,14 @@ Use persistent user services:
 
 The dashboard is organized for quick scanning:
 
-1. Left rail: runtime summary, collector/dashboard version, navigation, live status.
+1. Left rail: runtime summary, collector/dashboard version, navigation, Settings button, live status.
 2. Top identity strip: host, kernel, distro, uptime.
 3. Display controls: theme selection.
-4. Settings: browser-local preferences and daemon defaults.
-5. Overview gauges: CPU, RAM, and swap.
-6. History: graph-type nav, range presets, ECharts chart, timeline scrubber.
-7. Metric band: load, thread count, root filesystem, runtime.
-8. Filesystem and pressure panels.
-9. Process table.
+4. Overview gauges: CPU, RAM, and swap.
+5. History: graph-type nav, range presets, ECharts chart, timeline scrubber.
+6. Metric band: load, thread count, root filesystem, runtime.
+7. Filesystem and pressure panels.
+8. Process table.
 
 ## Live Status
 
@@ -45,7 +44,7 @@ The rail status shows the polling state:
 - `Paused` - polling paused by the user.
 - `Error` - latest fetch failed; the inline status message explains the failure.
 
-The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.22`. The same identity is available from:
+The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.23`. The same identity is available from:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/api/version
@@ -77,7 +76,7 @@ Themes affect the browser only. They do not change collection, SQLite, or system
 
 ## Settings
 
-The Settings panel is split by scope:
+The Settings dialog opens from the left rail and is split by scope:
 
 - `This Browser` controls the active theme, graph mode, and history window for the current browser profile. These values are stored in `localStorage`.
 - `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, and warning thresholds.

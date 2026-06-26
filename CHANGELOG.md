@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.23 - 2026-06-26
+
+- Moved dashboard Settings out of the main metrics flow into an accessible modal dialog opened from the rail.
+- Changed the rail Settings item from an anchor to a button so it opens the dialog instead of scrolling the dashboard.
+- Kept the existing `This Browser` and `This Daemon` settings split, backed by localStorage and `/api/settings`.
+- Kept Rust embedded dashboard assets and legacy Bun dashboard assets byte-identical.
+
 ## 0.1.22 - 2026-06-26
 
 - Added `/api/version` to the Rust collector/dashboard daemon and legacy Bun dashboard, plus `/version` to collector-compatible APIs.

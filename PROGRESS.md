@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.22`
+- Version: `0.1.23`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed timestamp-range history browsing, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed timestamp-range history browsing, a dialog-based settings surface, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -216,6 +216,15 @@
 - [x] Updated `./tinytop status` to read `/api/version` and report the running daemon runtime, component, version, and dashboard asset mode.
 - [x] Added foreground `./tinytop stop` and `./tinytop restart` handling for detected Rust and legacy Bun processes when systemd units are absent.
 - [x] Aligned Rust crate package versions with the product checkpoint version.
+
+### 0.1.23 - Settings Dialog Presentation
+
+- [x] Moved Settings out of the inline dashboard flow into an accessible modal dialog.
+- [x] Changed the rail Settings control from an anchor to a button that opens the dialog.
+- [x] Kept `This Browser` and `This Daemon` settings groups intact.
+- [x] Kept browser-local and SQLite-backed settings storage unchanged.
+- [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
+- [x] Added regression coverage preventing the inline settings section from returning.
 
 ## Known Limitations
 

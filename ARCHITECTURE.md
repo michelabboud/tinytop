@@ -202,6 +202,7 @@ In-memory session state:
 - ECharts instance
 - pause/loading flags
 - active confirmation dialog resolver and return-focus target
+- active settings dialog focus-return target
 
 The browser loads the selected timestamp range with `since_ms` and `until_ms` query parameters. Presets are Live, 15m, 1h, 6h, and 24h. Large ranges are paged through the existing API limit, deduplicated by captured timestamp, and downsampled to a browser rendering cap when needed. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width.
 
@@ -247,3 +248,4 @@ Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
 - [0005 - Rust Single-Daemon Systemd Runtime](docs/adr/0005-rust-single-daemon-systemd-runtime.md)
 - [0006 - Embed Dashboard Assets In The Rust Collector](docs/adr/0006-embedded-dashboard-assets.md)
 - [0007 - Daemon And Browser Dashboard Settings](docs/adr/0007-daemon-and-browser-dashboard-settings.md)
+- [0008 - Present Dashboard Settings As A Dialog](docs/adr/0008-settings-dialog-presentation.md)

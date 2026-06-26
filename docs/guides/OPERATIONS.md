@@ -250,7 +250,7 @@ Common causes:
 
 Automatic retention is not implemented yet. The Rust daemon and legacy Bun collector keep raw SQLite rows until you manually archive or reset the database. The dashboard's selected timestamp range and browser rendering cap control what is loaded and drawn; they do not prune SQLite.
 
-The Settings panel can save retention and rollup defaults in SQLite, but those values are not enforced until the retention/rollup storage slice lands.
+The Settings dialog can save retention and rollup defaults in SQLite, but those values are not enforced until the retention/rollup storage slice lands.
 
 Monitor database size:
 

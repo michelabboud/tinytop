@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 14:17 Asia/Jerusalem
+Date: 2026-06-26 16:05 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.22`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.22`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.22`
-- Working tree before the v0.1.22 runtime auto-detect/version change: clean and aligned with `origin/main` at `v0.1.21`
+- Current checkpoint version: `0.1.23`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.23`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.23`
+- The `v0.1.23` checkpoint moves dashboard Settings into a modal dialog while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
 
 ## Runtime State
 
@@ -19,10 +19,10 @@ Date: 2026-06-26 14:17 Asia/Jerusalem
 - Version endpoint when running: `http://127.0.0.1:4274/api/version`
 - Settings endpoint when running: `http://127.0.0.1:4274/api/settings`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.22 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.23 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1079395`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1173299`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
 
 ## Rust Collector Confirmation
@@ -123,6 +123,16 @@ Evidence:
 - Added foreground `./tinytop stop` and `./tinytop restart` detection for Rust and legacy Bun runtimes when systemd units are not installed.
 - Aligned Rust crate package versions with the product checkpoint version.
 - Added `docs/reports/2026-06-26-runtime-auto-detect-version.md`.
+
+### v0.1.23 - Settings Dialog Presentation
+
+- Moved Settings out of the inline dashboard metrics flow into an accessible `<dialog>`.
+- Changed the left-rail Settings control from an anchor to a button that opens the dialog.
+- Kept `This Browser` localStorage preferences and `This Daemon` SQLite-backed defaults unchanged.
+- Added Close, Cancel, Escape, backdrop close, and focus-return behavior.
+- Tuned the settings grid so desktop and mobile dialog controls fit without horizontal overflow.
+- Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
+- Added ADR 0008 and `docs/reports/2026-06-26-settings-dialog.md`.
 
 ### Release Binary Asset Check
 
@@ -256,6 +266,39 @@ Evidence:
   - `/`: contains `id="settings"`, `This Browser`, and `This Daemon`
   - `/app.js`: contains `fetchSettings`, `saveDaemonSettings`, and `restartPollingTimer`
   - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.22 (embedded dashboard)`
+
+## Verification Evidence From v0.1.23 Settings Dialog Presentation
+
+- `bun test tests/dashboard-settings.test.ts tests/dashboard-assets.test.ts tests/webui-dialogs.test.ts`
+  - Dashboard settings dialog, asset parity, and web UI dialog policy tests: `8 pass`, `0 fail`, `48 expect() calls`
+- `./tinytop check`
+  - Bun tests: `63 pass`, `0 fail`, `238 expect() calls`
+  - `src/server.ts --check`: `status: ok`
+  - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
+  - Rust fmt check and workspace tests passed
+  - Browser bundle built `legacy/dashboard/app.js` successfully
+- `./tinytop rust build`
+  - Built `agent/target/release/tinytop-agent` with the embedded `0.1.23` dashboard assets.
+- `diff -qr agent/assets/dashboard legacy/dashboard`
+  - No differences.
+- `git diff --check`
+  - Clean.
+- `bun audit`
+  - No vulnerabilities found.
+- `cargo audit --file agent/Cargo.lock`
+  - Scanned 196 crate dependencies with no vulnerabilities reported.
+- Live embedded dashboard smoke on `http://127.0.0.1:4274`
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.23 (embedded dashboard)`.
+  - `/api/version`: returned Rust `0.1.23` embedded dashboard identity.
+  - `/`: contains `id="settings-dialog"`, `id="settings-open-button"`, `This Browser`, and `This Daemon`.
+  - `/`: does not contain the old inline `<section class="panel settings-panel" id="settings">` or `href="#settings"`.
+  - `/app.js`: contains `openSettingsDialog`, `closeSettingsDialog`, and dialog event wiring.
+  - `/api/settings`: returned SQLite-backed daemon defaults.
+- Rendered browser smoke:
+  - `bun ./node_modules/.bin/playwright test tinytop-settings-dialog-smoke.spec.js --reporter=line` from `/tmp/tinytop-pw`
+  - Result: `2 passed`.
+  - Covered desktop dialog open, mobile dialog open, no page errors, and no settings-fieldset horizontal overflow.
+  - Screenshots saved outside the repo at `/tmp/tinytop-settings-dialog-desktop.png` and `/tmp/tinytop-settings-dialog-mobile.png`.
 
 ## Useful Commands
 

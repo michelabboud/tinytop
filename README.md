@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.22`
+- Version: `0.1.23`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
@@ -166,7 +166,7 @@ For persistent background collection, install user-space systemd services:
 - Visible collector/dashboard runtime and version metadata in the sidebar
 - In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
 - Browser-local display preferences for theme, graph mode, and selected history range
-- Settings panel with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults
+- Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, and a no-Bun systemd path
 
 ## Common Commands
@@ -237,6 +237,7 @@ Implementation notes:
 | [docs/reports/2026-06-26-runtime-specific-verification.md](docs/reports/2026-06-26-runtime-specific-verification.md) | Verification split for Rust versus legacy Bun setup choices |
 | [docs/reports/2026-06-26-dashboard-timeline-settings.md](docs/reports/2026-06-26-dashboard-timeline-settings.md) | Timestamp timeline implementation, settings implementation, and smoke test evidence |
 | [docs/reports/2026-06-26-runtime-auto-detect-version.md](docs/reports/2026-06-26-runtime-auto-detect-version.md) | Runtime auto-detection and API/sidebar version identity |
+| [docs/reports/2026-06-26-settings-dialog.md](docs/reports/2026-06-26-settings-dialog.md) | Settings dialog presentation change and focused UI verification |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
