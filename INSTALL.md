@@ -34,8 +34,9 @@ Wizard verification follows the selected collector. Rust release-binary installs
 
 ## Requirements
 
-- Linux or WSL2
-- A shell with access to `/proc`
+- Linux or WSL2 for the default verified Bash/systemd path
+- Windows for the native PowerShell/Rust preview path
+- A shell with access to `/proc` when using the Linux/WSL collector
 - Loopback ports `4274` and `4276` available unless overridden
 - Rust collector binary from a TinyTop GitHub release, or Rust `1.95.0` or newer to compile locally
 - Optional for development and the Bun wizard: Bun matching the repo package manager line, `bun@1.3.11`
@@ -67,6 +68,39 @@ For an existing local checkout:
 ```bash
 cd /path/to/tinytop
 ```
+
+## Windows PowerShell Install
+
+Windows uses `tinytop.ps1` instead of the Bash command center:
+
+```powershell
+.\tinytop.ps1 help
+.\tinytop.ps1 doctor
+.\tinytop.ps1 rust install-binary
+```
+
+If the release does not contain a Windows `.exe` yet, compile locally:
+
+```powershell
+.\tinytop.ps1 rust build
+```
+
+Start the Rust collector/dashboard daemon:
+
+```powershell
+.\tinytop.ps1 start
+.\tinytop.ps1 status
+.\tinytop.ps1 logs
+```
+
+Install as a Windows service from an elevated PowerShell session:
+
+```powershell
+.\tinytop.ps1 service install
+.\tinytop.ps1 service start
+```
+
+See [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md) for Windows paths, service behavior, and the package-manager roadmap.
 
 ## Install Development Dependencies
 
@@ -265,6 +299,16 @@ cargo build --manifest-path agent/Cargo.toml -p tinytop-agent --no-default-featu
 cargo build --manifest-path agent/Cargo.toml -p tinytop-agent --no-default-features --features windows-collector
 ```
 
+The command centers select these features for you:
+
+```bash
+TINYTOP_RELEASE_OS=windows ./tinytop rust build --print-command
+```
+
+```powershell
+.\tinytop.ps1 rust build --print-command
+```
+
 Cross-compiling the full daemon can require platform toolchains for SQLite. On Linux, the Windows collector crate can be checked without the daemon's SQLite C toolchain by targeting `tinytop-collectors` directly.
 
 ## Reset Local History
@@ -278,7 +322,7 @@ Stop the dashboard and collector first, then move the database files aside:
 
 Start TinyTop again. The collector will create a fresh database.
 
-## systemd User Services
+## Linux systemd User Services
 
 Install persistent user services:
 

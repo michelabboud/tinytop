@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const html = readFileSync("legacy/dashboard/index.html", "utf8");
 const app = readFileSync("legacy/dashboard/app.js", "utf8");
+const styles = readFileSync("legacy/dashboard/styles.css", "utf8");
 
 describe("dashboard timestamp timeline", () => {
   test("offers explicit history range presets", () => {
@@ -70,5 +71,16 @@ describe("dashboard timestamp timeline", () => {
     expect(html).toContain('id="daemon-version"');
     expect(app).toContain('fetch("/api/version"');
     expect(app).toContain("renderVersion");
+  });
+
+  test("keeps sidebar runtime identity compact", () => {
+    expect(html).toContain('class="runtime-pill"');
+    expect(html).toContain('id="runtime-summary"');
+    expect(html).toContain('id="runtime-reason"');
+    expect(app).toContain("formatRuntimeSummary");
+    expect(app).toContain("elements.runtimeReason.title = reason");
+    expect(styles).toContain(".runtime-pill");
+    expect(styles).toContain(".runtime-reason");
+    expect(styles).toContain("line-clamp");
   });
 });

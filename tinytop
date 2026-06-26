@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-TINYTOP_VERSION="0.1.28"
+TINYTOP_VERSION="0.1.29"
 INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
 INSTALL_RUST_COMMAND='curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh'
 
@@ -62,11 +62,11 @@ Docs: https://rustup.rs"
 }
 
 rust_agent_target_bin() {
-  printf '%s/agent/target/release/tinytop-agent\n' "$ROOT_DIR"
+  printf '%s/agent/target/release/tinytop-agent%s\n' "$ROOT_DIR" "$(rust_binary_extension)"
 }
 
 rust_agent_local_bin() {
-  printf '%s/.local/bin/tinytop-agent\n' "$HOME"
+  printf '%s/.local/bin/tinytop-agent%s\n' "$HOME" "$(rust_binary_extension)"
 }
 
 rust_agent_exec() {
@@ -125,12 +125,23 @@ selected_runtime() {
 }
 
 rust_release_os() {
+  if [[ -n "${TINYTOP_RELEASE_OS:-}" ]]; then
+    printf '%s' "$TINYTOP_RELEASE_OS"
+    return
+  fi
+
   case "$(uname -s)" in
     Linux) printf 'linux' ;;
     Darwin) printf 'macos' ;;
     MINGW*|MSYS*|CYGWIN*) printf 'windows' ;;
     *) uname -s | tr '[:upper:]' '[:lower:]' ;;
   esac
+}
+
+rust_binary_extension() {
+  if [[ "$(rust_release_os)" == "windows" ]]; then
+    printf '.exe'
+  fi
 }
 
 rust_release_arch() {
@@ -361,7 +372,9 @@ cmd_install_bun() {
       curl -fsSL https://bun.com/install | bash
       say
       say "Restart your shell or run:"
+      # shellcheck disable=SC2016
       say '  export BUN_INSTALL="$HOME/.bun"'
+      # shellcheck disable=SC2016
       say '  export PATH="$BUN_INSTALL/bin:$PATH"'
       say "  bun --version"
       ;;
@@ -414,10 +427,42 @@ Fallback: install Rust and run ./tinytop rust build"
   ok "Installed TinyTop Rust collector binary: $destination"
 }
 
+rust_build_args() {
+  local -a args=(build --release --manifest-path agent/Cargo.toml -p tinytop-agent)
+  case "$(rust_release_os)" in
+    macos) args+=(--no-default-features --features macos-collector) ;;
+    windows) args+=(--no-default-features --features windows-collector) ;;
+  esac
+  printf '%s\n' "${args[@]}"
+}
+
+print_cargo_command() {
+  printf 'cargo'
+  for arg in "$@"; do
+    printf ' %s' "$arg"
+  done
+  printf '\n'
+}
+
 cmd_rust_build() {
+  local print_command=0
+  for arg in "$@"; do
+    case "$arg" in
+      --print-command) print_command=1 ;;
+      *) die "Unknown rust build option: $arg" ;;
+    esac
+  done
+
+  local -a args
+  mapfile -t args < <(rust_build_args)
+  if [[ "$print_command" -eq 1 ]]; then
+    print_cargo_command "${args[@]}"
+    return 0
+  fi
+
   require_cargo
   cd "$ROOT_DIR"
-  cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent
+  cargo "${args[@]}"
   ok "Built TinyTop Rust collector binary: $(rust_agent_target_bin)"
 }
 
@@ -473,7 +518,7 @@ cmd_rust() {
     collect) cmd_rust_collect "$@" ;;
     serve) cmd_rust_serve serve "$@" ;;
     serve-writer) cmd_rust_serve serve-writer "$@" ;;
-    build) cmd_rust_build ;;
+    build) cmd_rust_build "$@" ;;
     test) cmd_rust_test ;;
     check) cmd_rust_check ;;
     install-binary) cmd_rust_install_binary "$@" ;;

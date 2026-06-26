@@ -95,6 +95,26 @@ describe("tinytop command center", () => {
     expect(result.stderr).toContain("https://rustup.rs");
   });
 
+  test("rust build command selects the Windows collector feature on Windows", async () => {
+    const result = await runTinytop(["--plain", "rust", "build", "--print-command"], {
+      TINYTOP_RELEASE_OS: "windows",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe(
+      "cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent --no-default-features --features windows-collector",
+    );
+  });
+
+  test("rust build command leaves Linux on the default collector feature", async () => {
+    const result = await runTinytop(["--plain", "rust", "build", "--print-command"], {
+      TINYTOP_RELEASE_OS: "linux",
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent");
+  });
+
   test("systemd render emits a single Rust collector/dashboard daemon by default", async () => {
     const result = await runTinytop(["systemd", "render"]);
 

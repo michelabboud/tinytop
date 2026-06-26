@@ -6,8 +6,9 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.28`
+- Version: `0.1.29`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
+- Windows entrypoint: `.\tinytop.ps1` for Rust install/build/start/stop/status/logs and Windows service commands
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
@@ -37,6 +38,23 @@ For persistent installs without Bun, use the Rust collector/dashboard daemon:
 ./tinytop systemd install --rust
 ./tinytop systemd start
 ```
+
+On Windows, use the native PowerShell command center:
+
+```powershell
+.\tinytop.ps1 rust install-binary
+# or: .\tinytop.ps1 rust build
+.\tinytop.ps1 start
+```
+
+Windows service install/start is explicit:
+
+```powershell
+.\tinytop.ps1 service install
+.\tinytop.ps1 service start
+```
+
+Service install/uninstall require PowerShell running as Administrator. See [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md).
 
 If a release binary is not available for your platform, compile locally:
 
@@ -167,6 +185,7 @@ For persistent background collection, install user-space systemd services:
 - Rollup-backed 6h/24h/7d/30d timeline browsing with daemon-start, settings-change, and coverage-gap markers
 - Timeline rail with overview trace, selected datetime context, compact metric values, history coverage, DB budget status, and a return-to-now control
 - Operator status strip with Healthy, Warning, Critical, and Stale states from saved thresholds plus a detail drawer explaining metric values, thresholds, age, trend, and recent changes
+- Critical, Warning, and Stale operator states use stronger full-strip visual treatment and text labels so the state is obvious at a glance
 - Process search, sort, density controls, and process detail drawer with redacted copy-safe command text, parent PID/start time when available, RSS, and per-PID CPU/RAM trend
 - Filesystem root card, system-mount toggle, and threshold-colored filesystem bars
 - Visible collector/dashboard runtime and version metadata in the sidebar
@@ -174,6 +193,7 @@ For persistent background collection, install user-space systemd services:
 - Browser-local display preferences for theme, graph mode, selected history range, visible series, process table controls, filesystem toggle, and last section
 - Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults, including threshold presets, validation, reset/default actions, unsaved-change guard, effective settings readout, target DB budget, thresholds, and enabled dashboard sections
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, a no-Bun systemd path, and feature-gated native macOS/Windows collector modules started behind opt-in build features
+- Native Windows PowerShell command center for the Rust daemon, including foreground lifecycle and Windows service commands
 
 ## Common Commands
 
@@ -183,6 +203,9 @@ For persistent background collection, install user-space systemd services:
 ./tinytop rust build
 ./tinytop rust serve
 ./tinytop systemd render
+pwsh -File ./tinytop.ps1 help
+pwsh -File ./tinytop.ps1 rust build
+pwsh -File ./tinytop.ps1 service status
 ./tinytop start
 ./tinytop start:split
 ./tinytop db stats
@@ -235,6 +258,7 @@ Implementation notes:
 | [PROGRESS.md](PROGRESS.md) | Completed milestones and next work |
 | [docs/guides/API.md](docs/guides/API.md) | Public dashboard API and internal collector API |
 | [docs/guides/OPERATIONS.md](docs/guides/OPERATIONS.md) | Runtime checks, SQLite inspection, backup/reset, troubleshooting |
+| [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md) | Native Windows PowerShell command center, service commands, and packaging roadmap |
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
 | [docs/reports/2026-06-24-rust-agent-dependency-vetting.md](docs/reports/2026-06-24-rust-agent-dependency-vetting.md) | Rust collector dependency and SQLx vetting |
 | [docs/reports/2026-06-25-rust-daemon-dependency-vetting.md](docs/reports/2026-06-25-rust-daemon-dependency-vetting.md) | Rust daemon and vendored dashboard asset dependency vetting |
@@ -248,8 +272,10 @@ Implementation notes:
 | [docs/reports/2026-06-26-load-gauge.md](docs/reports/2026-06-26-load-gauge.md) | Load overview gauge implementation and verification |
 | [docs/reports/2026-06-26-dashboard-operator-console.md](docs/reports/2026-06-26-dashboard-operator-console.md) | Operator console dashboard slice, retention enforcement, rollups, and verification |
 | [docs/reports/2026-06-26-select-dropdown-contrast.md](docs/reports/2026-06-26-select-dropdown-contrast.md) | Native dropdown contrast fix and embedded dashboard verification |
+| [docs/reports/2026-06-26-windows-command-center-and-critical-status.md](docs/reports/2026-06-26-windows-command-center-and-critical-status.md) | Windows PowerShell command center, service path, and Critical strip visibility |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/plans/2026-06-26-dashboard-operator-console.md](docs/superpowers/plans/2026-06-26-dashboard-operator-console.md) | Executed plan for operator status, Timeline V2, settings application, process/filesystem controls, and history backend follow-through |
+| [docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md](docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md) | Executed plan for Windows command-center support and Critical status visibility |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 

@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 21:53 Asia/Jerusalem
+Date: 2026-06-26 22:29 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.28`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.28`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.28`
-- The `v0.1.28` checkpoint adds a local SVG favicon to the Rust embedded dashboard and legacy Bun dashboard while keeping both asset trees byte-identical.
+- Current checkpoint version: `0.1.29`
+- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.29`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.29`
+- The `v0.1.29` checkpoint adds a Windows PowerShell command center, Windows service commands, target-specific Windows Rust build selection, stronger operator status strip styling, and a compact sidebar runtime identity while keeping the Rust embedded and legacy Bun dashboard trees byte-identical.
 
 ## Runtime State
 
@@ -22,12 +22,12 @@ Date: 2026-06-26 21:53 Asia/Jerusalem
 - History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
 - History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.28 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.29 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1827235`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1894345`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.28.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.29.log`
 
 ## Rust Collector Confirmation
 
@@ -191,6 +191,17 @@ Evidence:
 - Added regression coverage for dashboard asset parity and embedded Rust serving of the favicon.
 - Added `docs/reports/2026-06-26-svg-favicon.md`.
 
+### v0.1.29 - Windows Command Center And Critical Status
+
+- Saved and executed `docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md`.
+- Added `tinytop.ps1` for Windows-native Rust binary install, Rust build, start, stop, restart, status, logs, and service commands.
+- Added Windows service install/uninstall/start/stop/restart/status commands through PowerShell and Windows Service Control Manager.
+- Made Windows builds select `--no-default-features --features windows-collector`.
+- Made the Bash command center print target-specific Rust build commands and use `.exe` binary names on Windows-like shells.
+- Strengthened operator strip styling so Critical, Warning, and Stale states are visually obvious at a glance.
+- Cleaned the sidebar runtime identity so long WSL detection reasons collapse into a compact runtime pill plus hover detail.
+- Added `docs/guides/WINDOWS.md`, ADR 0011, and `docs/reports/2026-06-26-windows-command-center-and-critical-status.md`.
+
 ### Release Binary Asset Check
 
 - `v0.1.18` release assets were updated with `tinytop-agent-linux-x86_64` and its `.sha256` file.
@@ -201,7 +212,7 @@ Evidence:
 - Current daemon was started with:
 
   ```bash
-  setsid ./tinytop start > /tmp/tinytop-v0.1.28.log 2>&1 &
+  setsid ./tinytop start > /tmp/tinytop-v0.1.29.log 2>&1 &
   ```
 
 - Verified health with:
@@ -515,6 +526,43 @@ Evidence:
   - `/api/version`: returned Rust `0.1.28` embedded dashboard identity.
   - `/favicon.svg`: returned `HTTP/1.1 200 OK` with `content-type: image/svg+xml; charset=utf-8`.
   - `/favicon.svg`: contains `<title id="title">TinyTop</title>`.
+
+## Verification Evidence From v0.1.29 Windows Command Center And Critical Status
+
+- Red checks before implementation:
+  - `bun test tests/tinytop-powershell.test.ts tests/tinytop-script.test.ts tests/dashboard-operator-alert.test.ts`: failed because `tinytop.ps1`, target-specific `rust build --print-command`, and stronger operator status styling did not exist yet.
+  - `bun test tests/dashboard-timeline.test.ts`: failed because the sidebar runtime identity still rendered the full WSL reason as prominent brand text.
+- Focused green checks:
+  - `bun test tests/tinytop-powershell.test.ts tests/tinytop-script.test.ts tests/dashboard-operator-alert.test.ts tests/dashboard-assets.test.ts`: `28 pass`, `0 fail`, `136 expect() calls`.
+  - `bun test tests/dashboard-timeline.test.ts tests/dashboard-assets.test.ts tests/dashboard-operator-alert.test.ts`: `14 pass`, `0 fail`, `100 expect() calls`.
+  - `shellcheck tinytop`: clean.
+  - `diff -qr agent/assets/dashboard legacy/dashboard`: no differences.
+- Full command-center verification:
+  - `./tinytop check`: Bun tests `85 pass`, `0 fail`, `431 expect() calls`; legacy server and collector checks returned JSON `ok`; Rust fmt check passed; Rust workspace tests passed; browser bundle built.
+- Additional checks:
+  - `cargo clippy --manifest-path agent/Cargo.toml --workspace --all-targets -- -D warnings`: clean.
+  - `cargo check --manifest-path agent/Cargo.toml -p tinytop-collectors --target x86_64-pc-windows-gnu --no-default-features --features windows-collector`: passed.
+  - `./tinytop --plain rust build --print-command`: printed the Linux default Cargo build command.
+  - `TINYTOP_RELEASE_OS=windows ./tinytop --plain rust build --print-command`: printed the Windows `windows-collector` Cargo build command.
+  - `TINYTOP_RELEASE_OS=macos ./tinytop --plain rust build --print-command`: printed the macOS `macos-collector` Cargo build command.
+  - `git diff --check`: clean.
+  - `bun audit`: no vulnerabilities found.
+  - `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies with exit code 0.
+- Release build:
+  - `./tinytop rust build`: built `/home/michel/projects/tinytop/agent/target/release/tinytop-agent` with embedded v0.1.29 dashboard assets.
+  - Release binary SHA-256: `a801f2f24006aebbbfcc549f1cce164b4a9214d2692f7e12cad15ba2a11d09c2`.
+- Live embedded dashboard smoke on `http://127.0.0.1:4274`:
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.29 (embedded dashboard)`.
+  - `/health`: returned `ok`.
+  - `/api/version`: returned Rust `0.1.29` embedded dashboard identity.
+  - `/app.js`: contains `formatRuntimeSummary` and `runtimeReason`.
+  - `/styles.css`: contains `.runtime-pill`, `.runtime-reason`, and Critical operator status selectors.
+  - `/api/history/coverage`: returned sample coverage, DB size, and budget metadata.
+- Rendered browser smoke through Playwright MCP:
+  - Page title was `TinyTop`.
+  - Sidebar runtime summary rendered as `WSL`.
+  - Runtime reason rendered as clamped detail with title `kernel release/version contains Microsoft WSL markers`.
+  - Runtime reason clamp was `2`.
 
 ## Useful Commands
 

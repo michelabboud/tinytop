@@ -15,9 +15,10 @@ Use `./tinytop` for day-to-day operations:
 ./tinytop stats
 ```
 
-The command center can install or build the Rust collector, bootstrap Bun for
+The Bash command center can install or build the Rust collector, bootstrap Bun for
 development, run the setup wizard, manage user-space systemd services, and
-perform SQLite backup/check/reset operations.
+perform SQLite backup/check/reset operations. On Windows, use `.\tinytop.ps1`
+for Rust install/build/start/stop/status/logs and Windows service commands.
 
 ## Runtime Processes
 
@@ -83,6 +84,25 @@ Stop systemd services when installed:
 ```bash
 ./tinytop systemd stop
 ```
+
+On Windows:
+
+```powershell
+.\tinytop.ps1 start
+.\tinytop.ps1 status
+.\tinytop.ps1 stop
+```
+
+Windows service commands:
+
+```powershell
+.\tinytop.ps1 service install
+.\tinytop.ps1 service start
+.\tinytop.ps1 service status
+.\tinytop.ps1 service stop
+```
+
+`service install` and `service uninstall` require PowerShell running as Administrator.
 
 ## Verification Commands
 

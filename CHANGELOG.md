@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.29 - 2026-06-26
+
+- Added `tinytop.ps1` as a native Windows PowerShell command center for the Rust collector/dashboard daemon.
+- Added Windows release-binary install, local Rust build, start, stop, restart, status, logs, and Windows service commands to the PowerShell path.
+- Made Windows builds select `--no-default-features --features windows-collector`, and made the Bash command center print target-specific Rust build commands.
+- Strengthened the dashboard operator strip so Critical, Warning, and Stale states are visually obvious through full-strip styling and a state pill, not only a subtle border.
+- Cleaned the sidebar runtime identity so long WSL detection explanations are shown as compact runtime context instead of oversized brand text.
+- Added Windows guide, verification report, and ADR 0011 for the PowerShell-first Windows packaging decision.
+
 ## 0.1.28 - 2026-06-26
 
 - Added a TinyTop SVG favicon to both the legacy Bun dashboard asset tree and the Rust embedded dashboard asset tree.

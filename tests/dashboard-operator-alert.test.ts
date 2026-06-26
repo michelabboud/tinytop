@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const html = readFileSync("legacy/dashboard/index.html", "utf8");
 const app = readFileSync("legacy/dashboard/app.js", "utf8");
+const styles = readFileSync("legacy/dashboard/styles.css", "utf8");
 
 describe("dashboard operator alert strip", () => {
   test("renders a status strip for current operator state", () => {
@@ -32,5 +33,15 @@ describe("dashboard operator alert strip", () => {
     expect(app).toContain("data-status");
     expect(app).toContain("loadCritical");
     expect(app).toContain("pressureCritical");
+  });
+
+  test("makes warning, critical, and stale operator states visually obvious", () => {
+    expect(styles).toContain('.operator-status[data-status="healthy"]');
+    expect(styles).toContain('.operator-status[data-status="warning"]');
+    expect(styles).toContain('.operator-status[data-status="critical"]');
+    expect(styles).toContain('.operator-status[data-status="stale"]');
+    expect(styles).toContain('.operator-status[data-status="critical"] > div');
+    expect(styles).toContain('.operator-status[data-status="critical"] #operator-state');
+    expect(styles).toContain("box-shadow");
   });
 });

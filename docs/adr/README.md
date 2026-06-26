@@ -14,3 +14,4 @@ This directory tracks architectural decisions that are expensive to reverse or l
 | [0008](0008-settings-dialog-presentation.md) | Accepted | Present dashboard settings as a dialog instead of an inline dashboard section. |
 | [0009](0009-additive-history-points-and-markers-api.md) | Accepted | Keep raw history backward compatible and add chart-point plus timeline-marker APIs for rollup-backed ranges. |
 | [0010](0010-feature-gated-native-platform-collectors.md) | Accepted | Keep Linux as the default collector while adding opt-in macOS and Windows native collector modules. |
+| [0011](0011-powershell-first-windows-command-center.md) | Accepted | Add a PowerShell-first Windows command center before Scoop, winget, or MSI packaging. |

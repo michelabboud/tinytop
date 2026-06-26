@@ -181,6 +181,7 @@ const elements = {
   liveDot: document.querySelector("#live-dot"),
   liveLabel: document.querySelector("#live-label"),
   runtimeSummary: document.querySelector("#runtime-summary"),
+  runtimeReason: document.querySelector("#runtime-reason"),
   daemonVersion: document.querySelector("#daemon-version"),
   hostName: document.querySelector("#host-name"),
   kernelName: document.querySelector("#kernel-name"),
@@ -2103,12 +2104,15 @@ function closeOperatorDetailDrawer() {
 function renderSnapshotDetails(snapshot) {
   const rootFs = rootFilesystem(snapshot.filesystems);
   const loadPressure = loadPercent(snapshot);
+  const reason = snapshot.identity.runtime.reason || "Runtime detected";
 
   setText(elements.hostName, snapshot.identity.hostname);
   setText(elements.kernelName, snapshot.identity.kernel);
   setText(elements.distroName, snapshot.identity.distro);
   setText(elements.uptime, formatUptime(snapshot.identity.uptimeSeconds));
-  setText(elements.runtimeSummary, `${snapshot.identity.runtime.kind} - ${snapshot.identity.runtime.reason}`);
+  setText(elements.runtimeSummary, formatRuntimeSummary(snapshot.identity.runtime));
+  setText(elements.runtimeReason, reason);
+  if (elements.runtimeReason) elements.runtimeReason.title = reason;
   setText(elements.runtimeKind, snapshot.identity.runtime.kind);
   setText(elements.runtimeConfidence, `${snapshot.identity.runtime.confidence} confidence`);
 
@@ -2146,6 +2150,11 @@ function renderSnapshot(snapshot) {
   pushHistory(snapshot);
   renderSelectedSample();
   redrawCharts();
+}
+
+function formatRuntimeSummary(runtime) {
+  if (!runtime?.kind || runtime.kind === "Unknown") return "Runtime";
+  return runtime.kind;
 }
 
 function setLiveStatus(kind, label) {

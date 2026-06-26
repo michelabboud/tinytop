@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.28`
+- Version: `0.1.29`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, operator status strip plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, stronger Critical/Warning/Stale operator strip styling plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, compact sidebar runtime identity, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, Windows PowerShell command center with Windows service commands, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -282,17 +282,30 @@
 - [x] Expanded asset parity and Rust embedded serving regression coverage for the favicon.
 - [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 
+### 0.1.29 - Windows Command Center And Critical Status
+
+- [x] Saved and executed the Windows command-center and Critical status plan under `docs/superpowers/plans/`.
+- [x] Added `tinytop.ps1` for Windows-native Rust binary install, Rust build, start, stop, restart, status, logs, and service commands.
+- [x] Added Windows service install/uninstall/start/stop/restart/status commands through PowerShell and Windows Service Control Manager.
+- [x] Made Windows builds select `--no-default-features --features windows-collector`.
+- [x] Made the Bash command center print target-specific Rust build commands and use `.exe` binary names on Windows-like shells.
+- [x] Strengthened operator strip styling so Critical, Warning, and Stale states are visually obvious at a glance.
+- [x] Cleaned the sidebar runtime identity so long WSL detection reasons no longer dominate the brand block.
+- [x] Added Windows guide, verification report, and ADR 0011.
+- [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
+
 ## Known Limitations
 
 - Legacy Bun split mode does not enforce durable retention or rollups; use the Rust daemon for automatic pruning and coverage.
 - Longer-than-one-minute rollup tiers are planned but not implemented.
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
 - The app is designed for loopback/local use, not remote multi-user deployment.
-- Native Windows and macOS collectors are feature-gated first slices; full parity, packaging, and live-host verification are still future work.
+- Native Windows and macOS collectors are feature-gated first slices; full parity, package-manager distribution, Windows release asset publication, and live-host verification are still future work.
 
 ## Recommended Next Work
 
 - [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
 - [ ] Add wider rollup tiers if 30d browsing needs fewer points than one-minute buckets.
+- [ ] Build and upload a real Windows `.exe` release asset, then add Scoop and winget manifests.
 - [ ] Add live macOS and Windows CI/host verification plus release packaging.
 - [ ] Add process/filesystem historical detail backed by normalized child tables if the UI starts querying those independently.

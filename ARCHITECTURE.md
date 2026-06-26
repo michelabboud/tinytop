@@ -32,7 +32,7 @@ SQLite: ~/.local/share/tinytop/history.sqlite
 
 For development, `bun run dev` starts `src/server.ts`, and that process spawns `legacy/bun-collector.ts`. For split supervision, start the legacy Bun collector separately with `bun run collector`, then start the dashboard with `TINYTOP_DISABLE_WRITER_SPAWN=1`.
 
-The supported operator entrypoint is the root `./tinytop` Bash command center. It works before Bun is installed for help and bootstrap, auto-selects the Rust collector/dashboard daemon for `./tinytop start` when a release binary or Cargo is available, and supports `TINYTOP_RUNTIME=legacy` for the Bun fallback.
+The supported Linux/WSL operator entrypoint is the root `./tinytop` Bash command center. It works before Bun is installed for help and bootstrap, auto-selects the Rust collector/dashboard daemon for `./tinytop start` when a release binary or Cargo is available, and supports `TINYTOP_RUNTIME=legacy` for the Bun fallback. Windows uses `tinytop.ps1`, which manages Rust release-binary install, local Windows builds, foreground lifecycle, status/logs, and Windows Service Control Manager commands.
 
 ## Data Flow
 
@@ -64,6 +64,7 @@ The supported operator entrypoint is the root `./tinytop` Bash command center. I
 | `src/ops.ts` | SQLite maintenance helpers for stats, integrity checks, and vacuum |
 | `src/wizard/index.ts` | Bun setup wizard launched by `./tinytop setup`, including runtime-specific Rust versus Bun verification |
 | `tinytop` | Bash command center for setup, Bun bootstrap, systemd services, logs, status, and DB operations |
+| `tinytop.ps1` | Windows PowerShell command center for Rust binary install/build, lifecycle, logs, status, and Windows service commands |
 | `legacy/dashboard/` | Legacy Bun dashboard asset tree |
 | `agent/assets/dashboard/` | Rust-embedded dashboard asset tree; kept byte-identical to `legacy/dashboard/` |
 | `tests/` | Bun tests for parsers, snapshot building, server routes, and history storage |
@@ -94,6 +95,12 @@ The collector crate exposes `NativeCollector` behind target and Cargo feature ga
 - Windows builds can use `--no-default-features --features windows-collector`
 
 The macOS and Windows modules currently provide the first native slice through `sysinfo`: identity, CPU, memory/swap, load equivalent, disks, and top processes including parent PID/start time when available. Linux remains the reference implementation because pressure, exact `/proc` load thread counts, and live-host parity have not yet been validated on macOS/Windows.
+
+Windows builds use:
+
+```powershell
+cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent --no-default-features --features windows-collector
+```
 
 ## Public Dashboard API
 
@@ -293,6 +300,8 @@ The default unit is `tinytop.service`, running `tinytop-agent serve`. The legacy
 Bun split path remains available through `tinytop-collector.service` and
 `tinytop-dashboard.service` when explicitly installed with `--bun`.
 
+Windows service integration uses `tinytop.ps1 service install|uninstall|start|stop|restart|status`. Install and uninstall require an elevated PowerShell session because they write to Windows Service Control Manager. The service runs `tinytop-agent.exe serve` with explicit host, port, and SQLite path arguments.
+
 ## Decisions
 
 Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
@@ -305,3 +314,6 @@ Architecture decision records live in [docs/adr/README.md](docs/adr/README.md).
 - [0006 - Embed Dashboard Assets In The Rust Collector](docs/adr/0006-embedded-dashboard-assets.md)
 - [0007 - Daemon And Browser Dashboard Settings](docs/adr/0007-daemon-and-browser-dashboard-settings.md)
 - [0008 - Present Dashboard Settings As A Dialog](docs/adr/0008-settings-dialog-presentation.md)
+- [0009 - Additive History Points And Markers API](docs/adr/0009-additive-history-points-and-markers-api.md)
+- [0010 - Feature-Gated Native Platform Collectors](docs/adr/0010-feature-gated-native-platform-collectors.md)
+- [0011 - PowerShell-First Windows Command Center](docs/adr/0011-powershell-first-windows-command-center.md)
