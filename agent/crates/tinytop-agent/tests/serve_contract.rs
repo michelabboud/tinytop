@@ -84,6 +84,41 @@ fn serve_exposes_embedded_dashboard_without_public_dir() {
     result.expect("server should expose embedded dashboard assets without --public-dir");
 }
 
+#[test]
+fn serve_respects_empty_explicit_history_bounds() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+            "--no-dashboard",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get(port, "/api/history?limit=5&since_ms=0&until_ms=1"))
+        .map(|response| {
+            assert!(
+                response.contains(r#""samples":[]"#),
+                "explicitly bounded empty history window should stay empty, got {response}"
+            );
+        });
+
+    stop_child(&mut child);
+
+    result.expect("server should preserve explicit empty history bounds");
+}
+
 fn reserve_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should reserve a local port");
     listener

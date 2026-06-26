@@ -29,7 +29,7 @@ The dashboard is organized for quick scanning:
 2. Top identity strip: host, kernel, distro, uptime.
 3. Display controls: theme selection.
 4. Overview gauges: CPU, RAM, and swap.
-5. Live History: graph-type nav, ECharts chart, timeline scrubber.
+5. History: graph-type nav, range presets, ECharts chart, timeline scrubber.
 6. Metric band: load, thread count, root filesystem, runtime.
 7. Filesystem and pressure panels.
 8. Process table.
@@ -52,7 +52,7 @@ The rail status shows the polling state:
 
 TinyTop uses in-app confirmation windows for browser UI actions that discard local state. It does not use native browser `alert`, `confirm`, or `prompt` dialogs.
 
-The Live History `Clear` button asks for confirmation before clearing the samples currently loaded in the browser tab. This does not delete SQLite history, stop the daemon, or change system data.
+The History `Clear` button asks for confirmation before clearing the samples currently loaded in the browser tab. This does not delete SQLite history, stop the daemon, or change system data.
 
 ## Themes
 
@@ -66,13 +66,13 @@ Theme choices are stored in browser `localStorage`:
 
 Themes affect the browser only. They do not change collection, SQLite, or system state.
 
-## Live History
+## History
 
-Live History renders CPU, RAM, swap, and load-derived percent values from the rolling sample buffer.
+History renders CPU, RAM, swap, and load-derived percent values from SQLite-backed collector samples.
 
 The browser hydrates recent samples from SQLite on page load, so refreshing the page should not reset the chart to a single sample.
 
-The default page-load request asks for up to 120 samples from the last 180 seconds. That is the visible startup window, not the database retention period.
+The default page-load request uses the `Live` range preset. You can switch the browser's loaded range to `15m`, `1h`, `6h`, or `24h`. Large ranges are fetched with timestamp windows, deduplicated by timestamp, and downsampled only when the browser needs fewer points to render smoothly. These ranges are read windows, not the database retention period.
 
 The sample count badge shows:
 
@@ -105,10 +105,11 @@ Shows the selected or latest sample as proportional blocks. Use it for a compact
 
 The timeline row sits below the chart.
 
-- Drag the slider to inspect an older sample.
+- Choose `Live`, `15m`, `1h`, `6h`, or `24h` to load that timestamp range.
+- Drag the slider to inspect the nearest loaded sample by timestamp.
 - The main gauges and detail panels update to the selected sample.
 - The position label shows the selected local datetime.
-- Click `Live` to return to the newest sample.
+- Click `Live` beside the slider to return to the newest sample in the loaded range.
 - Click `Clear` to empty the current tab's session buffer after confirming.
 
 Keyboard controls on the chart:
@@ -137,6 +138,7 @@ Persisted in browser `localStorage`:
 
 - theme
 - graph mode
+- selected history range
 
 Not persisted:
 
@@ -158,7 +160,7 @@ Not persisted:
 On page load:
 
 1. The browser requests recent history from `/api/history`.
-2. It fills the chart and timeline from SQLite-backed samples.
+2. It fills the chart and timeline from SQLite-backed samples in the selected timestamp range.
 3. It requests the latest snapshot from `/api/snapshot`.
 4. It starts polling every 1500 ms.
 

@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.20`
+- Version: `0.1.21`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
@@ -149,12 +149,13 @@ For persistent background collection, install user-space systemd services:
 - CPU, memory, and I/O pressure from `/proc/pressure/*` when available
 - Top processes by CPU and memory
 - Live gauges, sparklines, status strips, and stat tiles
-- Apache ECharts Live History views: line, stacked area, stacked bar, heatmap, and treemap
+- Apache ECharts History views: line, stacked area, stacked bar, heatmap, and treemap
 - Responsive Bar mode that keeps a minimum bar width and rolls the visible window left as new samples arrive
-- SQLite-backed recent history so browser refreshes refill Live History instead of starting empty
+- SQLite-backed recent history so browser refreshes refill History instead of starting empty
+- Timestamp-based timeline with Live, 15m, 1h, 6h, and 24h range presets
 - Timeline scrubber with selected datetime context, compact metric values, and a return-to-live control
 - In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
-- Browser-local display preferences for theme and graph mode
+- Browser-local display preferences for theme, graph mode, and selected history range
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, and a no-Bun systemd path
 
 ## Common Commands
@@ -216,6 +217,8 @@ Implementation notes:
 | [docs/reports/2026-06-25-documentation-sweep.md](docs/reports/2026-06-25-documentation-sweep.md) | Documentation sweep for the embedded Rust collector/dashboard asset move |
 | [docs/reports/2026-06-26-history-retention-docs.md](docs/reports/2026-06-26-history-retention-docs.md) | Documentation sweep clarifying current SQLite retention and UI history-window behavior |
 | [docs/reports/2026-06-26-runtime-specific-verification.md](docs/reports/2026-06-26-runtime-specific-verification.md) | Verification split for Rust versus legacy Bun setup choices |
+| [docs/reports/2026-06-26-dashboard-timeline-settings.md](docs/reports/2026-06-26-dashboard-timeline-settings.md) | Timestamp timeline implementation, smoke test evidence, and settings roadmap |
+| [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
@@ -250,7 +253,7 @@ Recent history is stored in SQLite by the Rust daemon in the default runtime. In
 
 TinyTop currently has no automatic SQLite retention job. Raw samples stay in `metric_samples` until you manually archive or reset the database with the command-center DB tools.
 
-The dashboard does not render the whole database. On page load it requests a recent query window, currently up to 120 samples over 180 seconds, then keeps a browser-local rolling 120-sample window while polling live data. API callers can request other timestamp windows with `/api/history`, but those query windows do not delete older SQLite rows.
+The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. The range presets are Live, 15m, 1h, 6h, and 24h. Large responses are paged with `/api/history?since_ms=...&until_ms=...`, deduplicated by timestamp, and downsampled for browser rendering when needed. These query windows do not delete older SQLite rows.
 
 The current SQLite implementation stores indexed metric columns plus the complete snapshot JSON. Retention and rollup tables are planned but not implemented yet, so the database grows until manually archived or reset.
 

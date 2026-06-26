@@ -232,7 +232,7 @@ ok
 3. Run `./tinytop deps`.
 4. Run `./tinytop check`.
 5. Start `./tinytop systemd start` or `./tinytop rust serve`.
-6. Open the dashboard and confirm Live History hydrates after a browser refresh.
+6. Open the dashboard and confirm History hydrates after a browser refresh.
 
 The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. There is no explicit migration table or automatic retention job yet.
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.21 - 2026-06-26
+
+- Saved the dashboard timeline/settings implementation plan under `docs/superpowers/plans/`.
+- Added History range presets for Live, 15m, 1h, 6h, and 24h.
+- Replaced index-based timeline state with timestamp-based selection.
+- Changed dashboard history hydration to use explicit `since_ms` and `until_ms` windows, with client-side pagination for larger ranges.
+- Persisted the selected history range in browser-local storage as `tinytop.historyWindow`.
+- Added dashboard timeline regression coverage and refreshed docs for the new timeline behavior and settings roadmap.
+
 ## 0.1.20 - 2026-06-26
 
 - Split verification scripts into runtime-specific `check:bun` and `check:rust` commands while keeping `bun run check` as the full maintainer suite.

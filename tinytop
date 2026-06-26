@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-TINYTOP_VERSION="0.1.20"
+TINYTOP_VERSION="0.1.21"
 INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
 INSTALL_RUST_COMMAND='curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh'
 

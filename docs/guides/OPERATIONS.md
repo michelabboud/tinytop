@@ -231,7 +231,7 @@ Common causes:
 
 ## Data Growth
 
-Automatic retention is not implemented yet. The Rust daemon and legacy Bun collector keep raw SQLite rows until you manually archive or reset the database. The dashboard's 120-sample rolling buffer controls browser rendering only and does not prune SQLite.
+Automatic retention is not implemented yet. The Rust daemon and legacy Bun collector keep raw SQLite rows until you manually archive or reset the database. The dashboard's selected timestamp range and browser rendering cap control what is loaded and drawn; they do not prune SQLite.
 
 Monitor database size:
 

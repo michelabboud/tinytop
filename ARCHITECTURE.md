@@ -33,13 +33,13 @@ It works before Bun is installed for help and bootstrap, then hands off to
 ## Data Flow
 
 1. The browser loads embedded Rust dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, and `app.js`.
-2. `app.js` reads browser-local theme and graph-mode settings from `localStorage`.
-3. The frontend requests `/api/history?limit=120&window_seconds=180` to hydrate Live History from a bounded SQLite query window.
+2. `app.js` reads browser-local theme, graph-mode, and history-range settings from `localStorage`.
+3. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for the selected timeline range.
 4. The frontend polls `/api/snapshot` every 1500 ms.
 5. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
 6. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
 7. `tinytop-store` writes one row per sample into SQLite through SQLx.
-8. The frontend deduplicates samples by timestamp, updates gauges, and redraws ECharts views.
+8. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates gauges, and redraws ECharts views.
 
 ## Modules
 
@@ -164,23 +164,24 @@ Browser-local settings:
 
 - `tinytop.theme`
 - `tinytop.graphMode`
+- `tinytop.historyWindow`
 
 In-memory session state:
 
 - hydrated snapshots
-- selected timeline index
+- selected timeline timestamp
 - ECharts instance
 - pause/loading flags
 - active confirmation dialog resolver and return-focus target
 
-The browser keeps a rolling 120-sample window after hydrating up to 120 samples from the recent API window. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width. When the visible capacity is reached, the window rolls left: new samples appear on the right and older visible samples disappear on the left.
+The browser loads the selected timestamp range with `since_ms` and `until_ms` query parameters. Presets are Live, 15m, 1h, 6h, and 24h. Large ranges are paged through the existing API limit, deduplicated by captured timestamp, and downsampled to a browser rendering cap when needed. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width.
 
 Web UI interaction policy:
 
 - Public browser code must not call native `alert`, `confirm`, or `prompt`.
 - Inline errors render through the `status-message` surface.
 - Browser-local destructive actions use the reusable `<dialog>` confirmation flow in the dashboard `app.js`.
-- Confirmed actions must describe their scope before continuing; for example, clearing Live History affects only the current tab's session buffer and does not delete SQLite history.
+- Confirmed actions must describe their scope before continuing; for example, clearing History affects only the current tab's loaded samples and does not delete SQLite history.
 
 ## Runtime Detection
 

@@ -136,11 +136,11 @@
         <section class="panel history-panel" id="history">
           <div class="section-heading">
             <div>
-              <h2>Live History</h2>
-              <p>Rolling local samples from the last few minutes.</p>
+              <h2>History</h2>
+              <p>Recent collector samples from SQLite.</p>
             </div>
             <div class="history-badges">
-              <nav class="history-graph-nav" aria-label="Live history graph type">
+              <nav class="history-graph-nav" aria-label="History graph type">
                 <button type="button" data-graph-mode="line" aria-pressed="true">Line</button>
                 <button type="button" data-graph-mode="area" aria-pressed="false">Area</button>
                 <button type="button" data-graph-mode="bar" aria-pressed="false">Bar</button>
@@ -166,6 +166,13 @@
               <span>Timeline</span>
               <strong id="history-position-label">Live</strong>
             </div>
+            <nav class="history-window-nav" aria-label="History range">
+              <button type="button" data-history-window="live" aria-pressed="true">Live</button>
+              <button type="button" data-history-window="15m" aria-pressed="false">15m</button>
+              <button type="button" data-history-window="1h" aria-pressed="false">1h</button>
+              <button type="button" data-history-window="6h" aria-pressed="false">6h</button>
+              <button type="button" data-history-window="24h" aria-pressed="false">24h</button>
+            </nav>
             <div class="history-scrubber-row">
               <input
                 id="history-scrubber"
@@ -174,7 +181,7 @@
                 max="0"
                 value="0"
                 step="1"
-                aria-label="Browse live history samples"
+                aria-label="Browse history timeline by timestamp"
                 disabled
               />
               <button class="mini-button" id="live-button" type="button" disabled>Live</button>

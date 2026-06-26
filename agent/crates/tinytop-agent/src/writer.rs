@@ -43,7 +43,7 @@ struct AppState {
     dashboard_assets: DashboardAssets,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize)]
 struct HistoryParams {
     limit: Option<i64>,
     window_seconds: Option<i64>,
@@ -188,15 +188,17 @@ async fn read_history_with_backfill(
     state: &AppState,
     params: HistoryParams,
 ) -> Result<Vec<HistorySample>, ServeError> {
+    let should_backfill = should_backfill_empty_history(&params);
     let mut samples = state.store.read_history(history_query(params)).await?;
-    if samples.is_empty() {
+    if samples.is_empty() && should_backfill {
         collect_and_store(state).await?;
-        samples = state
-            .store
-            .read_history(history_query(HistoryParams::default()))
-            .await?;
+        samples = state.store.read_history(history_query(params)).await?;
     }
     Ok(samples)
+}
+
+fn should_backfill_empty_history(params: &HistoryParams) -> bool {
+    params.since_ms.is_none() && params.until_ms.is_none()
 }
 
 async fn collect_and_store(state: &AppState) -> Result<HistorySample, ServeError> {

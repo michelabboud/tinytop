@@ -1,13 +1,15 @@
 const POLL_MS = 1500;
-const MAX_HISTORY = 120;
+const MAX_HISTORY_PAGE_SIZE = 10_000;
+const MAX_HISTORY_PAGE_COUNT = 8;
+const MAX_HISTORY_RENDER_SAMPLES = 1_200;
 const MAX_VISIBLE_HISTORY = 80;
-const HISTORY_WINDOW_SECONDS = Math.ceil((MAX_HISTORY * POLL_MS) / 1000);
 const MIN_VISIBLE_BAR_SAMPLES = 12;
 const MIN_STACKED_BAR_WIDTH = 12;
 const BAR_CHART_SIDE_PADDING = 70;
 const STORAGE_KEYS = {
   theme: "tinytop.theme",
   graphMode: "tinytop.graphMode",
+  historyWindow: "tinytop.historyWindow",
 };
 const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
 const GRAPH_MODES = {
@@ -23,6 +25,14 @@ const HISTORY_METRICS = [
   { key: "swap", label: "SWAP" },
   { key: "load", label: "LOAD" },
 ];
+const HISTORY_WINDOWS = {
+  live: { label: "Live", durationMs: 5 * 60 * 1000, pageSize: 240 },
+  "15m": { label: "15m", durationMs: 15 * 60 * 1000, pageSize: 900 },
+  "1h": { label: "1h", durationMs: 60 * 60 * 1000, pageSize: 2_400 },
+  "6h": { label: "6h", durationMs: 6 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE },
+  "24h": { label: "24h", durationMs: 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE },
+};
+const HISTORY_WINDOW_KEYS = new Set(Object.keys(HISTORY_WINDOWS));
 
 const state = {
   paused: false,
@@ -33,8 +43,10 @@ const state = {
   historyChartInstance: null,
   theme: "midnight",
   graphMode: "line",
+  historyWindowKey: "live",
+  historyFetchToken: 0,
   snapshots: [],
-  selectedSampleIndex: null,
+  selectedAtMs: null,
   history: {
     cpu: [],
     ram: [],
@@ -83,6 +95,7 @@ const elements = {
   pauseButton: document.querySelector("#pause-button"),
   themeButtons: Array.from(document.querySelectorAll("[data-theme-option]")),
   graphButtons: Array.from(document.querySelectorAll("[data-graph-mode]")),
+  historyWindowButtons: Array.from(document.querySelectorAll("[data-history-window]")),
   historyScrubber: document.querySelector("#history-scrubber"),
   historyPositionLabel: document.querySelector("#history-position-label"),
   historyStartLabel: document.querySelector("#history-start-label"),
@@ -294,25 +307,29 @@ function setHistoryValues(index, snapshot) {
   state.history.load[index] = values.load;
 }
 
-function resetHistory() {
+function rebuildHistoryValues() {
+  state.history.cpu = [];
+  state.history.ram = [];
+  state.history.swap = [];
+  state.history.load = [];
+  state.snapshots.forEach((sample, index) => {
+    setHistoryValues(index, sample.snapshot);
+  });
+}
+
+function resetHistory({ keepSelection = false } = {}) {
   state.snapshots = [];
   state.history.cpu = [];
   state.history.ram = [];
   state.history.swap = [];
   state.history.load = [];
-  state.selectedSampleIndex = null;
+  if (!keepSelection) state.selectedAtMs = null;
 }
 
 function trimHistory() {
-  while (state.snapshots.length > MAX_HISTORY) {
-    state.snapshots.shift();
-    state.history.cpu.shift();
-    state.history.ram.shift();
-    state.history.swap.shift();
-    state.history.load.shift();
-    if (state.selectedSampleIndex !== null) {
-      state.selectedSampleIndex = Math.max(0, state.selectedSampleIndex - 1);
-    }
+  if (state.snapshots.length > MAX_HISTORY_RENDER_SAMPLES) {
+    state.snapshots = state.snapshots.slice(-MAX_HISTORY_RENDER_SAMPLES);
+    rebuildHistoryValues();
   }
 }
 
@@ -322,33 +339,60 @@ function pushHistory(snapshot, capturedAtMs = snapshotCapturedAtMs(snapshot)) {
 
   if (existingIndex !== -1) {
     state.snapshots[existingIndex] = { capturedAt, snapshot };
-    setHistoryValues(existingIndex, snapshot);
+    state.snapshots.sort((left, right) => left.capturedAt - right.capturedAt);
+    rebuildHistoryValues();
     return;
   }
 
   state.snapshots.push({ capturedAt, snapshot });
-  setHistoryValues(state.snapshots.length - 1, snapshot);
+  state.snapshots.sort((left, right) => left.capturedAt - right.capturedAt);
+  rebuildHistoryValues();
   trimHistory();
 }
 
-function hydrateHistory(samples) {
-  if (!Array.isArray(samples) || samples.length === 0) return;
-  resetHistory();
+function normalizedHistorySamples(samples) {
+  const byTimestamp = new Map();
+  if (!Array.isArray(samples)) return [];
 
-  samples
-    .filter((sample) => sample && sample.snapshot)
-    .map((sample) => ({
-      capturedAtMs: Number.isFinite(Number(sample.capturedAtMs))
-        ? Number(sample.capturedAtMs)
-        : snapshotCapturedAtMs(sample.snapshot),
-      snapshot: sample.snapshot,
-    }))
-    .sort((left, right) => left.capturedAtMs - right.capturedAtMs)
-    .forEach((sample) => {
-      pushHistory(sample.snapshot, sample.capturedAtMs);
-    });
+  for (const sample of samples) {
+    if (!sample?.snapshot) continue;
+    const capturedAt = Number.isFinite(Number(sample.capturedAtMs))
+      ? Number(sample.capturedAtMs)
+      : snapshotCapturedAtMs(sample.snapshot);
+    byTimestamp.set(capturedAt, { capturedAt, snapshot: sample.snapshot });
+  }
+
+  return Array.from(byTimestamp.values()).sort((left, right) => left.capturedAt - right.capturedAt);
+}
+
+function downsampleHistorySamples(samples, maxSamples) {
+  if (samples.length <= maxSamples) return samples;
+  if (maxSamples <= 1) return samples.slice(-1);
+
+  const selected = [];
+  const seen = new Set();
+  const step = (samples.length - 1) / (maxSamples - 1);
+
+  for (let index = 0; index < maxSamples; index += 1) {
+    const sample = samples[Math.round(index * step)];
+    if (!sample || seen.has(sample.capturedAt)) continue;
+    selected.push(sample);
+    seen.add(sample.capturedAt);
+  }
+
+  return selected;
+}
+
+function hydrateHistory(samples, { keepSelection = false } = {}) {
+  const selectedAtMs = state.selectedAtMs;
+  resetHistory({ keepSelection });
+  state.snapshots = downsampleHistorySamples(normalizedHistorySamples(samples), MAX_HISTORY_RENDER_SAMPLES);
+  if (keepSelection) state.selectedAtMs = selectedAtMs;
+  if (state.snapshots.length === 0) state.selectedAtMs = null;
+  rebuildHistoryValues();
 
   renderSelectedSample();
+  updateHistoryControls();
   redrawCharts();
 }
 
@@ -396,11 +440,12 @@ function visibleHistoryRange() {
   if (total <= visible) return { start: 0, end: total, total, visible };
 
   const liveStart = total - visible;
-  if (state.selectedSampleIndex === null) {
+  const selectedIndex = inspectedIndex();
+  if (selectedIndex === null) {
     return { start: liveStart, end: total, total, visible };
   }
 
-  const centeredStart = state.selectedSampleIndex - Math.floor(visible / 2);
+  const centeredStart = selectedIndex - Math.floor(visible / 2);
   const start = Math.max(0, Math.min(centeredStart, liveStart));
   return { start, end: start + visible, total, visible };
 }
@@ -411,7 +456,7 @@ function visibleHistoryCapacity() {
   if (width <= 0) return MAX_VISIBLE_HISTORY;
   const plotWidth = Math.max(MIN_STACKED_BAR_WIDTH, width - BAR_CHART_SIDE_PADDING);
   const capacity = Math.floor(plotWidth / MIN_STACKED_BAR_WIDTH);
-  return Math.max(MIN_VISIBLE_BAR_SAMPLES, Math.min(MAX_HISTORY, capacity));
+  return Math.max(MIN_VISIBLE_BAR_SAMPLES, Math.min(MAX_HISTORY_RENDER_SAMPLES, capacity));
 }
 
 function visibleHistorySeries(series, range) {
@@ -705,11 +750,37 @@ function drawHistoryChart() {
   chart.setOption(historyChartOption(palette, range, series), true);
 }
 
+function nearestHistoryIndex(timestampMs) {
+  if (state.snapshots.length === 0) return null;
+  const target = Number(timestampMs);
+  if (!Number.isFinite(target)) return state.snapshots.length - 1;
+
+  let bestIndex = 0;
+  let bestDistance = Math.abs(state.snapshots[0].capturedAt - target);
+  for (let index = 1; index < state.snapshots.length; index += 1) {
+    const distance = Math.abs(state.snapshots[index].capturedAt - target);
+    if (distance < bestDistance) {
+      bestIndex = index;
+      bestDistance = distance;
+    }
+  }
+  return bestIndex;
+}
+
+function inspectedIndex() {
+  if (state.selectedAtMs === null) return null;
+  return nearestHistoryIndex(state.selectedAtMs);
+}
+
+function activeHistoryIndex() {
+  if (state.snapshots.length === 0) return null;
+  return inspectedIndex() ?? state.snapshots.length - 1;
+}
+
 function selectedSample() {
   if (state.snapshots.length === 0) return null;
-  const fallbackIndex = state.snapshots.length - 1;
-  const index = state.selectedSampleIndex ?? fallbackIndex;
-  return state.snapshots[Math.max(0, Math.min(index, fallbackIndex))];
+  const index = activeHistoryIndex();
+  return index === null ? null : state.snapshots[index];
 }
 
 function sampleMetricValues(sample) {
@@ -748,7 +819,11 @@ function historySampleCountText(sampleCount, range) {
 }
 
 function updateHistoryChartTitle(sample) {
-  if (!elements.historyChart || !sample) return;
+  if (!elements.historyChart) return;
+  if (!sample) {
+    elements.historyChart.title = "No history samples loaded";
+    return;
+  }
   const metrics = sampleMetricValues(sample)
     .map(([name, value]) => `${name} ${formatPercent(value)}`)
     .join(", ");
@@ -758,21 +833,22 @@ function updateHistoryChartTitle(sample) {
 function updateHistoryControls() {
   const sampleCount = state.snapshots.length;
   const lastIndex = Math.max(0, sampleCount - 1);
-  const activeIndex = state.selectedSampleIndex ?? lastIndex;
+  const activeIndex = activeHistoryIndex() ?? lastIndex;
   const activeSample = selectedSample();
   const firstSample = state.snapshots[0];
   const latestSample = state.snapshots[lastIndex];
   const range = visibleHistoryRange();
-  const isLive = state.selectedSampleIndex === null;
+  const isLive = state.selectedAtMs === null;
+  const windowLabel = HISTORY_WINDOWS[state.historyWindowKey]?.label ?? "Live";
   const positionText =
     activeSample && isLive
-      ? `Live - ${formatSampleDateTime(activeSample.capturedAt)}`
+      ? `${windowLabel} - ${formatSampleDateTime(activeSample.capturedAt)}`
       : activeSample
         ? `Viewing ${formatSampleDateTime(activeSample.capturedAt)}`
         : "Live";
   const ariaValueText =
     activeSample && isLive
-      ? `Live, latest sample ${formatSampleDateTime(activeSample.capturedAt)}`
+      ? `${windowLabel}, latest sample ${formatSampleDateTime(activeSample.capturedAt)}`
       : activeSample
         ? `Sample ${activeIndex + 1} of ${sampleCount}, ${formatSampleDateTime(activeSample.capturedAt)}`
         : "Live";
@@ -780,21 +856,25 @@ function updateHistoryControls() {
   setText(elements.sampleCount, historySampleCountText(sampleCount, range));
   setText(elements.historyPositionLabel, positionText);
   setText(elements.historyStartLabel, firstSample ? formatSampleDateTime(firstSample.capturedAt) : "-");
-  setText(elements.historyEndLabel, latestSample ? `Live - ${formatSampleTime(latestSample.capturedAt)}` : "Live");
+  setText(
+    elements.historyEndLabel,
+    latestSample ? `${windowLabel} - ${formatSampleTime(latestSample.capturedAt)}` : windowLabel,
+  );
   renderHistorySampleValues(activeSample);
   updateHistoryChartTitle(activeSample);
 
   if (elements.historyScrubber) {
-    elements.historyScrubber.disabled = sampleCount < 2;
-    elements.historyScrubber.min = "0";
-    elements.historyScrubber.max = String(lastIndex);
-    elements.historyScrubber.value = String(activeIndex);
+    elements.historyScrubber.disabled = !firstSample || !latestSample || firstSample.capturedAt === latestSample.capturedAt;
+    elements.historyScrubber.min = String(firstSample?.capturedAt ?? 0);
+    elements.historyScrubber.max = String(latestSample?.capturedAt ?? 0);
+    elements.historyScrubber.value = String(activeSample?.capturedAt ?? latestSample?.capturedAt ?? 0);
     elements.historyScrubber.setAttribute("aria-valuetext", ariaValueText);
   }
 
   if (elements.historyChart) {
-    elements.historyChart.setAttribute("aria-valuemax", String(lastIndex));
-    elements.historyChart.setAttribute("aria-valuenow", String(activeIndex));
+    elements.historyChart.setAttribute("aria-valuemin", String(firstSample?.capturedAt ?? 0));
+    elements.historyChart.setAttribute("aria-valuemax", String(latestSample?.capturedAt ?? 0));
+    elements.historyChart.setAttribute("aria-valuenow", String(activeSample?.capturedAt ?? latestSample?.capturedAt ?? 0));
     elements.historyChart.setAttribute("aria-valuetext", ariaValueText);
   }
 
@@ -809,21 +889,29 @@ function updateHistoryControls() {
 
 function renderSelectedSample() {
   const sample = selectedSample();
-  if (!sample) return;
+  if (!sample) {
+    updateHistoryControls();
+    return;
+  }
   renderSnapshotDetails(sample.snapshot);
   updateHistoryControls();
 }
 
-function setHistorySelection(index) {
-  if (state.snapshots.length === 0) return;
+function selectHistoryTimestamp(timestampMs) {
+  const index = nearestHistoryIndex(timestampMs);
+  if (index === null) return;
   const lastIndex = state.snapshots.length - 1;
-  state.selectedSampleIndex = Math.max(0, Math.min(index, lastIndex));
+  if (index >= lastIndex) {
+    returnToLiveHistory();
+    return;
+  }
+  state.selectedAtMs = state.snapshots[index].capturedAt;
   renderSelectedSample();
   redrawCharts();
 }
 
 function returnToLiveHistory() {
-  state.selectedSampleIndex = null;
+  state.selectedAtMs = null;
   renderSelectedSample();
   redrawCharts();
 }
@@ -834,18 +922,18 @@ function clearSessionHistory() {
   redrawCharts();
 }
 
-function selectHistoryIndex(index) {
+function selectHistoryPosition(index) {
   if (state.snapshots.length === 0) return;
   const lastIndex = state.snapshots.length - 1;
   const nextIndex = Math.max(0, Math.min(index, lastIndex));
   if (nextIndex >= lastIndex) returnToLiveHistory();
-  else setHistorySelection(nextIndex);
+  else selectHistoryTimestamp(state.snapshots[nextIndex].capturedAt);
 }
 
 function historySampleIndexFromChartParams(params) {
   const range = visibleHistoryRange();
   if (range.visible <= 0) return null;
-  if (state.graphMode === "treemap") return state.selectedSampleIndex ?? state.snapshots.length - 1;
+  if (state.graphMode === "treemap") return activeHistoryIndex() ?? state.snapshots.length - 1;
 
   const rawIndex = Array.isArray(params.value) ? params.value[0] : params.dataIndex;
   const visibleIndex = Number(rawIndex);
@@ -856,7 +944,7 @@ function historySampleIndexFromChartParams(params) {
 function handleHistoryChartClick(params) {
   const index = historySampleIndexFromChartParams(params);
   if (index === null) return;
-  selectHistoryIndex(index);
+  selectHistoryPosition(index);
 }
 
 function handleHistoryPlotClick(event) {
@@ -877,14 +965,14 @@ function handleHistoryPlotClick(event) {
       : Math.round(Number(rawIndex));
   if (!Number.isFinite(visibleIndex)) return;
 
-  selectHistoryIndex(Math.max(range.start, Math.min(range.start + visibleIndex, range.end - 1)));
+  selectHistoryPosition(Math.max(range.start, Math.min(range.start + visibleIndex, range.end - 1)));
 }
 
 function moveHistorySelection(delta) {
   if (state.snapshots.length === 0) return;
   const lastIndex = state.snapshots.length - 1;
-  const currentIndex = state.selectedSampleIndex ?? lastIndex;
-  selectHistoryIndex(currentIndex + delta);
+  const currentIndex = activeHistoryIndex() ?? lastIndex;
+  selectHistoryPosition(currentIndex + delta);
 }
 
 function renderFilesystems(filesystems) {
@@ -1025,16 +1113,60 @@ async function fetchSnapshot() {
 }
 
 async function fetchHistory() {
+  return fetchHistoryWindow();
+}
+
+async function fetchHistoryPage({ sinceMs, untilMs, limit }) {
+  const params = new URLSearchParams({
+    limit: String(Math.min(MAX_HISTORY_PAGE_SIZE, Math.max(1, Math.floor(limit)))),
+    since_ms: String(Math.floor(sinceMs)),
+    until_ms: String(Math.floor(untilMs)),
+  });
+  const response = await fetch(`/api/history?${params}`, {
+    cache: "no-store",
+  });
+  if (!response.ok) return [];
+  const body = await response.json();
+  return Array.isArray(body.samples) ? body.samples : [];
+}
+
+async function fetchHistoryWindow() {
+  const fetchToken = state.historyFetchToken + 1;
+  state.historyFetchToken = fetchToken;
+  const windowConfig = HISTORY_WINDOWS[state.historyWindowKey] ?? HISTORY_WINDOWS.live;
+  const untilMs = Date.now();
+  const sinceMs = untilMs - windowConfig.durationMs;
+  const limit = Math.min(MAX_HISTORY_PAGE_SIZE, windowConfig.pageSize);
+  let pageUntilMs = untilMs;
+  const samples = [];
+
   try {
-    const response = await fetch(`/api/history?limit=${MAX_HISTORY}&window_seconds=${HISTORY_WINDOW_SECONDS}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) return;
-    const body = await response.json();
-    hydrateHistory(body.samples);
+    for (let page = 0; page < MAX_HISTORY_PAGE_COUNT; page += 1) {
+      const pageSamples = await fetchHistoryPage({ sinceMs, untilMs: pageUntilMs, limit });
+      if (state.historyFetchToken !== fetchToken) return;
+      if (pageSamples.length === 0) break;
+
+      samples.push(...pageSamples);
+      const normalizedPage = normalizedHistorySamples(pageSamples);
+      const oldestSample = normalizedPage[0];
+      if (pageSamples.length < limit || !oldestSample || oldestSample.capturedAt <= sinceMs) break;
+      pageUntilMs = oldestSample.capturedAt - 1;
+    }
+
+    hydrateHistory(samples, { keepSelection: state.selectedAtMs !== null });
   } catch {
     // Live polling still gives the dashboard useful data when history is unavailable.
   }
+}
+
+function setHistoryWindow(key, { fetch = true, persist = true } = {}) {
+  const nextWindow = Object.hasOwn(HISTORY_WINDOWS, key) ? key : "live";
+  state.historyWindowKey = nextWindow;
+  state.selectedAtMs = null;
+  syncPressed(elements.historyWindowButtons, "historyWindow", nextWindow);
+  if (persist) storeValue(STORAGE_KEYS.historyWindow, nextWindow);
+  updateHistoryControls();
+  if (fetch) fetchHistoryWindow();
 }
 
 function setPaused(paused) {
@@ -1087,8 +1219,14 @@ for (const button of elements.graphButtons) {
   });
 }
 
+for (const button of elements.historyWindowButtons) {
+  button.addEventListener("click", () => {
+    setHistoryWindow(button.dataset.historyWindow);
+  });
+}
+
 elements.historyScrubber?.addEventListener("input", () => {
-  setHistorySelection(Number(elements.historyScrubber.value));
+  selectHistoryTimestamp(Number(elements.historyScrubber.value));
 });
 
 elements.liveButton?.addEventListener("click", () => {
@@ -1132,7 +1270,7 @@ elements.historyChart?.addEventListener("keydown", (event) => {
     moveHistorySelection(1);
   } else if (event.key === "Home") {
     event.preventDefault();
-    selectHistoryIndex(0);
+    selectHistoryPosition(0);
   } else if (event.key === "End") {
     event.preventDefault();
     returnToLiveHistory();
@@ -1146,6 +1284,7 @@ window.addEventListener("resize", () => {
 
 applyTheme(readStoredValue(STORAGE_KEYS.theme, "midnight", THEMES));
 setGraphMode(readStoredValue(STORAGE_KEYS.graphMode, "line", new Set(Object.keys(GRAPH_MODES))));
+setHistoryWindow(readStoredValue(STORAGE_KEYS.historyWindow, "live", HISTORY_WINDOW_KEYS), { fetch: false, persist: false });
 
 async function startDashboard() {
   await fetchHistory();

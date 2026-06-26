@@ -646,14 +646,20 @@ h1 {
   flex-wrap: wrap;
 }
 
-.history-graph-nav {
+.history-graph-nav,
+.history-window-nav {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0.35rem;
 }
 
-.history-graph-nav button {
+.history-window-nav {
+  justify-content: flex-start;
+}
+
+.history-graph-nav button,
+.history-window-nav button {
   min-height: 34px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -671,16 +677,19 @@ h1 {
     transform 180ms ease;
 }
 
-.history-graph-nav button:hover {
+.history-graph-nav button:hover,
+.history-window-nav button:hover {
   border-color: var(--control-active-border);
 }
 
-.history-graph-nav button[aria-pressed="true"] {
+.history-graph-nav button[aria-pressed="true"],
+.history-window-nav button[aria-pressed="true"] {
   border-color: var(--control-active-border);
   background: var(--control-active-bg);
 }
 
-.history-graph-nav button:active {
+.history-graph-nav button:active,
+.history-window-nav button:active {
   transform: translateY(1px);
 }
 
@@ -1054,11 +1063,13 @@ td {
     width: 100%;
   }
 
-  .history-graph-nav {
+  .history-graph-nav,
+  .history-window-nav {
     width: 100%;
   }
 
-  .history-graph-nav button {
+  .history-graph-nav button,
+  .history-window-nav button {
     flex: 1 1 auto;
   }
 

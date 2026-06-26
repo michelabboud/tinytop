@@ -92,6 +92,8 @@ The example above is shortened. Real responses include full CPU times, filesyste
 
 Returns persisted recent history from the Rust daemon or legacy Bun collector process. The query parameters bound the read result only; they do not prune SQLite history.
 
+The dashboard timeline uses the explicit `since_ms` and `until_ms` parameters for its Live, 15m, 1h, 6h, and 24h range presets. Larger ranges may be paged by issuing another request with `until_ms` set before the oldest sample already returned.
+
 Query parameters:
 
 | Parameter | Type | Default | Description |
@@ -124,7 +126,7 @@ Response:
 
 Samples are returned oldest first.
 
-Retention note: TinyTop currently keeps raw SQLite rows until manual archive/reset. The dashboard startup request uses `/api/history?limit=120&window_seconds=180`, while the API default window is 300 seconds when no explicit window is supplied.
+Retention note: TinyTop currently keeps raw SQLite rows until manual archive/reset. The dashboard uses explicit `since_ms` and `until_ms` windows for its range presets, while the API default window is 300 seconds when no explicit window is supplied.
 
 ### GET /vendor/echarts.min.js
 

@@ -1,17 +1,15 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 08:55 Asia/Jerusalem
+Date: 2026-06-26 13:00 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Latest shipped checkpoint before v0.1.20 work: `4c897c3e3c5dc54b0caaff2081035fd1eb934251`
-- Latest shipped tag before v0.1.20 work: `v0.1.19`
-- Current checkpoint version: `0.1.20`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.20`
-- Working tree before the v0.1.20 setup verification change: clean and aligned with `origin/main`
+- Current checkpoint version: `0.1.21`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.21`
+- Working tree before the v0.1.21 dashboard timeline change: clean and aligned with `origin/main` at `v0.1.20`
 
 ## Runtime State
 
@@ -92,6 +90,18 @@ Evidence:
 - Rust release-binary systemd setup now installs the binary before running `./tinytop rust collect` as the smoke check.
 - Added `docs/reports/2026-06-26-runtime-specific-verification.md`.
 
+### v0.1.21 - Timestamp Timeline Planning And Browser Slice
+
+- Saved `docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md` for the approved timeline, settings, retention, and rollup roadmap.
+- Added History range presets for Live, 15m, 1h, 6h, and 24h.
+- Replaced index-based timeline selection with timestamp-based selection.
+- Changed dashboard history loading to request explicit `since_ms` and `until_ms` windows and page larger ranges through the existing `/api/history` limit.
+- Fixed Rust `/api/history` backfill so explicit empty timestamp windows return `[]` instead of dropping bounds and returning default recent samples.
+- Persisted the selected history range as browser-local `tinytop.historyWindow`.
+- Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
+- Added `tests/dashboard-timeline.test.ts`.
+- Added a Rust serve-contract regression for explicit empty history bounds.
+
 ### Release Binary Asset Check
 
 - `v0.1.18` release assets were updated with `tinytop-agent-linux-x86_64` and its `.sha256` file.
@@ -164,6 +174,34 @@ Evidence:
 - `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
 - `git diff --check`: clean
 
+## Verification Evidence From v0.1.21 Timestamp Timeline Slice
+
+- `./tinytop check`
+  - Bun tests: `50 pass`, `0 fail`, `178 expect() calls`
+  - `src/server.ts --check`: `status: ok`
+  - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
+  - Rust fmt check and workspace tests passed
+  - Browser bundle built `legacy/dashboard/app.js` successfully
+- `bun test tests/dashboard-timeline.test.ts tests/dashboard-assets.test.ts tests/webui-dialogs.test.ts`
+  - Dashboard timeline, asset parity, and web UI policy tests: `9 pass`, `0 fail`
+- `cargo test --manifest-path agent/Cargo.toml -p tinytop-agent --test serve_contract serve_respects_empty_explicit_history_bounds`
+  - Explicit empty timestamp bounds regression: `1 pass`, `0 fail`
+- `bun build legacy/dashboard/app.js --target=browser --outdir=/tmp/tinytop-dashboard-timeline-check`
+  - Browser bundle built successfully
+- `diff -qr agent/assets/dashboard legacy/dashboard`
+  - No differences
+- `./tinytop rust build`
+  - Rebuilt `agent/target/release/tinytop-agent` so embedded dashboard bytes include the new timeline assets
+- Embedded dashboard smoke test on alternate port `4284`
+  - `/health`: `ok`
+  - `/app.js`: contained `selectedAtMs`, `fetchHistoryPage`, `since_ms`, and `until_ms`
+  - `/`: contained all five `data-history-window` buttons
+  - `/api/history?limit=5&since_ms=0`: returned SQLite-backed samples
+  - Alternate-port smoke daemon stopped after verification
+- `bun audit`: no vulnerabilities found
+- `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies, no vulnerabilities reported
+- `git diff --check`: clean
+
 ## Useful Commands
 
 ```bash
@@ -178,9 +216,10 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 
 ## Next Useful Work
 
+- Add SQLite-backed daemon settings for default theme, default graph mode, poll interval, default history window, retention, thresholds, and enabled sections.
+- Add a settings UI that separates `This Browser` local preferences from `This Daemon` SQLite-backed defaults.
 - Add SQLite raw-history retention with a configurable 24 to 72 hour default.
 - Add one-minute rollups for longer history ranges.
-- Add a dashboard setting for visible history duration and persisted sample count.
 - Add a collector/daemon health indicator in the UI if history or snapshot APIs degrade.
 - Add native Windows and macOS collectors when the project moves beyond Linux/WSL.
 

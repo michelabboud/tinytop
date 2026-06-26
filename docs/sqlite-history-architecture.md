@@ -150,10 +150,10 @@ The SQLite owner reverses the selected rows before returning them so the browser
 
 ## Frontend Hydration
 
-On startup, the dashboard `app.js` requests:
+On startup, the dashboard `app.js` requests the browser-selected timestamp range:
 
 ```text
-/api/history?limit=120&window_seconds=180
+/api/history?limit=<range-page-size>&since_ms=<range-start>&until_ms=<range-end>
 ```
 
 The browser then:
@@ -161,9 +161,11 @@ The browser then:
 1. Sorts samples oldest first.
 2. Deduplicates by captured timestamp.
 3. Renders the latest sample into the dashboard.
-4. Starts polling `/api/snapshot`.
+4. Pages backward through larger ranges when the server returns a full result page.
+5. Downsamples only if the browser has more points than it should render.
+6. Starts polling `/api/snapshot`.
 
-This is why browser refresh now refills Live History instead of starting from one sample.
+This is why browser refresh now refills History instead of starting from one sample.
 
 ## Retention
 
@@ -173,7 +175,7 @@ Current behavior:
 
 - Every successful scheduled or manual collection writes one raw row into `metric_samples`.
 - `/api/history` and `/history` select bounded windows for callers, but they never delete older rows.
-- The dashboard hydrates a recent 120-sample window and then keeps a browser-local 120-sample rolling buffer; that is a rendering limit, not a storage limit.
+- The dashboard hydrates the browser-selected timestamp window, currently Live, 15m, 1h, 6h, or 24h. Large windows are paged through `/api/history`, deduplicated by captured timestamp, and downsampled only for browser rendering; that is a rendering limit, not a storage limit.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 
 Recommended future retention:
