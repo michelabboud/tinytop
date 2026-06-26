@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.25`
+- Version: `0.1.26`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed timestamp-range history browsing, CPU/RAM/swap/load overview gauges, operator status strip, timeline rail, history coverage, process/filesystem controls, a dialog-based settings surface, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed timestamp-range history browsing, CPU/RAM/swap/load overview gauges, operator status strip, timeline rail, history coverage, process/filesystem controls, a dialog-based settings surface with readable native dropdown menus in every theme, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -250,6 +250,12 @@
 - [x] Expanded browser-local preferences for visible series, process table state, filesystem toggle, and last section.
 - [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 - [x] Added focused dashboard, server, Rust store, and Rust daemon regression coverage.
+
+### 0.1.26 - Native Dropdown Contrast
+
+- [x] Fixed Settings and process-density native select option colors across Midnight, Matrix, Aurora, Solar, and Ember themes.
+- [x] Added regression coverage for readable native dropdown options.
+- [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 
 ## Known Limitations
 

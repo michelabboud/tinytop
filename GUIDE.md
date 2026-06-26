@@ -52,7 +52,7 @@ The operator strip shows:
 - `Critical` - at least one metric crossed its critical threshold or the current snapshot fetch failed.
 - `Stale` - the latest collector sample is older than the expected polling window.
 
-The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.25`. The same identity is available from:
+The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.26`. The same identity is available from:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/api/version

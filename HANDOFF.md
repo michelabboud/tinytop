@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 18:13 Asia/Jerusalem
+Date: 2026-06-26 20:29 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.25`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.25`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.25`
-- The `v0.1.25` checkpoint adds the operator-console dashboard slice, Rust raw-history pruning, one-minute rollups, and history coverage while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
+- Current checkpoint version: `0.1.26`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.26`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.26`
+- The `v0.1.26` checkpoint fixes native select dropdown contrast in the Settings dialog and process density control while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
 
 ## Runtime State
 
@@ -20,11 +20,12 @@ Date: 2026-06-26 18:13 Asia/Jerusalem
 - Settings endpoint when running: `http://127.0.0.1:4274/api/settings`
 - History coverage endpoint when running: `http://127.0.0.1:4274/api/history/coverage`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.25 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.26 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1428510`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1616491`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
+- Current foreground daemon log: `/tmp/tinytop-v0.1.26.log`
 
 ## Rust Collector Confirmation
 
@@ -158,6 +159,13 @@ Evidence:
 - Added filesystem root card, system-mount toggle, and threshold-colored filesystem/pressure states.
 - Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
 - Added `tests/dashboard-operator-alert.test.ts` and `tests/dashboard-process-filesystem.test.ts`.
+
+### v0.1.26 - Native Dropdown Contrast
+
+- Fixed native select dropdown option contrast for Settings and process density controls across Midnight, Matrix, Aurora, Solar, and Ember themes.
+- Added dashboard regression coverage for readable native dropdown option colors.
+- Updated `docs/reports/2026-06-26-select-dropdown-contrast.md`.
+- Rebuilt and restarted the Rust embedded dashboard daemon; it now reports `rust collector-dashboard-daemon v0.1.26 (embedded dashboard)`.
 
 ### Release Binary Asset Check
 
@@ -398,6 +406,33 @@ Evidence:
   - Desktop viewport `1440x980`: title `TinyTop`, operator strip rendered `Critical` from real root disk pressure, timeline rail `1006x96`, history coverage rendered, process search/root card present, no horizontal overflow.
   - Mobile viewport `390x844`: timeline rail `332x96`, process search/root card present, no horizontal overflow.
   - Screenshots were generated during the Playwright MCP smoke run and then left out of the repo as generated artifacts.
+
+## Verification Evidence From v0.1.26 Native Dropdown Contrast
+
+- Red regression test before CSS fix:
+  - `bun test tests/dashboard-settings.test.ts`: failed because `.settings-group select option` styling was absent.
+- Focused green checks:
+  - `bun test tests/dashboard-settings.test.ts tests/dashboard-assets.test.ts`: `7 pass`, `0 fail`, `65 expect() calls`.
+- Full command-center verification:
+  - `./tinytop check`: Bun tests `74 pass`, `0 fail`, `339 expect() calls`; legacy server and collector checks returned JSON `ok`; Rust fmt check passed; Rust workspace tests passed; browser bundle built.
+- Additional checks:
+  - `git diff --check`: clean.
+  - `diff -qr legacy/dashboard agent/assets/dashboard`: no differences.
+  - `bun audit`: no vulnerabilities found.
+  - `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies with exit code 0.
+- Release build:
+  - `./tinytop rust build`: built `/home/michel/projects/tinytop/agent/target/release/tinytop-agent` with embedded v0.1.26 dashboard assets.
+  - Release binary SHA-256: `4a3d5b010f1ba3d0e7684ded17eeeb218957a73e4f2314e3e908e6ab7d185556`.
+- Live embedded dashboard smoke on `http://127.0.0.1:4274`:
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.26 (embedded dashboard)`.
+  - `/health`: returned `ok`.
+  - `/api/version`: returned Rust `0.1.26` embedded dashboard identity.
+  - `/styles.css`: contains the Ember option selector with `background: #1c1110` and `color: #fff7ed`.
+  - `/api/settings`: returned daemon defaults and enabled dashboard sections.
+- Rendered browser smoke through Playwright MCP:
+  - Opened Settings in Ember and verified settings select options resolve to `rgb(28, 17, 16)` background and `rgb(255, 247, 237)` text.
+  - Verified process density options resolve to the same Ember option colors.
+  - Screenshot saved outside the repo as `tinytop-v0.1.26-settings-ember.png`.
 
 ## Useful Commands
 

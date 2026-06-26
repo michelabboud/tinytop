@@ -39,7 +39,7 @@ Rust response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded"
@@ -52,14 +52,14 @@ Legacy Bun response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "runtime": "legacy-bun",
   "component": "dashboard",
   "dashboard": "legacy",
   "collector": {
     "status": "ok",
     "app": "tinytop",
-    "version": "0.1.25",
+    "version": "0.1.26",
     "runtime": "legacy-bun",
     "component": "collector",
     "dashboard": "none"
@@ -294,7 +294,7 @@ Response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.25",
+  "version": "0.1.26",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded"

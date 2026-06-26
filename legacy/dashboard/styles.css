@@ -1314,6 +1314,36 @@ h1 {
   padding: 0.35rem 0.55rem;
 }
 
+.settings-group select option,
+.process-controls select option {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+body[data-theme="matrix"] .settings-group select option,
+body[data-theme="matrix"] .process-controls select option {
+  background: #07110c;
+  color: #ecfdf5;
+}
+
+body[data-theme="aurora"] .settings-group select option,
+body[data-theme="aurora"] .process-controls select option {
+  background: #10172f;
+  color: #f8fafc;
+}
+
+body[data-theme="solar"] .settings-group select option,
+body[data-theme="solar"] .process-controls select option {
+  background: #ffffff;
+  color: #0f172a;
+}
+
+body[data-theme="ember"] .settings-group select option,
+body[data-theme="ember"] .process-controls select option {
+  background: #1c1110;
+  color: #fff7ed;
+}
+
 table {
   width: 100%;
   min-width: 650px;

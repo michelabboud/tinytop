@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const html = readFileSync("legacy/dashboard/index.html", "utf8");
 const app = readFileSync("legacy/dashboard/app.js", "utf8");
+const styles = readFileSync("legacy/dashboard/styles.css", "utf8");
 
 describe("dashboard settings", () => {
   test("renders settings as a dialog instead of an inline dashboard section", () => {
@@ -63,5 +64,23 @@ describe("dashboard settings", () => {
     expect(app).toContain("function applyEnabledSections");
     expect(app).toContain("function metricStatus");
     expect(app).toContain("enabledSections");
+  });
+
+  test("keeps native select dropdown options readable in every theme", () => {
+    for (const selector of [
+      ".settings-group select option",
+      ".process-controls select option",
+      'body[data-theme="matrix"] .settings-group select option',
+      'body[data-theme="aurora"] .settings-group select option',
+      'body[data-theme="solar"] .settings-group select option',
+      'body[data-theme="ember"] .settings-group select option',
+    ]) {
+      expect(styles).toContain(selector);
+    }
+
+    expect(styles).toContain("background: #1c1110;");
+    expect(styles).toContain("color: #fff7ed;");
+    expect(styles).toContain("background: #ffffff;");
+    expect(styles).toContain("color: #0f172a;");
   });
 });

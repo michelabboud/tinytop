@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.26 - 2026-06-26
+
+- Fixed native select dropdown contrast in the Settings dialog and process density control by assigning explicit readable option foreground/background colors for every dashboard theme.
+- Added regression coverage for themed native dropdown option colors.
+- Kept Rust embedded dashboard assets and legacy Bun dashboard assets byte-identical.
+
 ## 0.1.25 - 2026-06-26
 
 - Added an operator status strip with Healthy, Warning, Critical, and Stale states computed from saved daemon thresholds.
