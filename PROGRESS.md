@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.27`
+- Version: `0.1.28`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, operator status strip plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, feature-gated native macOS/Windows collector modules, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, operator status strip plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -273,6 +273,14 @@
 - [x] Added ADR 0009 and ADR 0010.
 - [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 - [x] Cleaned the stale handoff PID note.
+
+### 0.1.28 - SVG Favicon
+
+- [x] Added `favicon.svg` to both `legacy/dashboard/` and `agent/assets/dashboard/`.
+- [x] Changed the dashboard `<head>` to reference `/favicon.svg` as an SVG favicon.
+- [x] Served `/favicon.svg` from the Rust embedded dashboard path with `image/svg+xml`.
+- [x] Expanded asset parity and Rust embedded serving regression coverage for the favicon.
+- [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 
 ## Known Limitations
 

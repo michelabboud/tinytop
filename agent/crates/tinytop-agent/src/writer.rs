@@ -158,6 +158,7 @@ fn router(state: AppState) -> Router {
         .route("/api/history", get(history))
         .route("/", get(static_file))
         .route("/index.html", get(static_file))
+        .route("/favicon.svg", get(static_file))
         .route("/styles.css", get(static_file))
         .route("/app.js", get(static_file))
         .route("/vendor/echarts.min.js", get(static_file))
@@ -288,6 +289,7 @@ async fn static_file(
 fn embedded_response(path: &Path) -> Result<Response, ServeError> {
     let bytes = match path.to_str() {
         Some("index.html") => include_bytes!("../../../assets/dashboard/index.html").as_slice(),
+        Some("favicon.svg") => include_bytes!("../../../assets/dashboard/favicon.svg").as_slice(),
         Some("styles.css") => include_bytes!("../../../assets/dashboard/styles.css").as_slice(),
         Some("app.js") => include_bytes!("../../../assets/dashboard/app.js").as_slice(),
         Some("vendor/echarts.min.js") => {
@@ -476,6 +478,7 @@ fn changed_setting_keys(
 fn static_relative_path(path: &str) -> Option<&'static Path> {
     match path {
         "/" | "/index.html" => Some(Path::new("index.html")),
+        "/favicon.svg" => Some(Path::new("favicon.svg")),
         "/styles.css" => Some(Path::new("styles.css")),
         "/app.js" => Some(Path::new("app.js")),
         "/vendor/echarts.min.js" => Some(Path::new("vendor/echarts.min.js")),
@@ -488,6 +491,7 @@ fn content_type(path: &Path) -> &'static str {
         Some("html") => "text/html; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("js") => "text/javascript; charset=utf-8",
+        Some("svg") => "image/svg+xml; charset=utf-8",
         _ => "application/octet-stream",
     }
 }

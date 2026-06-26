@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 21:36 Asia/Jerusalem
+Date: 2026-06-26 21:53 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.27`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.27`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.27`
-- The `v0.1.27` checkpoint adds operator alert details, rollup-backed long history points, timeline markers, DB budget settings, settings polish, process detail V2, and feature-gated macOS/Windows collector starter modules while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
+- Current checkpoint version: `0.1.28`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.28`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.28`
+- The `v0.1.28` checkpoint adds a local SVG favicon to the Rust embedded dashboard and legacy Bun dashboard while keeping both asset trees byte-identical.
 
 ## Runtime State
 
@@ -22,12 +22,12 @@ Date: 2026-06-26 21:36 Asia/Jerusalem
 - History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
 - History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.27 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.28 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1783062`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1827235`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.27.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.28.log`
 
 ## Rust Collector Confirmation
 
@@ -182,6 +182,15 @@ Evidence:
 - Added ADR 0009 and ADR 0010, plus `docs/reports/2026-06-26-dashboard-operator-v2-platform-roadmap.md`.
 - Cleaned the stale bottom handoff PID note.
 
+### v0.1.28 - SVG Favicon
+
+- Added `favicon.svg` to `legacy/dashboard/` and `agent/assets/dashboard/`.
+- Replaced the blank favicon link with `/favicon.svg`.
+- Added `/favicon.svg` to the Rust embedded dashboard route and asset allowlist.
+- Served SVG assets as `image/svg+xml; charset=utf-8`.
+- Added regression coverage for dashboard asset parity and embedded Rust serving of the favicon.
+- Added `docs/reports/2026-06-26-svg-favicon.md`.
+
 ### Release Binary Asset Check
 
 - `v0.1.18` release assets were updated with `tinytop-agent-linux-x86_64` and its `.sha256` file.
@@ -192,7 +201,7 @@ Evidence:
 - Current daemon was started with:
 
   ```bash
-  setsid ./tinytop start > /tmp/tinytop-v0.1.27.log 2>&1 &
+  setsid ./tinytop start > /tmp/tinytop-v0.1.28.log 2>&1 &
   ```
 
 - Verified health with:
@@ -482,6 +491,31 @@ Evidence:
 - Rendered browser smoke through Playwright MCP:
   - Page title was `TinyTop`, the operator strip and major dashboard sections were present in the accessibility tree, and the temporary viewport screenshot was removed from the repo after inspection.
 
+## Verification Evidence From v0.1.28 SVG Favicon
+
+- Red checks before implementation:
+  - `bun test tests/dashboard-assets.test.ts`: failed because `favicon.svg` did not exist in either dashboard tree.
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-agent --test serve_contract serve_exposes_embedded_dashboard_without_public_dir`: failed because `/favicon.svg` was not served as SVG.
+- Focused green checks:
+  - `bun test tests/dashboard-assets.test.ts`: `3 pass`, `0 fail`, `16 expect() calls`.
+  - `cargo test --manifest-path agent/Cargo.toml -p tinytop-agent --test serve_contract serve_exposes_embedded_dashboard_without_public_dir`: `1 pass`, `0 fail`.
+  - `diff -qr agent/assets/dashboard legacy/dashboard`: no differences.
+- Full command-center verification:
+  - `./tinytop check`: Bun tests `76 pass`, `0 fail`, `387 expect() calls`; legacy server and collector checks returned JSON `ok`; Rust fmt check passed; Rust workspace tests passed; browser bundle built.
+- Additional checks:
+  - `cargo clippy --manifest-path agent/Cargo.toml --workspace --all-targets -- -D warnings`: clean.
+  - `git diff --check`: clean.
+  - `bun audit`: no vulnerabilities found.
+  - `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies with exit code 0.
+- Release build:
+  - `./tinytop rust build`: built `/home/michel/projects/tinytop/agent/target/release/tinytop-agent` with embedded v0.1.28 dashboard assets.
+  - Release binary SHA-256: `fb7f2fa3443fa27ecb4ce02632166eef5d72e52362445b515042f8060ee5d3a5`.
+- Live embedded dashboard smoke on `http://127.0.0.1:4274`:
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.28 (embedded dashboard)`.
+  - `/api/version`: returned Rust `0.1.28` embedded dashboard identity.
+  - `/favicon.svg`: returned `HTTP/1.1 200 OK` with `content-type: image/svg+xml; charset=utf-8`.
+  - `/favicon.svg`: contains `<title id="title">TinyTop</title>`.
+
 ## Useful Commands
 
 ```bash
@@ -492,6 +526,7 @@ curl -fsS http://127.0.0.1:4274/health
 curl -fsS http://127.0.0.1:4274/api/version
 curl -fsS http://127.0.0.1:4274/api/settings
 curl -fsS http://127.0.0.1:4274/api/history/coverage
+curl -fsSI http://127.0.0.1:4274/favicon.svg
 curl -fsS 'http://127.0.0.1:4274/api/history/points?window=24h&mode=auto&limit=5'
 curl -fsS 'http://127.0.0.1:4274/api/history/markers?since_ms=0&limit=10'
 curl -fsS http://127.0.0.1:4274/api/snapshot
@@ -508,7 +543,7 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 
 ## Notes For Resuming
 
-- TinyTop Rust daemon PID `1783062` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` if you need the default dashboard port free.
+- TinyTop Rust daemon PID `1827235` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` if you need the default dashboard port free.
 - WSL user systemd was previously unavailable in this environment, so foreground Rust daemon mode is the known-working path.
 - The dashboard is loopback-only by design.
 - `legacy/dashboard/vendor/echarts.min.js` and `agent/assets/dashboard/vendor/echarts.min.js` are vendored third-party code and should stay excluded from local UI policy scans.

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">TinyTop</title>
+  <rect width="64" height="64" rx="14" fill="#090a14"/>
+  <path d="M14 39h8l4-16 7 27 6-34 5 23h6" fill="none" stroke="#3dd6c6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M16 17h32" stroke="#ff8a3d" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="49" cy="40" r="5" fill="#ff8a3d"/>
+</svg>

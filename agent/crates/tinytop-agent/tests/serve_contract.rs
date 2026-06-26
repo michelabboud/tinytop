@@ -76,6 +76,11 @@ fn serve_exposes_embedded_dashboard_without_public_dir() {
         .map(|response| assert!(response.contains("status-message")))
         .and_then(|_| http_get(port, "/app.js"))
         .map(|response| assert!(response.contains("requestConfirmation")))
+        .and_then(|_| http_get(port, "/favicon.svg"))
+        .map(|response| {
+            assert!(response.contains("<svg"));
+            assert!(response.contains("TinyTop"));
+        })
         .and_then(|_| http_get(port, "/vendor/echarts.min.js"))
         .map(|response| assert!(response.contains("echarts")));
 

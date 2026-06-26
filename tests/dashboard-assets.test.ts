@@ -6,6 +6,7 @@ const repoRoot = new URL("..", import.meta.url).pathname;
 
 const dashboardFiles = [
   "index.html",
+  "favicon.svg",
   "styles.css",
   "app.js",
   "vendor/echarts.min.js",
@@ -31,5 +32,14 @@ describe("dashboard asset ownership", () => {
     expect(existsSync(join(repoRoot, "public/index.html"))).toBe(false);
     expect(existsSync(join(repoRoot, "public/app.js"))).toBe(false);
     expect(existsSync(join(repoRoot, "public/styles.css"))).toBe(false);
+  });
+
+  test("dashboard declares a served SVG favicon", () => {
+    const html = read("legacy/dashboard/index.html").toString("utf8");
+    const favicon = read("legacy/dashboard/favicon.svg").toString("utf8");
+
+    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg" />');
+    expect(favicon).toContain("<svg");
+    expect(favicon).toContain("TinyTop");
   });
 });

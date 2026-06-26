@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.27`
+- Version: `0.1.28`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
@@ -15,6 +15,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 - History API: raw snapshots remain available through `/api/history`; rollup-backed chart points and timeline markers are available through `/api/history/points` and `/api/history/markers`
 - Runtime identity: `./tinytop status` and `GET /api/version`
 - Settings: browser-local display preferences plus SQLite-backed daemon defaults at `GET`/`PUT /api/settings`
+- Dashboard assets: Rust embedded and legacy Bun dashboard trees stay byte-identical, including the SVG favicon served at `/favicon.svg`
 - Network exposure: loopback only by default
 
 ## Install And Run

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.28 - 2026-06-26
+
+- Added a TinyTop SVG favicon to both the legacy Bun dashboard asset tree and the Rust embedded dashboard asset tree.
+- Replaced the blank favicon link with `/favicon.svg` and served it from the Rust collector/dashboard daemon with `image/svg+xml`.
+- Expanded dashboard asset parity and Rust embedded serving regression coverage for the favicon.
+
 ## 0.1.27 - 2026-06-26
 
 - Added an operator alert detail drawer explaining current state by metric, value, threshold, age, trend, and recent change.
