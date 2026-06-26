@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.23`
+- Version: `0.1.24`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed timestamp-range history browsing, a dialog-based settings surface, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed timestamp-range history browsing, CPU/RAM/swap/load overview gauges, a dialog-based settings surface, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -225,6 +225,15 @@
 - [x] Kept browser-local and SQLite-backed settings storage unchanged.
 - [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 - [x] Added regression coverage preventing the inline settings section from returning.
+
+### 0.1.24 - Load Overview Gauge
+
+- [x] Added Load as the fourth overview gauge next to CPU, RAM, and swap.
+- [x] Normalized Load from 1-minute load divided by CPU core count, capped to 100.
+- [x] Added a Load sparkline using the existing normalized load history series.
+- [x] Kept the raw 1m/5m/15m load stat tile for detailed context.
+- [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
+- [x] Added regression coverage for the Load gauge markup and renderer wiring.
 
 ## Known Limitations
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.24 - 2026-06-26
+
+- Added a Load overview gauge next to CPU, RAM, and swap.
+- Normalized the Load gauge from 1-minute load divided by CPU core count, matching the existing History chart load percentage.
+- Added a Load sparkline to the overview row while keeping the raw 1m/5m/15m load tile for detail context.
+- Kept Rust embedded dashboard assets and legacy Bun dashboard assets byte-identical.
+
 ## 0.1.23 - 2026-06-26
 
 - Moved dashboard Settings out of the main metrics flow into an accessible modal dialog opened from the rail.

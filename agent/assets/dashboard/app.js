@@ -102,6 +102,10 @@ const elements = {
   swapValue: document.querySelector("#swap-value"),
   swapTotal: document.querySelector("#swap-total"),
   swapSpark: document.querySelector("#swap-spark"),
+  loadGauge: document.querySelector("#load-gauge"),
+  loadValue: document.querySelector("#load-value"),
+  loadCapacity: document.querySelector("#load-capacity"),
+  loadSpark: document.querySelector("#load-spark"),
   loadOne: document.querySelector("#load-one"),
   loadContext: document.querySelector("#load-context"),
   threadCount: document.querySelector("#thread-count"),
@@ -248,6 +252,10 @@ function clampPercent(value) {
 
 function formatPercent(value) {
   return `${clampPercent(value).toFixed(value % 1 === 0 ? 0 : 1)}%`;
+}
+
+function loadPercent(snapshot) {
+  return clampPercent((snapshot.load.one / Math.max(1, snapshot.cpu.cores)) * 100);
 }
 
 function formatBytes(bytes) {
@@ -397,6 +405,7 @@ function redrawCharts() {
   drawSparkline(elements.cpuSpark, state.history.cpu, palette.cpu);
   drawSparkline(elements.ramSpark, state.history.ram, palette.ram);
   drawSparkline(elements.swapSpark, state.history.swap, palette.swap);
+  drawSparkline(elements.loadSpark, state.history.load, palette.load);
   drawHistoryChart();
 }
 
@@ -410,7 +419,7 @@ function snapshotMetricValues(snapshot) {
     cpu: snapshot.cpu.usagePercent,
     ram: snapshot.memory.usedPercent,
     swap: snapshot.swap.usedPercent,
-    load: Math.min(100, (snapshot.load.one / Math.max(1, snapshot.cpu.cores)) * 100),
+    load: loadPercent(snapshot),
   };
 }
 
@@ -901,12 +910,11 @@ function selectedSample() {
 function sampleMetricValues(sample) {
   if (!sample) return [];
   const snapshot = sample.snapshot;
-  const loadPercent = Math.min(100, (snapshot.load.one / Math.max(1, snapshot.cpu.cores)) * 100);
   return [
     ["CPU", snapshot.cpu.usagePercent],
     ["RAM", snapshot.memory.usedPercent],
     ["SWAP", snapshot.swap.usedPercent],
-    ["LOAD", loadPercent],
+    ["LOAD", loadPercent(snapshot)],
   ];
 }
 
@@ -1164,6 +1172,7 @@ function renderProcesses(processes) {
 
 function renderSnapshotDetails(snapshot) {
   const rootFs = snapshot.filesystems.find((fs) => fs.mount === "/") ?? snapshot.filesystems[0];
+  const loadPressure = loadPercent(snapshot);
 
   setText(elements.hostName, snapshot.identity.hostname);
   setText(elements.kernelName, snapshot.identity.kernel);
@@ -1184,6 +1193,10 @@ function renderSnapshotDetails(snapshot) {
   setText(elements.swapValue, formatPercent(snapshot.swap.usedPercent));
   setText(elements.swapTotal, formatBytes(snapshot.swap.totalBytes));
   setGauge(elements.swapGauge, snapshot.swap.usedPercent);
+
+  setText(elements.loadValue, formatPercent(loadPressure));
+  setText(elements.loadCapacity, `${snapshot.load.one.toFixed(2)} / ${snapshot.cpu.cores} cores`);
+  setGauge(elements.loadGauge, loadPressure);
 
   setText(elements.loadOne, snapshot.load.one.toFixed(2));
   setText(elements.loadContext, `${snapshot.load.five.toFixed(2)} / ${snapshot.load.fifteen.toFixed(2)} 5m/15m`);

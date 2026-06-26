@@ -30,7 +30,7 @@ The dashboard is organized for quick scanning:
 1. Left rail: runtime summary, collector/dashboard version, navigation, Settings button, live status.
 2. Top identity strip: host, kernel, distro, uptime.
 3. Display controls: theme selection.
-4. Overview gauges: CPU, RAM, and swap.
+4. Overview gauges: CPU, RAM, swap, and load.
 5. History: graph-type nav, range presets, ECharts chart, timeline scrubber.
 6. Metric band: load, thread count, root filesystem, runtime.
 7. Filesystem and pressure panels.
@@ -44,7 +44,7 @@ The rail status shows the polling state:
 - `Paused` - polling paused by the user.
 - `Error` - latest fetch failed; the inline status message explains the failure.
 
-The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.23`. The same identity is available from:
+The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.24`. The same identity is available from:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/api/version
@@ -167,7 +167,7 @@ Not persisted:
 
 - CPU is calculated from `/proc/stat` deltas.
 - RAM and swap come from `/proc/meminfo`.
-- Load percent is derived from 1-minute load divided by CPU core count, capped to 100 for chart display.
+- Load percent is derived from 1-minute load divided by CPU core count, capped to 100 for overview gauge and chart display.
 - Pressure values come from `/proc/pressure/*` when available.
 - In the Rust daemon, filesystem and process data come from Rust crates instead of shelling out.
 - In legacy Bun mode, filesystem capacity comes from `df` and process rows come from `ps`.

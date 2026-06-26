@@ -133,6 +133,20 @@
             </div>
             <canvas id="swap-spark" class="sparkline" width="320" height="72" aria-label="Swap history"></canvas>
           </article>
+
+          <article class="gauge-panel accent-amber">
+            <div class="panel-heading">
+              <span>LOAD</span>
+              <small id="load-capacity">-</small>
+            </div>
+            <div class="gauge" id="load-gauge" role="img" aria-label="Load pressure">
+              <div>
+                <strong id="load-value">-</strong>
+                <span>capacity</span>
+              </div>
+            </div>
+            <canvas id="load-spark" class="sparkline" width="320" height="72" aria-label="Load pressure history"></canvas>
+          </article>
         </section>
 
         <section class="panel history-panel" id="history">

@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 16:05 Asia/Jerusalem
+Date: 2026-06-26 16:56 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.23`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.23`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.23`
-- The `v0.1.23` checkpoint moves dashboard Settings into a modal dialog while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
+- Current checkpoint version: `0.1.24`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.24`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.24`
+- The `v0.1.24` checkpoint adds a Load overview gauge while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
 
 ## Runtime State
 
@@ -19,10 +19,10 @@ Date: 2026-06-26 16:05 Asia/Jerusalem
 - Version endpoint when running: `http://127.0.0.1:4274/api/version`
 - Settings endpoint when running: `http://127.0.0.1:4274/api/settings`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.23 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.24 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1173299`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1283644`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
 
 ## Rust Collector Confirmation
@@ -133,6 +133,15 @@ Evidence:
 - Tuned the settings grid so desktop and mobile dialog controls fit without horizontal overflow.
 - Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
 - Added ADR 0008 and `docs/reports/2026-06-26-settings-dialog.md`.
+
+### v0.1.24 - Load Overview Gauge
+
+- Added Load as the fourth overview gauge next to CPU, RAM, and swap.
+- Normalized Load from 1-minute load divided by CPU core count, capped to 100.
+- Added a Load sparkline using the existing normalized load history series.
+- Kept the raw 1m/5m/15m load stat tile for detail context.
+- Kept `agent/assets/dashboard/` and `legacy/dashboard/` byte-identical.
+- Added `tests/dashboard-overview.test.ts` and `docs/reports/2026-06-26-load-gauge.md`.
 
 ### Release Binary Asset Check
 
@@ -300,6 +309,41 @@ Evidence:
   - Covered desktop dialog open, mobile dialog open, no page errors, and no settings-fieldset horizontal overflow.
   - Screenshots saved outside the repo at `/tmp/tinytop-settings-dialog-desktop.png` and `/tmp/tinytop-settings-dialog-mobile.png`.
 
+## Verification Evidence From v0.1.24 Load Overview Gauge
+
+- Red/green focused tests:
+  - Red: `bun test tests/dashboard-overview.test.ts` failed before implementation because `load-gauge` and renderer bindings did not exist.
+  - Green: `bun test tests/dashboard-overview.test.ts tests/dashboard-assets.test.ts`: `4 pass`, `0 fail`, `25 expect() calls`.
+- Focused regression set:
+  - `bun test tests/dashboard-overview.test.ts tests/dashboard-assets.test.ts tests/dashboard-timeline.test.ts`: `9 pass`, `0 fail`, `44 expect() calls`.
+- `./tinytop check`
+  - Bun tests: `65 pass`, `0 fail`, `251 expect() calls`.
+  - `src/server.ts --check`: `status: ok`.
+  - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB.
+  - Rust fmt check and workspace tests passed.
+  - Browser bundle built `legacy/dashboard/app.js` successfully.
+- `./tinytop rust build`
+  - Built `agent/target/release/tinytop-agent` with the embedded `0.1.24` dashboard assets.
+- `diff -qr agent/assets/dashboard legacy/dashboard`
+  - No differences.
+- `git diff --check`
+  - Clean.
+- `bun audit`
+  - No vulnerabilities found.
+- `cargo audit --file agent/Cargo.lock`
+  - Scanned 196 crate dependencies with no vulnerabilities reported.
+- Live embedded dashboard smoke on `http://127.0.0.1:4274`
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.24 (embedded dashboard)`.
+  - `/api/version`: returned Rust `0.1.24` embedded dashboard identity.
+  - `/`: contains `id="load-gauge"`, `id="load-value"`, `id="load-capacity"`, and `id="load-spark"`.
+  - `/app.js`: contains `loadPercent`, `setGauge(elements.loadGauge, loadPressure)`, and `drawSparkline(elements.loadSpark, state.history.load, ...)`.
+  - `/api/snapshot`: returned live load averages and CPU core count.
+- Rendered browser smoke:
+  - `bun ./node_modules/.bin/playwright test tinytop-load-gauge-smoke.spec.js --reporter=line` from `/tmp/tinytop-pw`
+  - Result: `2 passed`.
+  - Covered desktop Load gauge rendering, mobile Load gauge rendering, four overview cards, bounded gauge percentage, no page errors, and no mobile horizontal overflow.
+  - Screenshots saved outside the repo at `/tmp/tinytop-load-gauge-desktop.png` and `/tmp/tinytop-load-gauge-mobile.png`.
+
 ## Useful Commands
 
 ```bash
@@ -324,7 +368,7 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 
 ## Notes For Resuming
 
-- TinyTop Rust daemon PID `1079395` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` or `kill 1079395` if you need the default dashboard port free.
+- TinyTop Rust daemon PID `1283644` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` or `kill 1283644` if you need the default dashboard port free.
 - WSL user systemd was previously unavailable in this environment, so foreground Rust daemon mode is the known-working path.
 - The dashboard is loopback-only by design.
 - `legacy/dashboard/vendor/echarts.min.js` and `agent/assets/dashboard/vendor/echarts.min.js` are vendored third-party code and should stay excluded from local UI policy scans.

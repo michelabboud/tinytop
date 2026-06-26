@@ -41,7 +41,7 @@ The supported operator entrypoint is the root `./tinytop` Bash command center. I
 7. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
 8. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
 9. `tinytop-store` writes samples and daemon defaults into SQLite through SQLx.
-10. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates gauges, and redraws ECharts views.
+10. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, and redraws ECharts views.
 
 ## Modules
 
