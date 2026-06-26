@@ -29,7 +29,7 @@ describe("TinyTop setup wizard", () => {
     expect(summary).toContain("Collector API: http://127.0.0.1:4276");
     expect(summary).not.toContain("Writer:");
     expect(summary).toContain("SQLite: /home/demo/.local/share/tinytop/history.sqlite");
-    expect(summary).toContain("Verification: bun run check");
+    expect(summary).toContain("Verification: Rust release binary smoke check");
     expect(summary).toContain("Rust collector binary: GitHub release binary");
     expect(summary).not.toContain("Rust agent:");
   });
@@ -64,7 +64,7 @@ describe("TinyTop setup wizard", () => {
     }
   });
 
-  test("noninteractive setup installs dependencies and runs checks when requested", async () => {
+  test("noninteractive Rust setup installs dependencies and runs only Rust verification when requested", async () => {
     const repo = tempRepo(false);
     const commands: WizardCommand[] = [];
 
@@ -86,7 +86,95 @@ describe("TinyTop setup wizard", () => {
       expect(result.exitCode).toBe(0);
       expect(commands).toEqual([
         ["bun", "install"],
-        ["bun", "run", "check"],
+        ["./tinytop", "rust", "collect"],
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("noninteractive Bun setup runs Bun verification without Rust tests", async () => {
+    const repo = tempRepo(true);
+    const commands: WizardCommand[] = [];
+
+    try {
+      const result = await runWizard({
+        cwd: repo,
+        args: ["--non-interactive", "--collector", "bun"],
+        stdout: () => {},
+        stderr: () => {},
+        runCommand: async (command) => {
+          commands.push(command);
+          return { ok: true, code: 0 };
+        },
+        env: {
+          HOME: "/home/demo",
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(commands).toEqual([
+        ["bun", "run", "check:bun"],
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("systemd Rust compile setup runs Rust checks without Bun tests", async () => {
+    const repo = tempRepo(true);
+    const commands: WizardCommand[] = [];
+
+    try {
+      const result = await runWizard({
+        cwd: repo,
+        args: ["--non-interactive", "--mode", "systemd", "--collector", "rust", "--rust-binary-source", "compile"],
+        stdout: () => {},
+        stderr: () => {},
+        runCommand: async (command) => {
+          commands.push(command);
+          return { ok: true, code: 0 };
+        },
+        env: {
+          HOME: "/home/demo",
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(commands).toEqual([
+        ["bun", "run", "check:rust"],
+        ["./tinytop", "rust", "build"],
+        ["./tinytop", "systemd", "install", "--rust"],
+      ]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  test("systemd Rust release setup verifies the release binary after installing it", async () => {
+    const repo = tempRepo(true);
+    const commands: WizardCommand[] = [];
+
+    try {
+      const result = await runWizard({
+        cwd: repo,
+        args: ["--non-interactive", "--mode", "systemd", "--collector", "rust", "--rust-binary-source", "release"],
+        stdout: () => {},
+        stderr: () => {},
+        runCommand: async (command) => {
+          commands.push(command);
+          return { ok: true, code: 0 };
+        },
+        env: {
+          HOME: "/home/demo",
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(commands).toEqual([
+        ["./tinytop", "rust", "install-binary"],
+        ["./tinytop", "rust", "collect"],
+        ["./tinytop", "systemd", "install", "--rust"],
       ]);
     } finally {
       rmSync(repo, { recursive: true, force: true });

@@ -30,6 +30,8 @@ If a release binary is not available for your platform, compile locally:
 
 `./tinytop setup` is still available for source/development installs after Bun is installed. It launches the Bun setup wizard with `bun run setup`, asks whether to install the Rust collector or the legacy Bun collector, and asks Rust users whether to use a GitHub release binary or a local Cargo compile.
 
+Wizard verification follows the selected collector. Rust release-binary installs run a Rust binary smoke check, Rust compile installs run Rust fmt/tests, and legacy Bun installs run only Bun dashboard/collector checks.
+
 ## Requirements
 
 - Linux or WSL2
@@ -195,7 +197,14 @@ Run the automated checks:
 git diff --check
 ```
 
-If Rust is installed, also run the Rust collector checks:
+Runtime-specific checks are also available:
+
+```bash
+bun run check:bun
+bun run check:rust
+```
+
+If Rust is installed, direct Rust collector checks are:
 
 ```bash
 cargo test --manifest-path agent/Cargo.toml --workspace

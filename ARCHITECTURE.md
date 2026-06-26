@@ -51,7 +51,7 @@ It works before Bun is installed for help and bootstrap, then hands off to
 | `legacy/bun-collector.ts` | Legacy Bun collector HTTP API, scheduled collection loop, SQLite ownership |
 | `src/server.ts` | Legacy Bun HTTP server, static assets, ECharts route, collector proxy |
 | `src/ops.ts` | SQLite maintenance helpers for stats, integrity checks, and vacuum |
-| `src/wizard/index.ts` | Bun setup wizard launched by `./tinytop setup` |
+| `src/wizard/index.ts` | Bun setup wizard launched by `./tinytop setup`, including runtime-specific Rust versus Bun verification |
 | `tinytop` | Bash command center for setup, Bun bootstrap, systemd services, logs, status, and DB operations |
 | `legacy/dashboard/` | Legacy Bun dashboard asset tree |
 | `agent/assets/dashboard/` | Rust-embedded dashboard asset tree; kept byte-identical to `legacy/dashboard/` |

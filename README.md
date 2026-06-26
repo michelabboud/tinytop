@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.19`
+- Version: `0.1.20`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
@@ -42,7 +42,7 @@ If a release binary is not available for your platform, compile locally:
 ./tinytop systemd install --rust
 ```
 
-`./tinytop setup` is the Telecode-style Bun wizard for source/development installs. It asks whether to install the Rust collector/dashboard daemon or the legacy Bun collector path. For Rust installs, it also asks whether to use a GitHub release binary or a local Cargo compile.
+`./tinytop setup` is the Telecode-style Bun wizard for source/development installs. It asks whether to install the Rust collector/dashboard daemon or the legacy Bun collector path. For Rust installs, it also asks whether to use a GitHub release binary or a local Cargo compile. Verification inside the wizard is runtime-specific: Rust selections do not run Bun tests, and legacy Bun selections do not run Rust tests.
 
 For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day usage, see [GUIDE.md](GUIDE.md).
 
@@ -171,6 +171,8 @@ For persistent background collection, install user-space systemd services:
 bun run dev
 bun run collector
 bun test
+bun run check:bun
+bun run check:rust
 bun run check
 bun run rust:test
 bun run rust:serve
@@ -213,6 +215,7 @@ Implementation notes:
 | [docs/reports/2026-06-25-webui-confirmation-dialog-verification.md](docs/reports/2026-06-25-webui-confirmation-dialog-verification.md) | Web UI confirmation-dialog policy and rendered verification |
 | [docs/reports/2026-06-25-documentation-sweep.md](docs/reports/2026-06-25-documentation-sweep.md) | Documentation sweep for the embedded Rust collector/dashboard asset move |
 | [docs/reports/2026-06-26-history-retention-docs.md](docs/reports/2026-06-26-history-retention-docs.md) | Documentation sweep clarifying current SQLite retention and UI history-window behavior |
+| [docs/reports/2026-06-26-runtime-specific-verification.md](docs/reports/2026-06-26-runtime-specific-verification.md) | Verification split for Rust versus legacy Bun setup choices |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
@@ -255,6 +258,8 @@ The current SQLite implementation stores indexed metric columns plus the complet
 
 ```bash
 ./tinytop check
+bun run check:bun
+bun run check:rust
 ./tinytop help
 ./tinytop doctor
 git diff --check

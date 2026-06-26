@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.19`
+- Version: `0.1.20`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -183,6 +183,14 @@
 - [x] Clarified that `/api/history` query windows and the dashboard's 120-sample UI buffer are read/rendering limits, not database retention.
 - [x] Updated README, guide, install, API, operations, architecture, SQLite history architecture, changelog, progress, and handoff docs.
 - [x] Added a documentation report for the retention wording sweep.
+
+### 0.1.20 - Runtime-Specific Setup Verification
+
+- [x] Split package checks into `check:bun`, `check:rust`, and full `check`.
+- [x] Updated the setup wizard so Rust selections do not run Bun tests.
+- [x] Updated the setup wizard so legacy Bun selections do not run Rust tests.
+- [x] Verified Rust release-binary systemd setup installs the binary before running the Rust smoke check.
+- [x] Added regression coverage for Rust release, Rust compile, and legacy Bun verification command selection.
 
 ## Known Limitations
 

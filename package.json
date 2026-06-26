@@ -1,6 +1,6 @@
 {
   "name": "tinytop",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -14,7 +14,9 @@
     "writer": "bun run collector",
     "writer:check": "bun run collector:check",
     "test": "bun test",
-    "check": "bun test && bun run src/server.ts --check && bun run legacy/bun-collector.ts --check && cargo test --manifest-path agent/Cargo.toml --workspace",
+    "check:bun": "bun test && bun run src/server.ts --check && bun run legacy/bun-collector.ts --check",
+    "check:rust": "cargo fmt --manifest-path agent/Cargo.toml --all -- --check && cargo test --manifest-path agent/Cargo.toml --workspace",
+    "check": "bun run check:bun && bun run check:rust",
     "rust:build": "cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent",
     "rust:test": "cargo test --manifest-path agent/Cargo.toml --workspace",
     "rust:collect": "cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- collect --json",

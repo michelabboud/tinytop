@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.20 - 2026-06-26
+
+- Split verification scripts into runtime-specific `check:bun` and `check:rust` commands while keeping `bun run check` as the full maintainer suite.
+- Updated the setup wizard to run only the selected collector's verification path: Rust choices avoid Bun tests, and legacy Bun choices avoid Rust tests.
+- Made Rust release-binary systemd setup install the release binary before running the Rust smoke check.
+- Added regression coverage for Rust release, Rust compile, and legacy Bun setup verification command selection.
+- Updated docs and handoff notes for runtime-specific setup verification.
+
 ## 0.1.19 - 2026-06-26
 
 - Clarified current history retention behavior across the README, user guide, install guide, API guide, operations guide, architecture docs, progress notes, and handoff.

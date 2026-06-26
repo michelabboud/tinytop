@@ -46,6 +46,11 @@ type ParsedArgs = {
   rustBinarySource: RustBinarySource;
 };
 
+type VerificationPlan = {
+  label: string;
+  command: WizardCommand;
+};
+
 const MODES = new Set<WizardMode>(["foreground", "split", "systemd", "skip"]);
 const RUST_BINARY_SOURCES = new Set<RustBinarySource>(["release", "compile"]);
 const COLLECTOR_RUNTIMES = new Set<CollectorRuntime>(["rust", "bun"]);
@@ -106,7 +111,29 @@ function parseArgs(args: string[]): ParsedArgs {
   return parsed;
 }
 
+function verificationPlanFor(summary: Pick<SetupSummary, "collectorRuntime" | "rustBinarySource">): VerificationPlan {
+  if (summary.collectorRuntime === "bun") {
+    return {
+      label: "Bun collector checks",
+      command: ["bun", "run", "check:bun"],
+    };
+  }
+
+  if (summary.rustBinarySource === "compile") {
+    return {
+      label: "Rust collector checks",
+      command: ["bun", "run", "check:rust"],
+    };
+  }
+
+  return {
+    label: "Rust release binary smoke check",
+    command: ["./tinytop", "rust", "collect"],
+  };
+}
+
 export function buildSetupSummary(summary: SetupSummary): string {
+  const verification = verificationPlanFor(summary).label;
   const lines = [
     "TinyTop setup wizard",
     `Runtime mode: ${summary.mode}`,
@@ -114,7 +141,7 @@ export function buildSetupSummary(summary: SetupSummary): string {
     `Dashboard: ${summary.dashboardUrl}`,
     `Collector API: ${summary.collectorUrl}`,
     `SQLite: ${summary.dbPath}`,
-    `Verification: ${summary.runChecks ? "bun run check" : "skipped"}`,
+    `Verification: ${summary.runChecks ? verification : "skipped"}`,
     `Start services: ${summary.startServices ? "yes" : "no"}`,
   ];
 
@@ -154,7 +181,7 @@ async function promptForInteractiveArgs(parsed: ParsedArgs, out: (line: string) 
       parsed.mode = modeAnswer as WizardMode;
     }
 
-    const checksAnswer = (await rl.question(`Run verification with bun run check? [Y/n]: `)).trim().toLowerCase();
+    const checksAnswer = (await rl.question(`Run runtime-specific verification? [Y/n]: `)).trim().toLowerCase();
     parsed.runChecks = checksAnswer === "" || checksAnswer === "y" || checksAnswer === "yes";
 
     if (parsed.mode === "systemd" && parsed.collectorRuntime === "rust") {
@@ -243,8 +270,19 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardResu
     out("Dependencies: already installed.");
   }
 
+  if (parsed.mode === "systemd") {
+    if (parsed.collectorRuntime === "rust") {
+      if (parsed.rustBinarySource === "release") {
+        if (!(await runStep("Rust collector", ["./tinytop", "rust", "install-binary"], runCommand, cwd, env, out, err))) {
+          return { exitCode: 1 };
+        }
+      }
+    }
+  }
+
   if (parsed.runChecks) {
-    if (!(await runStep("Verification", ["bun", "run", "check"], runCommand, cwd, env, out, err))) {
+    const verification = verificationPlanFor(parsed);
+    if (!(await runStep("Verification", verification.command, runCommand, cwd, env, out, err))) {
       return { exitCode: 1 };
     }
   } else {
@@ -253,10 +291,10 @@ export async function runWizard(options: WizardOptions = {}): Promise<WizardResu
 
   if (parsed.mode === "systemd") {
     if (parsed.collectorRuntime === "rust") {
-      const rustSetupCommand: WizardCommand =
-        parsed.rustBinarySource === "release" ? ["./tinytop", "rust", "install-binary"] : ["./tinytop", "rust", "build"];
-      if (!(await runStep("Rust collector", rustSetupCommand, runCommand, cwd, env, out, err))) {
-        return { exitCode: 1 };
+      if (parsed.rustBinarySource === "compile") {
+        if (!(await runStep("Rust collector", ["./tinytop", "rust", "build"], runCommand, cwd, env, out, err))) {
+          return { exitCode: 1 };
+        }
       }
       if (!(await runStep("systemd install", ["./tinytop", "systemd", "install", "--rust"], runCommand, cwd, env, out, err))) {
         return { exitCode: 1 };

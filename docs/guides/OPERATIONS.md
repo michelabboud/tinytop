@@ -77,12 +77,16 @@ Stop systemd services when installed:
 git diff --check
 ```
 
-Expected `bun run check` behavior:
+Expected `./tinytop check` behavior:
 
-1. Runs all Bun tests.
-2. Runs `src/server.ts --check`.
-3. Runs `legacy/bun-collector.ts --check`, including an in-memory SQLite write/read.
-4. Runs the Rust workspace tests through Cargo.
+1. Runs `bun run check`, which runs `bun run check:bun` and `bun run check:rust`.
+2. Builds the browser dashboard bundle.
+
+Runtime-specific setup verification:
+
+- `bun run check:bun` runs Bun tests plus `src/server.ts --check` and `legacy/bun-collector.ts --check`.
+- `bun run check:rust` runs Rust formatting and workspace tests through Cargo.
+- Rust release-binary setup uses `./tinytop rust collect` as a binary smoke check after installing the release asset.
 
 ## SQLite Path
 

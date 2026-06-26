@@ -1,17 +1,17 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 08:40 Asia/Jerusalem
+Date: 2026-06-26 08:55 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Latest shipped checkpoint before v0.1.19 work: `417860e701d636a99532cd5a515d317c4b7ecf84`
-- Latest shipped tag before v0.1.19 work: `v0.1.18`
-- Current checkpoint version: `0.1.19`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.19`
-- Working tree before the v0.1.19 documentation sweep: clean and aligned with `origin/main`
+- Latest shipped checkpoint before v0.1.20 work: `4c897c3e3c5dc54b0caaff2081035fd1eb934251`
+- Latest shipped tag before v0.1.20 work: `v0.1.19`
+- Current checkpoint version: `0.1.20`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.20`
+- Working tree before the v0.1.20 setup verification change: clean and aligned with `origin/main`
 
 ## Runtime State
 
@@ -83,6 +83,15 @@ Evidence:
 - Documented that `/api/history` query windows and the dashboard's 120-sample buffer are read/rendering limits, not database retention.
 - Added `docs/reports/2026-06-26-history-retention-docs.md`.
 
+### v0.1.20 - Runtime-Specific Setup Verification
+
+- Added `bun run check:bun` for Bun dashboard/legacy collector checks.
+- Added `bun run check:rust` for Rust fmt/workspace tests.
+- Kept `bun run check` and `./tinytop check` as full maintainer verification.
+- Updated `./tinytop setup` so Rust selections do not run Bun tests and legacy Bun selections do not run Rust tests.
+- Rust release-binary systemd setup now installs the binary before running `./tinytop rust collect` as the smoke check.
+- Added `docs/reports/2026-06-26-runtime-specific-verification.md`.
+
 ### Release Binary Asset Check
 
 - `v0.1.18` release assets were updated with `tinytop-agent-linux-x86_64` and its `.sha256` file.
@@ -138,6 +147,19 @@ Evidence:
   - `src/server.ts --check`: `status: ok`
   - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
   - Rust workspace tests: passed
+  - Browser bundle: built `legacy/dashboard/app.js` successfully
+- `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
+- `git diff --check`: clean
+
+## Verification Evidence From v0.1.20 Runtime-Specific Setup Verification
+
+- `bun test tests/wizard.test.ts`
+  - Wizard tests: `9 pass`, `0 fail`
+- `./tinytop check`
+  - `bun run check:bun`: `46 pass`, `0 fail`
+  - `src/server.ts --check`: `status: ok`
+  - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
+  - `bun run check:rust`: Rust fmt check and workspace tests passed
   - Browser bundle: built `legacy/dashboard/app.js` successfully
 - `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
 - `git diff --check`: clean
