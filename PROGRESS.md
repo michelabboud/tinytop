@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.18`
-- Date: 2026-06-25
-- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release, Bun development/fallback runtime, and a current handoff restart point.
+- Version: `0.1.19`
+- Date: 2026-06-26
+- Status: Local dashboard with SQLite-backed recent history, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, documented SQLite retention limits, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -177,12 +177,19 @@
 - [x] Marked the original Bun writer ADR as superseded in the ADR index while preserving the historical ADR file.
 - [x] Added a documentation sweep report for the embedded dashboard asset transition.
 
+### 0.1.19 - History Retention Documentation
+
+- [x] Clarified that SQLite raw samples are retained indefinitely until manual archive/reset.
+- [x] Clarified that `/api/history` query windows and the dashboard's 120-sample UI buffer are read/rendering limits, not database retention.
+- [x] Updated README, guide, install, API, operations, architecture, SQLite history architecture, changelog, progress, and handoff docs.
+- [x] Added a documentation report for the retention wording sweep.
+
 ## Known Limitations
 
-- SQLite retention is not implemented yet. The collector stores recent samples indefinitely until the database is manually archived or reset.
+- SQLite retention is not implemented yet. The collector stores raw samples indefinitely until the database is manually archived or reset.
 - Rollup tables for longer time ranges are planned but not implemented.
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
-- The UI hydrates a 120-sample rolling window, not arbitrary long-range history browsing.
+- The API can query timestamp windows, but the UI hydrates and renders a recent 120-sample rolling window, not arbitrary long-range history browsing.
 - The app is designed for loopback/local use, not remote multi-user deployment.
 - `./tinytop start` still runs the Bun development runtime; persistent installs default to the Rust daemon.
 - Native Windows and macOS collectors are planned but not implemented yet.

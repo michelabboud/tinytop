@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.19 - 2026-06-26
+
+- Clarified current history retention behavior across the README, user guide, install guide, API guide, operations guide, architecture docs, progress notes, and handoff.
+- Documented that SQLite raw samples are retained until manual archive/reset because automatic retention is not implemented yet.
+- Documented that `/api/history` windows and the dashboard's 120-sample rolling buffer are read/rendering limits, not database retention limits.
+- Added a documentation report for the history-retention wording sweep.
+
 ## 0.1.18 - 2026-06-25
 
 - Refreshed the current documentation and guides after the embedded Rust collector/dashboard asset move.

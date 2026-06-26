@@ -72,6 +72,8 @@ Live History renders CPU, RAM, swap, and load-derived percent values from the ro
 
 The browser hydrates recent samples from SQLite on page load, so refreshing the page should not reset the chart to a single sample.
 
+The default page-load request asks for up to 120 samples from the last 180 seconds. That is the visible startup window, not the database retention period.
+
 The sample count badge shows:
 
 - `N samples` when all samples are visible.
@@ -124,6 +126,12 @@ Persisted in SQLite:
 - timestamp
 - graph metric columns
 - full snapshot JSON for UI hydration
+
+SQLite retention:
+
+- Automatic retention is not implemented yet.
+- Raw samples remain in the database until you archive or reset local history.
+- `/api/history` query windows limit what is returned to the browser; they do not delete older rows.
 
 Persisted in browser `localStorage`:
 

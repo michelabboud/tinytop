@@ -227,7 +227,9 @@ Common causes:
 
 ## Data Growth
 
-Retention is not implemented yet. Monitor database size:
+Automatic retention is not implemented yet. The Rust daemon and legacy Bun collector keep raw SQLite rows until you manually archive or reset the database. The dashboard's 120-sample rolling buffer controls browser rendering only and does not prune SQLite.
+
+Monitor database size:
 
 ```bash
 ./tinytop db stats

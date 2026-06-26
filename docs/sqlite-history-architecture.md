@@ -12,6 +12,7 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
 - Current history shape: one `metric_samples` table with indexed metric columns and full snapshot JSON
+- Current retention: no automatic pruning; rows remain until manual archive/reset
 
 ## Process Boundary
 
@@ -167,6 +168,13 @@ This is why browser refresh now refills Live History instead of starting from on
 ## Retention
 
 Retention is not implemented yet. The current database grows until manually archived or reset.
+
+Current behavior:
+
+- Every successful scheduled or manual collection writes one raw row into `metric_samples`.
+- `/api/history` and `/history` select bounded windows for callers, but they never delete older rows.
+- The dashboard hydrates a recent 120-sample window and then keeps a browser-local 120-sample rolling buffer; that is a rendering limit, not a storage limit.
+- `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 
 Recommended future retention:
 

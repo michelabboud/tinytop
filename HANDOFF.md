@@ -1,26 +1,26 @@
 # TinyTop Handoff
 
-Date: 2026-06-25 23:05 Asia/Jerusalem
+Date: 2026-06-26 08:40 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Latest shipped checkpoint before this work: `44be5f22afac89058a11abaa171d30f1bc3a6764`
-- Latest shipped tag before this work: `v0.1.17`
-- Current checkpoint version: `0.1.18`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.18`
-- Working tree before the v0.1.18 documentation sweep: clean and aligned with `origin/main`
+- Latest shipped checkpoint before v0.1.19 work: `417860e701d636a99532cd5a515d317c4b7ecf84`
+- Latest shipped tag before v0.1.19 work: `v0.1.18`
+- Current checkpoint version: `0.1.19`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.19`
+- Working tree before the v0.1.19 documentation sweep: clean and aligned with `origin/main`
 
 ## Runtime State
 
 - Dashboard URL when running: `http://127.0.0.1:4274`
 - Health endpoint when running: `http://127.0.0.1:4274/health`
-- Health status at handoff refresh time: not running
-- Dashboard port `127.0.0.1:4274`: free
+- Health status at handoff refresh time: running, `ok`
+- Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: none found on the default ports
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `331250`
 
 ## Rust Collector Confirmation
 
@@ -76,6 +76,18 @@ Evidence:
 - Added `docs/reports/2026-06-25-documentation-sweep.md`.
 - Updated the ADR index to show ADR 0001 as superseded by the Rust single-daemon runtime decision, without rewriting the historical ADR.
 
+### v0.1.19 - History Retention Documentation
+
+- Clarified that SQLite raw history retention is not implemented yet.
+- Documented that raw rows stay in SQLite until manual archive/reset.
+- Documented that `/api/history` query windows and the dashboard's 120-sample buffer are read/rendering limits, not database retention.
+- Added `docs/reports/2026-06-26-history-retention-docs.md`.
+
+### Release Binary Asset Check
+
+- `v0.1.18` release assets were updated with `tinytop-agent-linux-x86_64` and its `.sha256` file.
+- A temporary-HOME install test confirmed `./tinytop rust install-binary` downloaded and ran the release binary.
+
 ### Daemon Start
 
 - Started the Rust daemon with:
@@ -119,6 +131,17 @@ Evidence:
 - `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
 - `git diff --check`: clean
 
+## Verification Evidence From v0.1.19 History Retention Documentation
+
+- `./tinytop check`
+  - Bun tests: `43 pass`, `0 fail`
+  - `src/server.ts --check`: `status: ok`
+  - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
+  - Rust workspace tests: passed
+  - Browser bundle: built `legacy/dashboard/app.js` successfully
+- `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
+- `git diff --check`: clean
+
 ## Useful Commands
 
 ```bash
@@ -141,7 +164,7 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 
 ## Notes For Resuming
 
-- No TinyTop foreground daemon is running at this handoff refresh. Start one with `./tinytop rust serve` or use `./tinytop systemd start` after installing the service.
+- TinyTop Rust daemon PID `331250` is running at this handoff refresh. Stop it with `kill 331250` if you need the default dashboard port free.
 - WSL user systemd was previously unavailable in this environment, so foreground Rust daemon mode is the known-working path.
 - The dashboard is loopback-only by design.
 - `legacy/dashboard/vendor/echarts.min.js` and `agent/assets/dashboard/vendor/echarts.min.js` are vendored third-party code and should stay excluded from local UI policy scans.

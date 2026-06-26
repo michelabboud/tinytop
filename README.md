@@ -6,11 +6,12 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.18`
+- Version: `0.1.19`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
+- SQLite retention: stored until manual archive/reset; automatic retention is not implemented yet
 - Network exposure: loopback only by default
 
 ## Install And Run
@@ -211,6 +212,7 @@ Implementation notes:
 | [docs/reports/2026-06-25-rust-daemon-dependency-vetting.md](docs/reports/2026-06-25-rust-daemon-dependency-vetting.md) | Rust daemon and vendored dashboard asset dependency vetting |
 | [docs/reports/2026-06-25-webui-confirmation-dialog-verification.md](docs/reports/2026-06-25-webui-confirmation-dialog-verification.md) | Web UI confirmation-dialog policy and rendered verification |
 | [docs/reports/2026-06-25-documentation-sweep.md](docs/reports/2026-06-25-documentation-sweep.md) | Documentation sweep for the embedded Rust collector/dashboard asset move |
+| [docs/reports/2026-06-26-history-retention-docs.md](docs/reports/2026-06-26-history-retention-docs.md) | Documentation sweep clarifying current SQLite retention and UI history-window behavior |
 | [docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md](docs/superpowers/specs/2026-06-24-tinytop-install-wizard-design.md) | Install wizard and systemd command-center design record |
 | [docs/adr/README.md](docs/adr/README.md) | Architecture decision records |
 
@@ -241,7 +243,11 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 ## Persistence
 
-Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API. The browser hydrates up to 120 recent samples on startup, then continues polling live samples.
+Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API.
+
+TinyTop currently has no automatic SQLite retention job. Raw samples stay in `metric_samples` until you manually archive or reset the database with the command-center DB tools.
+
+The dashboard does not render the whole database. On page load it requests a recent query window, currently up to 120 samples over 180 seconds, then keeps a browser-local rolling 120-sample window while polling live data. API callers can request other timestamp windows with `/api/history`, but those query windows do not delete older SQLite rows.
 
 The current SQLite implementation stores indexed metric columns plus the complete snapshot JSON. Retention and rollup tables are planned but not implemented yet, so the database grows until manually archived or reset.
 

@@ -90,13 +90,13 @@ The example above is shortened. Real responses include full CPU times, filesyste
 
 ### GET /api/history
 
-Returns persisted recent history from the Rust daemon or legacy Bun collector process.
+Returns persisted recent history from the Rust daemon or legacy Bun collector process. The query parameters bound the read result only; they do not prune SQLite history.
 
 Query parameters:
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `limit` | integer | `120` | Maximum number of samples |
+| `limit` | integer | `120` | Maximum number of samples returned by this request; clamped to `1..10000` |
 | `window_seconds` | integer | collector default `300` | Relative time window when `since_ms` is absent |
 | `since_ms` | integer | derived from `window_seconds` | Inclusive Unix epoch millisecond lower bound |
 | `until_ms` | integer | none | Inclusive Unix epoch millisecond upper bound |
@@ -123,6 +123,8 @@ Response:
 ```
 
 Samples are returned oldest first.
+
+Retention note: TinyTop currently keeps raw SQLite rows until manual archive/reset. The dashboard startup request uses `/api/history?limit=120&window_seconds=180`, while the API default window is 300 seconds when no explicit window is supplied.
 
 ### GET /vendor/echarts.min.js
 

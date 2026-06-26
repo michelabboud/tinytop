@@ -180,6 +180,12 @@ history.sqlite-wal
 history.sqlite-shm
 ```
 
+History retention:
+
+- Automatic SQLite retention is not implemented yet.
+- The collector stores raw samples until you manually archive or reset the database.
+- The dashboard's recent history window limits what it reads and renders; it does not prune SQLite.
+
 ## Verify Installation
 
 Run the automated checks:
@@ -219,7 +225,7 @@ ok
 5. Start `./tinytop systemd start` or `./tinytop rust serve`.
 6. Open the dashboard and confirm Live History hydrates after a browser refresh.
 
-The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. There is no explicit migration table yet.
+The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. There is no explicit migration table or automatic retention job yet.
 
 ## Reset Local History
 

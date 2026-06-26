@@ -34,7 +34,7 @@ It works before Bun is installed for help and bootstrap, then hands off to
 
 1. The browser loads embedded Rust dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, and `app.js`.
 2. `app.js` reads browser-local theme and graph-mode settings from `localStorage`.
-3. The frontend requests `/api/history?limit=120&window_seconds=180` to hydrate Live History from SQLite.
+3. The frontend requests `/api/history?limit=120&window_seconds=180` to hydrate Live History from a bounded SQLite query window.
 4. The frontend polls `/api/snapshot` every 1500 ms.
 5. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
 6. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
@@ -156,7 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
   ON metric_samples (runtime_kind, captured_at_ms DESC);
 ```
 
-The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. This supports refresh-safe chart hydration and selected-sample detail rendering. Normalized filesystem/process/pressure child tables and rollups are planned for future longer-range analytics.
+The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. This supports refresh-safe chart hydration and selected-sample detail rendering. There is no automatic retention or delete job yet, so raw rows remain in `metric_samples` until the user archives or resets the database. Normalized filesystem/process/pressure child tables, raw retention, and rollups are planned for future longer-range analytics.
 
 ## Frontend State
 
@@ -173,7 +173,7 @@ In-memory session state:
 - pause/loading flags
 - active confirmation dialog resolver and return-focus target
 
-The browser keeps a rolling 120-sample window. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width. When the visible capacity is reached, the window rolls left: new samples appear on the right and older visible samples disappear on the left.
+The browser keeps a rolling 120-sample window after hydrating up to 120 samples from the recent API window. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width. When the visible capacity is reached, the window rolls left: new samples appear on the right and older visible samples disappear on the left.
 
 Web UI interaction policy:
 
