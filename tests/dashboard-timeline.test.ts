@@ -11,6 +11,8 @@ describe("dashboard timestamp timeline", () => {
     expect(html).toContain('data-history-window="1h"');
     expect(html).toContain('data-history-window="6h"');
     expect(html).toContain('data-history-window="24h"');
+    expect(html).toContain('data-history-window="7d"');
+    expect(html).toContain('data-history-window="30d"');
   });
 
   test("tracks selection by timestamp instead of sample index", () => {
@@ -40,17 +42,27 @@ describe("dashboard timestamp timeline", () => {
     expect(html).toContain('id="history-oldest"');
     expect(html).toContain('id="history-newest"');
     expect(html).toContain('id="history-db-size"');
+    expect(html).toContain('id="history-db-budget"');
+    expect(html).toContain('id="history-budget-status"');
+    expect(html).toContain('id="history-marker-list"');
     expect(html).not.toContain('id="history-scrubber"');
   });
 
-  test("draws timeline rail, fetches coverage, and persists visible series locally", () => {
+  test("draws timeline rail, fetches rollup points, markers, coverage, and persists visible series locally", () => {
     expect(app).toContain("timelineRail: document.querySelector(\"#timeline-rail\")");
+    expect(app).toContain("historyMarkerList: document.querySelector(\"#history-marker-list\")");
     expect(app).toContain("function drawTimelineRail");
+    expect(app).toContain("function drawTimelineMarkers");
     expect(app).toContain("function timelineTimestampFromPointer");
     expect(app).toContain("function handleTimelinePointer");
     expect(app).toContain("function fetchHistoryCoverage");
+    expect(app).toContain("function fetchHistoryPoints");
+    expect(app).toContain("function fetchHistoryMarkers");
     expect(app).toContain("function renderHistoryCoverage");
+    expect(app).toContain("function renderHistoryMarkers");
     expect(app).toContain('fetch("/api/history/coverage"');
+    expect(app).toContain('fetch(`/api/history/points?${params}`');
+    expect(app).toContain('fetch(`/api/history/markers?${params}`');
     expect(app).toContain("tinytop.visibleSeries");
   });
 

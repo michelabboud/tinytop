@@ -4,7 +4,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tinytop_collectors::linux::LinuxCollector;
+use tinytop_collectors::NativeCollector;
 use tinytop_store::SqliteHistoryStore;
 
 mod writer;
@@ -106,7 +106,7 @@ async fn collect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut collector = LinuxCollector::default();
+    let mut collector = NativeCollector::default();
     let snapshot = collector.collect()?;
 
     if let Some(database_url) = sqlite_url {

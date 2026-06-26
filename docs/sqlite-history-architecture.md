@@ -11,7 +11,7 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current history shape: `metric_samples` with indexed metric columns and full snapshot JSON, plus Rust-maintained one-minute rollups in `metric_rollups_1m`
+- Current history shape: `metric_samples` with indexed metric columns and full snapshot JSON, Rust-maintained one-minute rollups in `metric_rollups_1m`, and daemon timeline events in `app_events`
 - Current retention: Rust daemon prunes raw rows by `retentionHours` and rollups by `rollupRetentionDays`; legacy Bun split mode remains manual archive/reset
 
 ## Process Boundary
@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS metric_rollups_1m (
 
 CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
   ON metric_rollups_1m (newest_captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS app_events (
+  event_id INTEGER PRIMARY KEY,
+  occurred_at_ms INTEGER NOT NULL,
+  marker_type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
+  ON app_events (occurred_at_ms DESC, marker_type);
 ```
 
 ## Why Store Snapshot JSON
@@ -186,6 +197,22 @@ The browser then:
 
 This is why browser refresh now refills History instead of starting from one sample.
 
+Long range chart points:
+
+```text
+/api/history/points?source=rollup&since_ms=<range-start>&until_ms=<range-end>
+```
+
+The Rust daemon maps one-minute rollup rows into chart-ready points for 6h, 24h, 7d, and 30d dashboard windows. Rollup points carry aggregate metric values and sample counts; full raw snapshot detail still comes from `/api/history`.
+
+Timeline markers:
+
+```text
+/api/history/markers?since_ms=<range-start>&until_ms=<range-end>&expected_gap_ms=<gap>
+```
+
+The Rust daemon returns persisted `daemonStart` and `settingsChange` events from `app_events`, plus computed `coverageGap` markers inferred from raw sample spacing.
+
 ## Rollups And Coverage
 
 The Rust daemon rebuilds the affected one-minute rollup bucket after each sample insert. Rollups are additive to the raw history table; `/api/history` still returns raw samples today.
@@ -199,6 +226,9 @@ The Rust daemon rebuilds the affected one-minute rollup bucket after each sample
 - configured rollup retention days
 - one-minute rollup bucket count
 - SQLite database size in bytes
+- configured target DB size in bytes
+- database budget percentage
+- oldest/newest rollup timestamps
 
 ## Retention
 
@@ -208,7 +238,7 @@ Current behavior:
 - The Rust daemon deletes raw rows older than the configured `retentionHours` cutoff.
 - The Rust daemon deletes rollup buckets older than the configured `rollupRetentionDays` cutoff.
 - `/api/history` and `/history` select bounded windows for callers; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
-- The dashboard hydrates the browser-selected timestamp window, currently Live, 15m, 1h, 6h, or 24h. Large windows are paged through `/api/history`, deduplicated by captured timestamp, and downsampled only for browser rendering; that is a rendering limit, not a storage limit.
+- The dashboard hydrates the browser-selected timestamp window. Live, 15m, and 1h use `/api/history`; 6h, 24h, 7d, and 30d use `/api/history/points` backed by one-minute rollups. Raw windows may be paged and downsampled only for browser rendering; that is a rendering limit, not a storage limit.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 - Legacy Bun split mode keeps the earlier manual archive/reset behavior.
 
@@ -216,6 +246,7 @@ Current defaults:
 
 - Raw samples: configurable, default 72 hours.
 - One-minute rollups: 30 days.
+- Target database budget: 128 MiB.
 
 Future child tables should use cascading foreign keys if normalized process/filesystem/pressure tables land.
 

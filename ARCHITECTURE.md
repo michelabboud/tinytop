@@ -1,6 +1,6 @@
 # Architecture
 
-TinyTop's default persistent runtime is a single local Rust daemon. It serves the browser dashboard, collects Linux/WSL telemetry, owns SQLite, and exposes dashboard/history APIs over loopback.
+TinyTop's default persistent runtime is a single local Rust daemon. It serves the browser dashboard, collects Linux/WSL telemetry by default, owns SQLite, and exposes dashboard/history APIs over loopback.
 
 The original Bun dashboard and legacy collector remain in the repo for TypeScript development and fallback.
 
@@ -13,6 +13,8 @@ Browser
   | GET /api/snapshot
   | GET /api/history
   | GET /api/history/coverage
+  | GET /api/history/points
+  | GET /api/history/markers
   | GET /api/version
   | GET/PUT /api/settings
   v
@@ -20,6 +22,7 @@ Rust daemon: tinytop-agent serve
   127.0.0.1:4274
   |
   | reads Linux/WSL metrics through procfs and sysinfo
+  | optional feature-gated macOS/Windows collectors use sysinfo
   | writes and reads SQLite
   v
 SQLite: ~/.local/share/tinytop/history.sqlite
@@ -36,14 +39,16 @@ The supported operator entrypoint is the root `./tinytop` Bash command center. I
 1. The browser loads embedded Rust dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, and `app.js`.
 2. `app.js` requests `/api/settings` for SQLite-backed daemon defaults.
 3. `app.js` reads browser-local theme, graph-mode, history-range, visible-series, process-table, filesystem-toggle, and last-section overrides from `localStorage`.
-4. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for the selected timeline range.
-5. The frontend requests `/api/history/coverage` when the Rust daemon is serving the page.
-6. The frontend requests `/api/version` once to display the serving runtime and product version.
-7. The frontend polls `/api/snapshot` on the configured browser refresh interval.
-8. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
-9. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
-10. `tinytop-store` writes samples, one-minute rollups, and daemon defaults into SQLite through SQLx.
-11. The frontend pages large ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, computes threshold states, and redraws ECharts views.
+4. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for raw Live, 15m, and 1h ranges.
+5. The frontend requests `/api/history/points` for 6h, 24h, 7d, and 30d chart ranges backed by one-minute rollups.
+6. The frontend requests `/api/history/markers` for daemon starts, settings changes, and computed coverage gaps.
+7. The frontend requests `/api/history/coverage` when the Rust daemon is serving the page.
+8. The frontend requests `/api/version` once to display the serving runtime and product version.
+9. The frontend polls `/api/snapshot` on the configured browser refresh interval.
+10. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
+11. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
+12. `tinytop-store` writes samples, one-minute rollups, daemon timeline events, and daemon defaults into SQLite through SQLx.
+13. The frontend pages raw ranges, reads rollup points for long ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, computes threshold states, and redraws ECharts views.
 
 ## Modules
 
@@ -63,7 +68,7 @@ The supported operator entrypoint is the root `./tinytop` Bash command center. I
 | `agent/assets/dashboard/` | Rust-embedded dashboard asset tree; kept byte-identical to `legacy/dashboard/` |
 | `tests/` | Bun tests for parsers, snapshot building, server routes, and history storage |
 | `agent/crates/tinytop-types` | Rust snapshot structs serialized to the existing dashboard JSON contract |
-| `agent/crates/tinytop-collectors` | Rust platform collector crate; currently Linux/WSL only |
+| `agent/crates/tinytop-collectors` | Rust platform collector crate; Linux/WSL default plus feature-gated macOS/Windows native collector modules |
 | `agent/crates/tinytop-store` | SQLx-backed Rust history store using the current SQLite schema |
 | `agent/crates/tinytop-agent` | Rust CLI and daemon for collection, SQLite history, dashboard serving, and legacy collector-compatible APIs |
 
@@ -82,6 +87,14 @@ cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve-writer
 
 The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun collector while using Rust crates for host access. It uses `procfs` for Linux kernel metrics such as CPU ticks, memory, load, uptime, and pressure stall information, and `sysinfo` for disk, process, hostname, OS, and kernel metadata. It does not shell out to `df`, `ps`, or `uname`. The live collector keeps a reusable `sysinfo::System` across samples so process and CPU refreshes have previous state and avoid rebuilding all collector state on every interval. The Rust store uses SQLx with SQLite today, with SQL isolated in `tinytop-store` so future PostgreSQL/MySQL support does not leak into collector code.
 
+The collector crate exposes `NativeCollector` behind target and Cargo feature gates:
+
+- default Linux builds use `linux-collector`
+- macOS builds can use `--no-default-features --features macos-collector`
+- Windows builds can use `--no-default-features --features windows-collector`
+
+The macOS and Windows modules currently provide the first native slice through `sysinfo`: identity, CPU, memory/swap, load equivalent, disks, and top processes including parent PID/start time when available. Linux remains the reference implementation because pressure, exact `/proc` load thread counts, and live-host parity have not yet been validated on macOS/Windows.
+
 ## Public Dashboard API
 
 The Rust daemon and legacy Bun dashboard expose:
@@ -93,6 +106,8 @@ The Rust daemon and legacy Bun dashboard expose:
 - `GET /api/snapshot`
 - `GET /api/history?limit=&window_seconds=&since_ms=&until_ms=`
 - `GET /api/history/coverage` in the Rust daemon
+- `GET /api/history/points?limit=&window_seconds=&since_ms=&until_ms=&source=`
+- `GET /api/history/markers?limit=&window_seconds=&since_ms=&until_ms=&expected_gap_ms=`
 - `GET /vendor/echarts.min.js`
 - static frontend assets: `/`, `/index.html`, `/styles.css`, `/app.js`
 
@@ -190,9 +205,20 @@ CREATE TABLE IF NOT EXISTS metric_rollups_1m (
 
 CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
   ON metric_rollups_1m (newest_captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS app_events (
+  event_id INTEGER PRIMARY KEY,
+  occurred_at_ms INTEGER NOT NULL,
+  marker_type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
+  ON app_events (occurred_at_ms DESC, marker_type);
 ```
 
-The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. It also stores dashboard daemon defaults as typed JSON in `app_settings` under `setting_key = 'dashboard'`, maintains one-minute aggregate metric buckets in `metric_rollups_1m`, and exposes coverage metadata through `/api/history/coverage`. This supports refresh-safe chart hydration, selected-sample detail rendering, shared daemon defaults for future dashboard loads, retention enforcement, and history coverage display.
+The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. It also stores dashboard daemon defaults as typed JSON in `app_settings` under `setting_key = 'dashboard'`, maintains one-minute aggregate metric buckets in `metric_rollups_1m`, records daemon timeline events in `app_events`, and exposes coverage metadata through `/api/history/coverage`. This supports refresh-safe chart hydration, rollup-backed long ranges, selected raw-sample detail rendering, shared daemon defaults for future dashboard loads, retention enforcement, and history coverage display.
 
 In the Rust daemon, every stored sample also refreshes its one-minute rollup bucket. Raw samples are pruned by `retentionHours`; rollup buckets are pruned by `rollupRetentionDays`. The legacy Bun split path still keeps raw rows until manual archive/reset. Normalized filesystem/process/pressure child tables remain future work.
 
@@ -218,6 +244,7 @@ SQLite-backed daemon defaults:
 - `defaultHistoryWindow`
 - `retentionHours`
 - `rollupRetentionDays`
+- `targetDatabaseBytes`
 - `topProcessCount`
 - `redactionDefault`
 - `thresholds`
@@ -226,14 +253,14 @@ SQLite-backed daemon defaults:
 In-memory session state:
 
 - hydrated snapshots
-- selected timeline timestamp
+- selected timeline timestamp and timeline markers
 - ECharts instance
 - pause/loading flags
 - active confirmation dialog resolver and return-focus target
 - active settings dialog focus-return target
 - active process-detail dialog
 
-The browser loads the selected timestamp range with `since_ms` and `until_ms` query parameters. Presets are Live, 15m, 1h, 6h, and 24h. Large ranges are paged through the existing API limit, deduplicated by captured timestamp, and downsampled to a browser rendering cap when needed. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. The timeline rail draws an overview trace from loaded samples and uses timestamp selection rather than sample-index state. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width.
+The browser loads raw Live, 15m, and 1h timestamp ranges with `since_ms` and `until_ms` query parameters. The 6h, 24h, 7d, and 30d presets use `/api/history/points` with one-minute rollups. Large raw ranges are paged through the existing API limit, deduplicated by captured timestamp, and downsampled to a browser rendering cap when needed. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. The timeline rail draws an overview trace from loaded samples or rollup points, uses timestamp selection rather than sample-index state, and overlays daemon-start, settings-change, and coverage-gap markers. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width.
 
 Web UI interaction policy:
 

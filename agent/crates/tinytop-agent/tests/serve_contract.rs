@@ -283,11 +283,73 @@ fn serve_exposes_history_coverage_api() {
             assert!(response.contains(r#""rollupRetentionDays":30"#));
             assert!(response.contains(r#""rollupBucketCount":"#));
             assert!(response.contains(r#""databaseBytes":"#));
+            assert!(response.contains(r#""targetDatabaseBytes":134217728"#));
+            assert!(response.contains(r#""databaseBudgetPercent":"#));
         });
 
     stop_child(&mut child);
 
     result.expect("server should expose history coverage");
+}
+
+#[test]
+fn serve_exposes_rollup_history_points_and_markers_api() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+            "--no-dashboard",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let settings = r#"{"defaultTheme":"aurora","defaultGraphMode":"line","pollIntervalMs":3000,"defaultHistoryWindow":"7d","retentionHours":96,"rollupRetentionDays":45,"targetDatabaseBytes":268435456,"topProcessCount":12,"redactionDefault":true,"thresholds":{"cpuWarn":75,"memoryWarn":82,"diskWarn":88},"enabledSections":{"overview":true,"history":true,"filesystem":true,"pressure":true,"processes":true}}"#;
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get(port, "/api/history/points?limit=5&source=rollup"))
+        .map(|response| {
+            assert!(
+                response.starts_with("HTTP/1.1 200"),
+                "points endpoint should return HTTP 200, got {response}"
+            );
+            assert!(response.contains(r#""points":["#));
+            assert!(response.contains(r#""source":"rollup""#));
+        })
+        .and_then(|_| http_get(port, "/api/history/markers?limit=10&expected_gap_ms=60000"))
+        .map(|response| {
+            assert!(response.contains(r#""markers":["#));
+            assert!(
+                response.contains(r#""markerType":"daemonStart""#),
+                "startup should write a daemonStart marker, got {response}"
+            );
+        })
+        .and_then(|_| http_request(port, "PUT", "/api/settings", Some(settings)))
+        .map(|response| {
+            assert!(response.contains(r#""defaultHistoryWindow":"7d""#));
+            assert!(response.contains(r#""targetDatabaseBytes":268435456"#));
+        })
+        .and_then(|_| http_get(port, "/api/history/markers?limit=10&expected_gap_ms=60000"))
+        .map(|response| {
+            assert!(
+                response.contains(r#""markerType":"settingsChange""#),
+                "settings PUT should write a settingsChange marker, got {response}"
+            );
+            assert!(response.contains("targetDatabaseBytes"));
+        });
+
+    stop_child(&mut child);
+
+    result.expect("server should expose history points and markers");
 }
 
 fn reserve_port() -> u16 {
@@ -334,10 +396,10 @@ fn product_version() -> String {
 fn wait_for_server(port: u16) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if let Ok(response) = http_get(port, "/health") {
-            if response.contains("\r\n\r\nok") {
-                return Ok(());
-            }
+        if let Ok(response) = http_get(port, "/health")
+            && response.contains("\r\n\r\nok")
+        {
+            return Ok(());
         }
         thread::sleep(Duration::from_millis(100));
     }

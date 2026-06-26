@@ -14,7 +14,7 @@ use tinytop_types::{
     RuntimeDetection, RuntimeKind, SwapSnapshot, SystemSnapshot,
 };
 
-use crate::{CollectorError, CollectorResult};
+use crate::{Collector, CollectorError, CollectorResult};
 
 #[derive(Debug, Clone)]
 pub struct LinuxSnapshotSources {
@@ -81,6 +81,12 @@ impl LinuxCollector {
         let sources = collect_sources(&mut self.system, self.previous_proc_stat_text.as_deref())?;
         self.previous_proc_stat_text = Some(sources.current_proc_stat_text.clone());
         build_linux_snapshot_from_sources(sources)
+    }
+}
+
+impl Collector for LinuxCollector {
+    fn collect(&mut self) -> CollectorResult<SystemSnapshot> {
+        Self::collect(self)
     }
 }
 
@@ -527,6 +533,23 @@ fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
         .filter(|line| !line.trim().is_empty())
         .take(10)
         .filter_map(|line| {
+            if line.contains('\t') {
+                let parts = line.splitn(7, '\t').collect::<Vec<_>>();
+                if parts.len() < 7 {
+                    return None;
+                }
+
+                return Some(ProcessSnapshot {
+                    pid: parts[0].parse().ok()?,
+                    cpu_percent: parts[1].parse().ok()?,
+                    memory_percent: parts[2].parse().ok()?,
+                    rss_bytes: parts[3].parse::<u64>().ok()?.saturating_mul(1024),
+                    parent_pid: parse_optional_u32(parts[4]),
+                    started_at: parse_optional_string(parts[5]),
+                    command: parts[6].to_string(),
+                });
+            }
+
             let parts = line.split_whitespace().collect::<Vec<_>>();
             if parts.len() < 5 {
                 return None;
@@ -537,6 +560,8 @@ fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
                 cpu_percent: parts[1].parse().ok()?,
                 memory_percent: parts[2].parse().ok()?,
                 rss_bytes: parts[3].parse::<u64>().ok()?.saturating_mul(1024),
+                parent_pid: None,
+                started_at: None,
                 command: parts[4..].join(" "),
             })
         })
@@ -662,6 +687,8 @@ fn sysinfo_process_text(system: &System, total_memory: u64) -> String {
                 process.cpu_usage() as f64,
                 memory_percent,
                 process.memory() / 1024,
+                process.parent().map(|pid| pid.as_u32()),
+                process_started_at(process),
                 process_command(process),
             )
         })
@@ -676,9 +703,17 @@ fn sysinfo_process_text(system: &System, total_memory: u64) -> String {
     processes
         .into_iter()
         .take(10)
-        .map(|(pid, cpu, memory, rss_kib, command)| {
-            format!("{pid} {cpu:.1} {memory:.1} {rss_kib} {command}")
-        })
+        .map(
+            |(pid, cpu, memory, rss_kib, parent_pid, started_at, command)| {
+                format!(
+                    "{pid}\t{cpu:.1}\t{memory:.1}\t{rss_kib}\t{}\t{}\t{command}",
+                    parent_pid
+                        .map(|pid| pid.to_string())
+                        .unwrap_or_else(|| "-".to_string()),
+                    started_at.unwrap_or_else(|| "-".to_string()),
+                )
+            },
+        )
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -694,6 +729,24 @@ fn process_command(process: &sysinfo::Process) -> String {
     }
 
     os_str_to_string(process.name())
+}
+
+fn process_started_at(process: &sysinfo::Process) -> Option<String> {
+    let start_time = process.start_time();
+    if start_time == 0 {
+        return None;
+    }
+    OffsetDateTime::from_unix_timestamp(i64::try_from(start_time).ok()?)
+        .ok()
+        .and_then(|time| time.format(&Rfc3339).ok())
+}
+
+fn parse_optional_u32(value: &str) -> Option<u32> {
+    (value != "-").then(|| value.parse().ok()).flatten()
+}
+
+fn parse_optional_string(value: &str) -> Option<String> {
+    (value != "-" && !value.is_empty()).then(|| value.to_string())
 }
 
 fn cpu_pressure_text() -> String {

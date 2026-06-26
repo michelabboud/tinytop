@@ -23,6 +23,7 @@ describe("dashboard settings", () => {
     expect(html).toContain('id="browser-history-window-setting"');
     expect(html).toContain('id="daemon-poll-interval"');
     expect(html).toContain('id="daemon-retention-hours"');
+    expect(html).toContain('id="daemon-db-budget-mib"');
     expect(html).toContain('id="save-settings-button"');
   });
 
@@ -40,6 +41,22 @@ describe("dashboard settings", () => {
     expect(app).toContain('fetch("/api/settings"');
     expect(app).toContain('method: "PUT"');
     expect(app).toContain("restartPollingTimer");
+  });
+
+  test("renders settings validation, reset, presets, dirty guard, and effective readout", () => {
+    expect(html).toContain('id="settings-validation-summary"');
+    expect(html).toContain('id="settings-dirty-indicator"');
+    expect(html).toContain('id="threshold-preset"');
+    expect(html).toContain('id="reset-settings-button"');
+    expect(html).toContain('id="restore-default-settings-button"');
+    expect(html).toContain('id="effective-settings-readout"');
+    expect(app).toContain("function validateDaemonSettings");
+    expect(app).toContain("function markSettingsDirty");
+    expect(app).toContain("function resetSettingsForm");
+    expect(app).toContain("function restoreDefaultSettings");
+    expect(app).toContain("function applyThresholdPreset");
+    expect(app).toContain("function renderEffectiveSettings");
+    expect(app).toContain("function confirmSettingsDismissIfDirty");
   });
 
   test("renders daemon section toggles and expanded threshold settings", () => {

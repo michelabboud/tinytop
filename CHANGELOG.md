@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.27 - 2026-06-26
+
+- Added an operator alert detail drawer explaining current state by metric, value, threshold, age, trend, and recent change.
+- Added rollup-backed History ranges for 6h, 24h, 7d, and 30d through additive `/api/history/points`, while keeping `/api/history` raw-snapshot compatible.
+- Added timeline markers through `/api/history/markers` for daemon starts, settings changes, and computed coverage gaps.
+- Added SQLite-backed DB budget settings and coverage fields: `targetDatabaseBytes`, budget percentage, and rollup coverage timestamps.
+- Polished Settings with validation, dirty-close warning, reset/defaults buttons, threshold presets, and an effective-settings readout.
+- Upgraded process details with redacted copy-safe command text, parent PID/start time when available, RSS, and per-PID CPU/RAM trend.
+- Started feature-gated native Rust collector modules for macOS and Windows while keeping Linux as the default reference collector.
+- Added ADRs for the additive history points/markers API and feature-gated native platform collectors.
+- Cleaned the stale handoff PID note.
+
 ## 0.1.26 - 2026-06-26
 
 - Fixed native select dropdown contrast in the Settings dialog and process density control by assigning explicit readable option foreground/background colors for every dashboard theme.

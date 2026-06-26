@@ -188,6 +188,7 @@ History retention:
 
 - The Rust daemon prunes raw samples according to `retentionHours` saved in `/api/settings`.
 - The Rust daemon keeps one-minute rollups according to `rollupRetentionDays` saved in `/api/settings`.
+- The Rust daemon stores `targetDatabaseBytes` in `/api/settings` and reports current database budget usage through `/api/history/coverage`.
 - The dashboard's recent history window limits what it reads and renders; the retention settings control database pruning.
 - Legacy Bun split mode keeps raw samples until you manually archive or reset the database.
 
@@ -195,7 +196,7 @@ Dashboard settings:
 
 - Browser-local active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section are stored in `localStorage`.
 - Rust daemon defaults are stored in SQLite through `/api/settings`.
-- Retention, rollup, warning/critical threshold, and enabled-section defaults are applied by the Rust daemon/dashboard.
+- Retention, rollup, DB budget, warning/critical threshold, and enabled-section defaults are applied by the Rust daemon/dashboard.
 
 ## Verify Installation
 
@@ -227,6 +228,8 @@ Check HTTP endpoints:
 curl -fsS http://127.0.0.1:4274/health
 curl -fsS http://127.0.0.1:4274/api/version
 curl -fsS http://127.0.0.1:4274/api/history/coverage
+curl -fsS 'http://127.0.0.1:4274/api/history/points?source=rollup&limit=5'
+curl -fsS 'http://127.0.0.1:4274/api/history/markers?limit=5'
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=3&window_seconds=300'
 ```
 
@@ -245,7 +248,24 @@ ok
 5. Start `./tinytop systemd start` or `./tinytop start`.
 6. Open the dashboard and confirm the sidebar version line plus History hydration after a browser refresh.
 
-The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. The Rust daemon adds the `app_settings` and `metric_rollups_1m` tables automatically when it starts.
+The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. The Rust daemon adds the `app_settings`, `metric_rollups_1m`, and `app_events` tables automatically when it starts.
+
+## Platform Collector Features
+
+Linux/WSL is the default and verified collector path:
+
+```bash
+cargo build --manifest-path agent/Cargo.toml -p tinytop-agent
+```
+
+Native macOS and Windows collectors are started as feature-gated Rust modules. They currently collect identity, CPU, memory/swap, load equivalent, disks, and processes through `sysinfo`; Linux remains the reference implementation.
+
+```bash
+cargo build --manifest-path agent/Cargo.toml -p tinytop-agent --no-default-features --features macos-collector
+cargo build --manifest-path agent/Cargo.toml -p tinytop-agent --no-default-features --features windows-collector
+```
+
+Cross-compiling the full daemon can require platform toolchains for SQLite. On Linux, the Windows collector crate can be checked without the daemon's SQLite C toolchain by targeting `tinytop-collectors` directly.
 
 ## Reset Local History
 

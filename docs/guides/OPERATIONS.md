@@ -206,6 +206,8 @@ Check public history proxy:
 ```bash
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=3&window_seconds=300'
 curl -fsS http://127.0.0.1:4274/api/history/coverage
+curl -fsS 'http://127.0.0.1:4274/api/history/points?source=rollup&limit=5'
+curl -fsS 'http://127.0.0.1:4274/api/history/markers?limit=5'
 ```
 
 Check the database:
@@ -249,7 +251,7 @@ Common causes:
 
 ## Data Growth
 
-The Rust daemon prunes raw SQLite rows according to `retentionHours` from `/api/settings` after successful collection or settings updates. It also maintains one-minute rollups in `metric_rollups_1m` and prunes them according to `rollupRetentionDays`.
+The Rust daemon prunes raw SQLite rows according to `retentionHours` from `/api/settings` after successful collection or settings updates. It also maintains one-minute rollups in `metric_rollups_1m`, prunes them according to `rollupRetentionDays`, records daemon timeline events in `app_events`, and reports target DB budget usage from `targetDatabaseBytes`.
 
 The dashboard's selected timestamp range and browser rendering cap control what is loaded and drawn; those read windows are separate from database pruning.
 
@@ -262,4 +264,4 @@ Monitor database size:
 curl -fsS http://127.0.0.1:4274/api/history/coverage
 ```
 
-Archive or reset history manually when you need to force cleanup outside the configured Rust retention window.
+Archive or reset history manually when you need to force cleanup outside the configured Rust retention window. SQLite file size may not shrink immediately after pruning until a vacuum runs, so compare `databaseBytes`, `databaseBudgetPercent`, and the configured budget rather than assuming deleted rows instantly return disk space.

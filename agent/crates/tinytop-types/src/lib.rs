@@ -143,6 +143,10 @@ pub struct ProcessSnapshot {
     pub cpu_percent: f64,
     pub memory_percent: f64,
     pub rss_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pid: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

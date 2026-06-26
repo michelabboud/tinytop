@@ -12,3 +12,5 @@ This directory tracks architectural decisions that are expensive to reverse or l
 | [0006](0006-embedded-dashboard-assets.md) | Accepted | Embed dashboard assets in the Rust collector while keeping the legacy Bun dashboard asset tree. |
 | [0007](0007-daemon-and-browser-dashboard-settings.md) | Accepted; presentation refined by [0008](0008-settings-dialog-presentation.md) | Split dashboard settings between browser-local preferences and SQLite-backed daemon defaults. |
 | [0008](0008-settings-dialog-presentation.md) | Accepted | Present dashboard settings as a dialog instead of an inline dashboard section. |
+| [0009](0009-additive-history-points-and-markers-api.md) | Accepted | Keep raw history backward compatible and add chart-point plus timeline-marker APIs for rollup-backed ranges. |
+| [0010](0010-feature-gated-native-platform-collectors.md) | Accepted | Keep Linux as the default collector while adding opt-in macOS and Windows native collector modules. |

@@ -4,6 +4,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use sqlx::{
     Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -34,6 +35,8 @@ pub struct DashboardSettings {
     pub default_history_window: String,
     pub retention_hours: i64,
     pub rollup_retention_days: i64,
+    #[serde(default = "default_target_database_bytes")]
+    pub target_database_bytes: i64,
     pub top_process_count: i64,
     pub redaction_default: bool,
     pub thresholds: DashboardThresholds,
@@ -81,6 +84,7 @@ impl Default for DashboardSettings {
             default_history_window: "live".to_string(),
             retention_hours: 72,
             rollup_retention_days: 30,
+            target_database_bytes: default_target_database_bytes(),
             top_process_count: 8,
             redaction_default: false,
             thresholds: DashboardThresholds::default(),
@@ -133,11 +137,17 @@ impl DashboardSettings {
         validate_one_of(
             "defaultHistoryWindow",
             &self.default_history_window,
-            &["live", "15m", "1h", "6h", "24h"],
+            &["live", "15m", "1h", "6h", "24h", "7d", "30d"],
         )?;
         validate_range("pollIntervalMs", self.poll_interval_ms, 250, 60_000)?;
         validate_range("retentionHours", self.retention_hours, 1, 8_760)?;
         validate_range("rollupRetentionDays", self.rollup_retention_days, 1, 366)?;
+        validate_range(
+            "targetDatabaseBytes",
+            self.target_database_bytes,
+            1_048_576,
+            10_737_418_240,
+        )?;
         validate_range("topProcessCount", self.top_process_count, 1, 50)?;
         validate_range("thresholds.cpuWarn", self.thresholds.cpu_warn, 0, 100)?;
         validate_range(
@@ -208,7 +218,7 @@ impl DashboardSettings {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryCoverage {
     pub sample_count: i64,
@@ -218,6 +228,10 @@ pub struct HistoryCoverage {
     pub rollup_retention_days: i64,
     pub rollup_bucket_count: i64,
     pub database_bytes: i64,
+    pub target_database_bytes: i64,
+    pub database_budget_percent: f64,
+    pub rollup_oldest_captured_at_ms: Option<i64>,
+    pub rollup_newest_captured_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -225,6 +239,104 @@ pub struct HistoryQuery {
     pub since_ms: Option<i64>,
     pub until_ms: Option<i64>,
     pub limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryPointSource {
+    Raw,
+    Rollup,
+}
+
+impl HistoryPointSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Rollup => "rollup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HistoryPointMode {
+    #[default]
+    Auto,
+    Raw,
+    Rollup,
+}
+
+impl FromStr for HistoryPointMode {
+    type Err = StoreError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "raw" => Ok(Self::Raw),
+            "rollup" | "1m" | "rollup1m" => Ok(Self::Rollup),
+            other => Err(StoreError::Validation(format!(
+                "source must be auto, raw, or rollup, got {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HistoryPointsQuery {
+    pub since_ms: Option<i64>,
+    pub until_ms: Option<i64>,
+    pub limit: Option<i64>,
+    pub source: HistoryPointMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPoint {
+    pub captured_at_ms: i64,
+    pub source: HistoryPointSource,
+    pub sample_count: i64,
+    pub cpu_usage_percent: f64,
+    pub memory_used_percent: f64,
+    pub swap_used_percent: f64,
+    pub load_percent: f64,
+    pub root_used_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryMarkerType {
+    DaemonStart,
+    SettingsChange,
+    CoverageGap,
+}
+
+impl HistoryMarkerType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::DaemonStart => "daemonStart",
+            Self::SettingsChange => "settingsChange",
+            Self::CoverageGap => "coverageGap",
+        }
+    }
+
+    fn from_storage(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "daemonStart" => Ok(Self::DaemonStart),
+            "settingsChange" => Ok(Self::SettingsChange),
+            "coverageGap" => Ok(Self::CoverageGap),
+            other => Err(StoreError::Validation(format!(
+                "unknown history marker type {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryMarker {
+    pub occurred_at_ms: i64,
+    pub marker_type: HistoryMarkerType,
+    pub label: String,
+    pub details: JsonValue,
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +534,85 @@ impl SqliteHistoryStore {
         Ok(samples)
     }
 
+    pub async fn read_history_points(
+        &self,
+        query: HistoryPointsQuery,
+    ) -> Result<Vec<HistoryPoint>, StoreError> {
+        match self.resolve_history_point_source(query) {
+            HistoryPointMode::Raw => self.read_raw_history_points(query).await,
+            HistoryPointMode::Rollup => self.read_rollup_history_points(query).await,
+            HistoryPointMode::Auto => unreachable!("history point source is resolved above"),
+        }
+    }
+
+    pub async fn record_event(
+        &self,
+        occurred_at_ms: i64,
+        marker_type: HistoryMarkerType,
+        label: &str,
+        details: JsonValue,
+    ) -> Result<(), StoreError> {
+        let details_json = serde_json::to_string(&details)?;
+        sqlx::query(
+            r#"
+            INSERT INTO app_events (
+              occurred_at_ms,
+              marker_type,
+              label,
+              details_json
+            ) VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(occurred_at_ms)
+        .bind(marker_type.as_str())
+        .bind(label)
+        .bind(details_json)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn read_history_markers(
+        &self,
+        query: HistoryQuery,
+        expected_gap_ms: i64,
+    ) -> Result<Vec<HistoryMarker>, StoreError> {
+        let limit = query.limit.unwrap_or(250).clamp(1, 10_000);
+        let rows = sqlx::query(
+            r#"
+            SELECT occurred_at_ms, marker_type, label, details_json
+            FROM app_events
+            WHERE (?1 IS NULL OR occurred_at_ms >= ?1)
+              AND (?2 IS NULL OR occurred_at_ms <= ?2)
+            ORDER BY occurred_at_ms DESC
+            LIMIT ?3
+            "#,
+        )
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut markers = rows
+            .into_iter()
+            .map(row_to_marker)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        markers.extend(
+            self.read_coverage_gap_markers(query, expected_gap_ms)
+                .await?,
+        );
+        markers.sort_by_key(|marker| marker.occurred_at_ms);
+
+        if markers.len() > limit as usize {
+            let remove_count = markers.len() - limit as usize;
+            markers.drain(0..remove_count);
+        }
+
+        Ok(markers)
+    }
+
     pub async fn stats(&self) -> Result<StoreStats, StoreError> {
         let row = sqlx::query(
             r#"
@@ -450,12 +641,21 @@ impl SqliteHistoryStore {
         let stats = self.stats().await?;
         let row = sqlx::query(
             r#"
-            SELECT COUNT(*) AS rollup_bucket_count
+            SELECT
+              COUNT(*) AS rollup_bucket_count,
+              MIN(first_captured_at_ms) AS rollup_oldest_captured_at_ms,
+              MAX(newest_captured_at_ms) AS rollup_newest_captured_at_ms
             FROM metric_rollups_1m
             "#,
         )
         .fetch_one(&self.pool)
         .await?;
+        let database_bytes = self.database_bytes().await?;
+        let database_budget_percent = if settings.target_database_bytes > 0 {
+            (database_bytes as f64 / settings.target_database_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
 
         Ok(HistoryCoverage {
             sample_count: stats.sample_count,
@@ -464,7 +664,13 @@ impl SqliteHistoryStore {
             retention_hours: settings.retention_hours,
             rollup_retention_days: settings.rollup_retention_days,
             rollup_bucket_count: row.try_get::<i64, _>("rollup_bucket_count")?,
-            database_bytes: self.database_bytes().await?,
+            database_bytes,
+            target_database_bytes: settings.target_database_bytes,
+            database_budget_percent,
+            rollup_oldest_captured_at_ms: row
+                .try_get::<Option<i64>, _>("rollup_oldest_captured_at_ms")?,
+            rollup_newest_captured_at_ms: row
+                .try_get::<Option<i64>, _>("rollup_newest_captured_at_ms")?,
         })
     }
 
@@ -520,6 +726,167 @@ impl SqliteHistoryStore {
             .await?
             .try_get::<i64, _>(0)?;
         Ok(page_count.saturating_mul(page_size))
+    }
+
+    fn resolve_history_point_source(&self, query: HistoryPointsQuery) -> HistoryPointMode {
+        match query.source {
+            HistoryPointMode::Auto => {
+                let range_ms = match (query.since_ms, query.until_ms) {
+                    (Some(since_ms), Some(until_ms)) => until_ms.saturating_sub(since_ms),
+                    _ => 0,
+                };
+                if range_ms > 86_400_000 {
+                    HistoryPointMode::Rollup
+                } else {
+                    HistoryPointMode::Raw
+                }
+            }
+            source => source,
+        }
+    }
+
+    async fn read_raw_history_points(
+        &self,
+        query: HistoryPointsQuery,
+    ) -> Result<Vec<HistoryPoint>, StoreError> {
+        let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
+        let rows = sqlx::query(
+            r#"
+            SELECT
+              captured_at_ms,
+              cpu_usage_percent,
+              memory_used_percent,
+              swap_used_percent,
+              load_percent,
+              root_used_percent
+            FROM metric_samples
+            WHERE (?1 IS NULL OR captured_at_ms >= ?1)
+              AND (?2 IS NULL OR captured_at_ms <= ?2)
+            ORDER BY captured_at_ms DESC
+            LIMIT ?3
+            "#,
+        )
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut points = rows
+            .into_iter()
+            .map(|row| {
+                Ok(HistoryPoint {
+                    captured_at_ms: row.try_get::<i64, _>("captured_at_ms")?,
+                    source: HistoryPointSource::Raw,
+                    sample_count: 1,
+                    cpu_usage_percent: row.try_get::<f64, _>("cpu_usage_percent")?,
+                    memory_used_percent: row.try_get::<f64, _>("memory_used_percent")?,
+                    swap_used_percent: row.try_get::<f64, _>("swap_used_percent")?,
+                    load_percent: row.try_get::<f64, _>("load_percent")?,
+                    root_used_percent: row.try_get::<Option<f64>, _>("root_used_percent")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        points.reverse();
+        Ok(points)
+    }
+
+    async fn read_rollup_history_points(
+        &self,
+        query: HistoryPointsQuery,
+    ) -> Result<Vec<HistoryPoint>, StoreError> {
+        let limit = query.limit.unwrap_or(720).clamp(1, 10_000);
+        let rows = sqlx::query(
+            r#"
+            SELECT
+              newest_captured_at_ms,
+              sample_count,
+              avg_cpu_usage_percent,
+              avg_memory_used_percent,
+              avg_swap_used_percent,
+              avg_load_percent,
+              avg_root_used_percent
+            FROM metric_rollups_1m
+            WHERE (?1 IS NULL OR newest_captured_at_ms >= ?1)
+              AND (?2 IS NULL OR newest_captured_at_ms <= ?2)
+            ORDER BY newest_captured_at_ms DESC
+            LIMIT ?3
+            "#,
+        )
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut points = rows
+            .into_iter()
+            .map(|row| {
+                Ok(HistoryPoint {
+                    captured_at_ms: row.try_get::<i64, _>("newest_captured_at_ms")?,
+                    source: HistoryPointSource::Rollup,
+                    sample_count: row.try_get::<i64, _>("sample_count")?,
+                    cpu_usage_percent: row.try_get::<f64, _>("avg_cpu_usage_percent")?,
+                    memory_used_percent: row.try_get::<f64, _>("avg_memory_used_percent")?,
+                    swap_used_percent: row.try_get::<f64, _>("avg_swap_used_percent")?,
+                    load_percent: row.try_get::<f64, _>("avg_load_percent")?,
+                    root_used_percent: row.try_get::<Option<f64>, _>("avg_root_used_percent")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        points.reverse();
+        Ok(points)
+    }
+
+    async fn read_coverage_gap_markers(
+        &self,
+        query: HistoryQuery,
+        expected_gap_ms: i64,
+    ) -> Result<Vec<HistoryMarker>, StoreError> {
+        if expected_gap_ms <= 0 {
+            return Ok(Vec::new());
+        }
+
+        let limit = query.limit.unwrap_or(250).clamp(2, 10_000);
+        let rows = sqlx::query(
+            r#"
+            SELECT captured_at_ms
+            FROM metric_samples
+            WHERE (?1 IS NULL OR captured_at_ms >= ?1)
+              AND (?2 IS NULL OR captured_at_ms <= ?2)
+            ORDER BY captured_at_ms ASC
+            LIMIT ?3
+            "#,
+        )
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut markers = Vec::new();
+        let mut previous = None;
+        for row in rows {
+            let captured_at_ms = row.try_get::<i64, _>("captured_at_ms")?;
+            if let Some(previous_captured_at_ms) = previous {
+                let gap_ms = captured_at_ms.saturating_sub(previous_captured_at_ms);
+                if gap_ms > expected_gap_ms {
+                    markers.push(HistoryMarker {
+                        occurred_at_ms: captured_at_ms,
+                        marker_type: HistoryMarkerType::CoverageGap,
+                        label: format!("Coverage gap {}", format_duration_short(gap_ms)),
+                        details: serde_json::json!({
+                            "fromMs": previous_captured_at_ms,
+                            "toMs": captured_at_ms,
+                            "gapMs": gap_ms,
+                        }),
+                    });
+                }
+            }
+            previous = Some(captured_at_ms);
+        }
+
+        Ok(markers)
     }
 
     async fn rebuild_rollup_bucket(&self, bucket_start_ms: i64) -> Result<(), StoreError> {
@@ -718,6 +1085,29 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS app_events (
+              event_id INTEGER PRIMARY KEY,
+              occurred_at_ms INTEGER NOT NULL,
+              marker_type TEXT NOT NULL,
+              label TEXT NOT NULL,
+              details_json TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
+              ON app_events (occurred_at_ms DESC, marker_type)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 }
@@ -775,6 +1165,16 @@ fn row_to_sample(row: sqlx::sqlite::SqliteRow) -> Result<HistorySample, StoreErr
     })
 }
 
+fn row_to_marker(row: sqlx::sqlite::SqliteRow) -> Result<HistoryMarker, StoreError> {
+    let details_json = row.try_get::<String, _>("details_json")?;
+    Ok(HistoryMarker {
+        occurred_at_ms: row.try_get::<i64, _>("occurred_at_ms")?,
+        marker_type: HistoryMarkerType::from_storage(&row.try_get::<String, _>("marker_type")?)?,
+        label: row.try_get::<String, _>("label")?,
+        details: serde_json::from_str(&details_json)?,
+    })
+}
+
 fn to_i64(value: impl TryInto<i64>, field: &'static str) -> Result<i64, StoreError> {
     value
         .try_into()
@@ -827,6 +1227,26 @@ fn load_percent(snapshot: &SystemSnapshot) -> f64 {
 
 fn bucket_start_ms(captured_at_ms: i64) -> i64 {
     captured_at_ms.div_euclid(60_000).saturating_mul(60_000)
+}
+
+fn format_duration_short(duration_ms: i64) -> String {
+    let total_seconds = duration_ms.saturating_div(1_000).max(0);
+    if total_seconds < 60 {
+        return format!("{total_seconds}s");
+    }
+    let total_minutes = total_seconds / 60;
+    if total_minutes < 60 {
+        return format!("{total_minutes}m");
+    }
+    let total_hours = total_minutes / 60;
+    if total_hours < 24 {
+        return format!("{total_hours}h");
+    }
+    format!("{}d", total_hours / 24)
+}
+
+fn default_target_database_bytes() -> i64 {
+    128 * 1024 * 1024
 }
 
 fn default_cpu_critical() -> i64 {

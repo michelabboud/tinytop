@@ -1,15 +1,21 @@
 [package]
 name = "tinytop-agent"
-version = "0.1.26"
+version = "0.1.27"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["linux-collector"]
+linux-collector = ["tinytop-collectors/linux-collector"]
+macos-collector = ["tinytop-collectors/macos-collector"]
+windows-collector = ["tinytop-collectors/windows-collector"]
+
 [dependencies]
 axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tinytop-collectors = { path = "../tinytop-collectors" }
+tinytop-collectors = { path = "../tinytop-collectors", default-features = false }
 tinytop-store = { path = "../tinytop-store" }
 tokio.workspace = true

@@ -14,6 +14,12 @@ describe("dashboard process and filesystem controls", () => {
     expect(html).toContain('data-process-sort="rss"');
     expect(html).toContain('id="process-detail-dialog"');
     expect(html).toContain('id="process-detail-title"');
+    expect(html).toContain('id="process-detail-command"');
+    expect(html).toContain('id="process-detail-redacted-command"');
+    expect(html).toContain('id="copy-process-command-button"');
+    expect(html).toContain('id="process-detail-trend"');
+    expect(html).toContain("Parent PID");
+    expect(html).toContain("Started");
   });
 
   test("renders filesystem system-toggle and root filesystem card", () => {
@@ -29,6 +35,9 @@ describe("dashboard process and filesystem controls", () => {
     expect(app).toContain("processSortButtons: Array.from(document.querySelectorAll(\"[data-process-sort]\"))");
     expect(app).toContain("filesystemShowSystem: document.querySelector(\"#filesystem-show-system\")");
     expect(app).toContain("function sortProcesses");
+    expect(app).toContain("function processTrendForPid");
+    expect(app).toContain("function redactCommandText");
+    expect(app).toContain("function copyProcessCommand");
     expect(app).toContain("function filterFilesystems");
     expect(app).toContain("tinytop.processFilter");
     expect(app).toContain("tinytop.processSort");

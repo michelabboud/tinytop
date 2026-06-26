@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 20:29 Asia/Jerusalem
+Date: 2026-06-26 21:36 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.26`
-- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.26`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.26`
-- The `v0.1.26` checkpoint fixes native select dropdown contrast in the Settings dialog and process density control while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
+- Current checkpoint version: `0.1.27`
+- Version files: `VERSION`, `package.json`, and `tinytop` all read `0.1.27`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.27`
+- The `v0.1.27` checkpoint adds operator alert details, rollup-backed long history points, timeline markers, DB budget settings, settings polish, process detail V2, and feature-gated macOS/Windows collector starter modules while keeping the Rust embedded dashboard and legacy Bun dashboard assets byte-identical.
 
 ## Runtime State
 
@@ -19,13 +19,15 @@ Date: 2026-06-26 20:29 Asia/Jerusalem
 - Version endpoint when running: `http://127.0.0.1:4274/api/version`
 - Settings endpoint when running: `http://127.0.0.1:4274/api/settings`
 - History coverage endpoint when running: `http://127.0.0.1:4274/api/history/coverage`
+- History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
+- History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.26 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.27 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1616491`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1783062`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.26.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.27.log`
 
 ## Rust Collector Confirmation
 
@@ -167,6 +169,19 @@ Evidence:
 - Updated `docs/reports/2026-06-26-select-dropdown-contrast.md`.
 - Rebuilt and restarted the Rust embedded dashboard daemon; it now reports `rust collector-dashboard-daemon v0.1.26 (embedded dashboard)`.
 
+### v0.1.27 - Dashboard Operator V2 And Platform Collector Roadmap
+
+- Saved and executed `docs/superpowers/plans/2026-06-26-dashboard-operator-v2-platform-roadmap.md`.
+- Added an operator detail drawer that explains the current Healthy/Warning/Critical/Stale state with metric value, threshold, sample age, trend, and recent-change context.
+- Added additive Rust `/api/history/points` and `/api/history/markers` endpoints so the dashboard can browse 6h, 24h, 7d, and 30d ranges with rollup points and timeline markers.
+- Added daemon-start, settings-change, and computed coverage-gap markers.
+- Added SQLite-backed DB budget settings and coverage fields for target database bytes, budget percentage, and rollup oldest/newest timestamps.
+- Polished Settings with validation, dirty-close warning, reset/defaults buttons, threshold presets, and an effective-settings readout.
+- Upgraded process details with redacted copy-safe command text, optional parent PID/start time, RSS, and per-PID CPU/RAM trend.
+- Started feature-gated native macOS and Windows Rust collector modules while keeping Linux/WSL as the default reference collector.
+- Added ADR 0009 and ADR 0010, plus `docs/reports/2026-06-26-dashboard-operator-v2-platform-roadmap.md`.
+- Cleaned the stale bottom handoff PID note.
+
 ### Release Binary Asset Check
 
 - `v0.1.18` release assets were updated with `tinytop-agent-linux-x86_64` and its `.sha256` file.
@@ -174,10 +189,10 @@ Evidence:
 
 ### Daemon Start
 
-- Started the Rust daemon with:
+- Current daemon was started with:
 
   ```bash
-  ./tinytop rust serve
+  setsid ./tinytop start > /tmp/tinytop-v0.1.27.log 2>&1 &
   ```
 
 - Verified health with:
@@ -434,6 +449,39 @@ Evidence:
   - Verified process density options resolve to the same Ember option colors.
   - Screenshot saved outside the repo as `tinytop-v0.1.26-settings-ember.png`.
 
+## Verification Evidence From v0.1.27 Dashboard Operator V2
+
+- Full command-center verification:
+  - `./tinytop check`: Bun tests `75 pass`, `0 fail`, `383 expect() calls`; legacy server and collector checks returned JSON `ok`; Rust fmt check passed; Rust workspace tests passed; browser bundle built.
+- Direct verification:
+  - `bun test`: `75 pass`, `0 fail`, `383 expect() calls`.
+  - `cargo test --manifest-path agent/Cargo.toml --workspace`: Rust workspace tests passed.
+  - `node --check legacy/dashboard/app.js` and `node --check agent/assets/dashboard/app.js`: clean.
+  - `diff -qr agent/assets/dashboard legacy/dashboard`: no differences.
+  - `git diff --check`: clean.
+  - `cargo clippy --manifest-path agent/Cargo.toml --workspace --all-targets -- -D warnings`: clean.
+- Audits:
+  - `bun audit`: no vulnerabilities found.
+  - `cargo audit --file agent/Cargo.lock`: scanned 196 crate dependencies with exit code 0.
+- Platform collector checks:
+  - `cargo check --manifest-path agent/Cargo.toml -p tinytop-collectors --target x86_64-pc-windows-gnu --no-default-features --features windows-collector`: passed.
+  - `cargo check --manifest-path agent/Cargo.toml -p tinytop-collectors --target x86_64-apple-darwin --no-default-features --features macos-collector`: blocked because the local Rust toolchain is missing the `x86_64-apple-darwin` target.
+- Release build:
+  - `./tinytop rust build`: built `/home/michel/projects/tinytop/agent/target/release/tinytop-agent` with embedded v0.1.27 dashboard assets.
+  - Release binary SHA-256: `9984f67d68368e2613cf4b773c325f920cbde5984cdfcc2daf64164c1d0ea362`.
+- Live embedded dashboard smoke on `http://127.0.0.1:4274`:
+  - `./tinytop status`: reported `rust collector-dashboard-daemon v0.1.27 (embedded dashboard)`.
+  - `/health`: returned `ok`.
+  - `/api/version`: returned Rust `0.1.27` embedded dashboard identity.
+  - `/api/settings`: returned daemon defaults including `targetDatabaseBytes`.
+  - `/api/history/coverage`: returned coverage metadata including `targetDatabaseBytes`, `databaseBudgetPercent`, and rollup coverage timestamps.
+  - `/api/history/points?window=24h&mode=auto&limit=5`: returned chart points.
+  - `/api/history/markers?since_ms=0&limit=10`: returned a `daemonStart` marker for v0.1.27.
+  - `/`: contains `operator-detail-dialog`, `process-detail-dialog`, and `settings-dialog`.
+  - `/app.js`: contains `openOperatorDetailDrawer`, `targetDatabaseBytes`, `fetchHistoryMarkers`, and `processTrendForPid`.
+- Rendered browser smoke through Playwright MCP:
+  - Page title was `TinyTop`, the operator strip and major dashboard sections were present in the accessibility tree, and the temporary viewport screenshot was removed from the repo after inspection.
+
 ## Useful Commands
 
 ```bash
@@ -444,6 +492,8 @@ curl -fsS http://127.0.0.1:4274/health
 curl -fsS http://127.0.0.1:4274/api/version
 curl -fsS http://127.0.0.1:4274/api/settings
 curl -fsS http://127.0.0.1:4274/api/history/coverage
+curl -fsS 'http://127.0.0.1:4274/api/history/points?window=24h&mode=auto&limit=5'
+curl -fsS 'http://127.0.0.1:4274/api/history/markers?since_ms=0&limit=10'
 curl -fsS http://127.0.0.1:4274/api/snapshot
 curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 ./tinytop check
@@ -451,14 +501,14 @@ curl -fsS 'http://127.0.0.1:4274/api/history?limit=5'
 
 ## Next Useful Work
 
-- Use one-minute rollups to serve longer history ranges instead of only reporting coverage.
-- Add configurable database-size/coverage goals in Settings.
+- Add wider rollup tiers if 30d browsing needs fewer points than one-minute buckets.
+- Add normalized child tables for process/filesystem history if the UI starts querying those independently.
+- Add live macOS and Windows CI/host verification plus release packaging.
 - Add a collector/daemon health detail drawer if history or snapshot APIs degrade.
-- Add native Windows and macOS collectors when the project moves beyond Linux/WSL.
 
 ## Notes For Resuming
 
-- TinyTop Rust daemon PID `1428510` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` if you need the default dashboard port free.
+- TinyTop Rust daemon PID `1783062` is running at this handoff refresh. It was started with `setsid ./tinytop start`; stop it with `./tinytop stop` if you need the default dashboard port free.
 - WSL user systemd was previously unavailable in this environment, so foreground Rust daemon mode is the known-working path.
 - The dashboard is loopback-only by design.
 - `legacy/dashboard/vendor/echarts.min.js` and `agent/assets/dashboard/vendor/echarts.min.js` are vendored third-party code and should stay excluded from local UI policy scans.

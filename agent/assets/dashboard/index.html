@@ -109,6 +109,9 @@
             <span class="label">Age</span>
             <strong id="operator-age">-</strong>
           </div>
+          <div class="operator-status-action">
+            <button class="mini-button secondary" id="operator-detail-button" type="button">Details</button>
+          </div>
         </section>
 
         <section class="overview-grid" id="overview" data-section="overview" aria-label="System overview">
@@ -208,6 +211,8 @@
               <button type="button" data-history-window="1h" aria-pressed="false">1h</button>
               <button type="button" data-history-window="6h" aria-pressed="false">6h</button>
               <button type="button" data-history-window="24h" aria-pressed="false">24h</button>
+              <button type="button" data-history-window="7d" aria-pressed="false">7d</button>
+              <button type="button" data-history-window="30d" aria-pressed="false">30d</button>
             </nav>
             <fieldset class="history-series-toggles">
               <legend>Visible history series</legend>
@@ -241,8 +246,11 @@
               <span>Oldest <strong id="history-oldest">-</strong></span>
               <span>Newest <strong id="history-newest">-</strong></span>
               <span>DB <strong id="history-db-size">-</strong></span>
+              <span>Budget <strong id="history-db-budget">-</strong></span>
+              <span>Budget used <strong id="history-budget-status">-</strong></span>
               <span>Rollups <strong id="history-rollups">-</strong></span>
             </div>
+            <div class="history-marker-list" id="history-marker-list" aria-live="polite"></div>
             <div class="history-sample-values" id="history-sample-values"></div>
           </div>
         </section>
@@ -395,12 +403,24 @@
                   <option value="1h">1h</option>
                   <option value="6h">6h</option>
                   <option value="24h">24h</option>
+                  <option value="7d">7d</option>
+                  <option value="30d">30d</option>
                 </select>
               </label>
+              <div class="effective-settings-readout" id="effective-settings-readout"></div>
             </fieldset>
 
             <fieldset class="settings-group daemon-settings-group">
               <legend>This Daemon</legend>
+              <label>
+                <span>Threshold preset</span>
+                <select id="threshold-preset">
+                  <option value="balanced">Balanced</option>
+                  <option value="conservative">Conservative</option>
+                  <option value="noisy">Noisy</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
               <label>
                 <span>Default theme</span>
                 <select id="daemon-default-theme">
@@ -429,6 +449,8 @@
                   <option value="1h">1h</option>
                   <option value="6h">6h</option>
                   <option value="24h">24h</option>
+                  <option value="7d">7d</option>
+                  <option value="30d">30d</option>
                 </select>
               </label>
               <label>
@@ -442,6 +464,10 @@
               <label>
                 <span>Rollup days</span>
                 <input id="daemon-rollup-retention-days" type="number" min="1" max="366" step="1" />
+              </label>
+              <label>
+                <span>DB budget MiB</span>
+                <input id="daemon-db-budget-mib" type="number" min="1" max="10240" step="1" />
               </label>
               <label>
                 <span>Processes</span>
@@ -513,12 +539,29 @@
               </label>
             </fieldset>
           </div>
+          <div class="settings-validation-summary" id="settings-validation-summary" role="status" hidden></div>
         </div>
 
         <div class="settings-dialog-actions">
+          <span class="settings-dirty-indicator" id="settings-dirty-indicator" hidden>Unsaved changes</span>
+          <button class="mini-button secondary" id="reset-settings-button" type="button">Reset</button>
+          <button class="mini-button secondary" id="restore-default-settings-button" type="button">Defaults</button>
           <button class="mini-button secondary" id="cancel-settings-button" type="button">Cancel</button>
           <button class="mini-button" id="save-settings-button" type="button">Save daemon</button>
         </div>
+      </div>
+    </dialog>
+
+    <dialog class="operator-detail-dialog" id="operator-detail-dialog" aria-labelledby="operator-detail-title">
+      <div class="operator-detail-card">
+        <div class="settings-dialog-header">
+          <div>
+            <span class="confirmation-kicker">Operator State</span>
+            <h2 id="operator-detail-title">Status details</h2>
+          </div>
+          <button class="mini-button secondary" id="close-operator-detail-button" type="button">Close</button>
+        </div>
+        <div class="operator-detail-body" id="operator-detail-body"></div>
       </div>
     </dialog>
 
@@ -531,7 +574,24 @@
           </div>
           <button class="mini-button secondary" id="close-process-detail-button" type="button">Close</button>
         </div>
-        <div class="process-detail-body" id="process-detail-body"></div>
+        <div class="process-detail-body" id="process-detail-body">
+          <div class="process-command-block">
+            <span class="label">Command</span>
+            <code id="process-detail-command">-</code>
+            <span class="label">Copy-safe command</span>
+            <code id="process-detail-redacted-command">-</code>
+            <button class="mini-button secondary" id="copy-process-command-button" type="button">Copy command</button>
+          </div>
+          <div class="process-detail-grid">
+            <div><span class="label">PID</span><strong id="process-detail-pid">-</strong></div>
+            <div><span class="label">Parent PID</span><strong id="process-detail-parent-pid">-</strong></div>
+            <div><span class="label">Started</span><strong id="process-detail-started-at">-</strong></div>
+            <div><span class="label">CPU</span><strong id="process-detail-cpu">-</strong></div>
+            <div><span class="label">RAM</span><strong id="process-detail-memory">-</strong></div>
+            <div><span class="label">RSS</span><strong id="process-detail-rss">-</strong></div>
+          </div>
+          <canvas id="process-detail-trend" class="process-detail-trend" width="520" height="120" aria-label="Process CPU and RAM trend"></canvas>
+        </div>
       </div>
     </dialog>
 

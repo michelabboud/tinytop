@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.1.26`
+- Version: `0.1.27`
 - Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed timestamp-range history browsing, CPU/RAM/swap/load overview gauges, operator status strip, timeline rail, history coverage, process/filesystem controls, a dialog-based settings surface with readable native dropdown menus in every theme, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, operator status strip plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets, feature-gated native macOS/Windows collector modules, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
 
@@ -257,20 +257,34 @@
 - [x] Added regression coverage for readable native dropdown options.
 - [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
 
+### 0.1.27 - Dashboard Operator V2 And Platform Collector Roadmap
+
+- [x] Saved and executed the dashboard operator V2 and platform roadmap plan under `docs/superpowers/plans/`.
+- [x] Added an operator detail drawer with metric value, threshold, age, trend, and recent-change explanations.
+- [x] Added additive Rust `/api/history/points` and `/api/history/markers` endpoints.
+- [x] Added rollup-backed History presets for 6h, 24h, 7d, and 30d.
+- [x] Added daemon-start, settings-change, and computed coverage-gap timeline markers.
+- [x] Added `targetDatabaseBytes`, DB budget percentage, and rollup oldest/newest coverage fields.
+- [x] Polished Settings with validation, dirty-close warning, reset/defaults actions, threshold presets, and effective settings readout.
+- [x] Upgraded process details with redacted copy-safe command text, optional parent PID/start time, RSS, and per-PID CPU/RAM trend.
+- [x] Added optional process metadata fields to the Rust snapshot contract.
+- [x] Started feature-gated native macOS and Windows Rust collector modules using `sysinfo`.
+- [x] Kept Linux/WSL as the default reference collector path.
+- [x] Added ADR 0009 and ADR 0010.
+- [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical.
+- [x] Cleaned the stale handoff PID note.
+
 ## Known Limitations
 
 - Legacy Bun split mode does not enforce durable retention or rollups; use the Rust daemon for automatic pruning and coverage.
 - Longer-than-one-minute rollup tiers are planned but not implemented.
 - Normalized filesystem/process/pressure child tables are planned but not implemented.
-- The dashboard can browse timestamp presets up to 24h; rollup-backed long-range browsing is planned but not implemented.
 - The app is designed for loopback/local use, not remote multi-user deployment.
-- Native Windows and macOS collectors are planned but not implemented yet.
+- Native Windows and macOS collectors are feature-gated first slices; full parity, packaging, and live-host verification are still future work.
 
 ## Recommended Next Work
 
-- [ ] Use one-minute rollups for longer history query ranges instead of only reporting coverage.
-- [ ] Add configurable history coverage and database size targets in the settings UI.
-- [ ] Add a collector/daemon health detail drawer when the internal collector API is unreachable.
 - [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
-- [ ] Add native Windows collector support.
-- [ ] Add native macOS collector support.
+- [ ] Add wider rollup tiers if 30d browsing needs fewer points than one-minute buckets.
+- [ ] Add live macOS and Windows CI/host verification plus release packaging.
+- [ ] Add process/filesystem historical detail backed by normalized child tables if the UI starts querying those independently.

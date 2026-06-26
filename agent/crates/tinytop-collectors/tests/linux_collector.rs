@@ -1,3 +1,5 @@
+#![cfg(all(feature = "linux-collector", target_os = "linux"))]
+
 use tinytop_collectors::linux::{
     LinuxCollector, build_linux_snapshot_from_sources, calculate_cpu_usage,
     decode_proc_mount_escape, detect_linux_runtime, parse_df_blocks, parse_loadavg, parse_meminfo,

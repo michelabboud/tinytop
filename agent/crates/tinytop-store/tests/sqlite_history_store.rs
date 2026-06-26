@@ -1,4 +1,7 @@
-use tinytop_store::{DashboardSettings, DashboardThresholds, HistoryQuery, SqliteHistoryStore};
+use tinytop_store::{
+    DashboardSettings, DashboardThresholds, HistoryMarkerType, HistoryPointMode,
+    HistoryPointsQuery, HistoryQuery, SqliteHistoryStore,
+};
 use tinytop_types::{
     CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
     PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
@@ -92,6 +95,8 @@ fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
             cpu_percent: 1.0,
             memory_percent: 2.0,
             rss_bytes: 3,
+            parent_pid: None,
+            started_at: None,
         }],
     }
 }
@@ -223,6 +228,50 @@ async fn sqlite_store_persists_dashboard_settings() {
 }
 
 #[tokio::test]
+async fn sqlite_store_persists_database_budget_settings() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+
+    let defaults = store.get_settings().await.expect("settings");
+    assert_eq!(defaults.target_database_bytes, 128 * 1024 * 1024);
+
+    let settings = DashboardSettings {
+        target_database_bytes: 256 * 1024 * 1024,
+        ..DashboardSettings::default()
+    };
+    store
+        .put_settings(&settings)
+        .await
+        .expect("settings should persist");
+
+    let persisted = store.get_settings().await.expect("persisted settings");
+    assert_eq!(persisted.target_database_bytes, 256 * 1024 * 1024);
+
+    let too_small = DashboardSettings {
+        target_database_bytes: 1024,
+        ..DashboardSettings::default()
+    };
+    let error = store
+        .put_settings(&too_small)
+        .await
+        .expect_err("small budget should fail validation")
+        .to_string();
+    assert!(error.contains("targetDatabaseBytes"));
+
+    let too_large = DashboardSettings {
+        target_database_bytes: 11 * 1024 * 1024 * 1024,
+        ..DashboardSettings::default()
+    };
+    let error = store
+        .put_settings(&too_large)
+        .await
+        .expect_err("large budget should fail validation")
+        .to_string();
+    assert!(error.contains("targetDatabaseBytes"));
+}
+
+#[tokio::test]
 async fn sqlite_store_persists_load_and_critical_thresholds() {
     let store = SqliteHistoryStore::connect("sqlite::memory:")
         .await
@@ -316,5 +365,119 @@ async fn sqlite_store_tracks_one_minute_rollups_and_coverage() {
     assert_eq!(coverage.newest_captured_at_ms, Some(60_900));
     assert_eq!(coverage.retention_hours, 72);
     assert_eq!(coverage.rollup_retention_days, 30);
+    assert_eq!(coverage.target_database_bytes, 128 * 1024 * 1024);
+    assert!(coverage.database_budget_percent >= 0.0);
     assert!(coverage.database_bytes >= 0);
+}
+
+#[tokio::test]
+async fn sqlite_store_reads_raw_and_rollup_history_points() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+
+    store
+        .insert_snapshot(60_100, &snapshot("2026-06-24T12:01:00Z", 10.0))
+        .await
+        .expect("insert one");
+    store
+        .insert_snapshot(60_900, &snapshot("2026-06-24T12:01:01Z", 30.0))
+        .await
+        .expect("insert two");
+    store
+        .insert_snapshot(120_100, &snapshot("2026-06-24T12:02:00Z", 50.0))
+        .await
+        .expect("insert three");
+
+    let raw_points = store
+        .read_history_points(HistoryPointsQuery {
+            since_ms: Some(0),
+            until_ms: None,
+            limit: Some(10),
+            source: HistoryPointMode::Raw,
+        })
+        .await
+        .expect("raw points");
+    assert_eq!(raw_points.len(), 3);
+    assert_eq!(raw_points[0].captured_at_ms, 60_100);
+    assert_eq!(raw_points[0].source.as_str(), "raw");
+    assert_eq!(raw_points[0].sample_count, 1);
+    assert_eq!(raw_points[2].cpu_usage_percent, 50.0);
+
+    let rollup_points = store
+        .read_history_points(HistoryPointsQuery {
+            since_ms: Some(0),
+            until_ms: None,
+            limit: Some(10),
+            source: HistoryPointMode::Rollup,
+        })
+        .await
+        .expect("rollup points");
+    assert_eq!(rollup_points.len(), 2);
+    assert_eq!(rollup_points[0].source.as_str(), "rollup");
+    assert_eq!(rollup_points[0].sample_count, 2);
+    assert_eq!(rollup_points[0].cpu_usage_percent, 20.0);
+    assert_eq!(rollup_points[1].cpu_usage_percent, 50.0);
+}
+
+#[tokio::test]
+async fn sqlite_store_reads_event_and_gap_history_markers() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+
+    store
+        .insert_snapshot(1_000, &snapshot("2026-06-24T12:00:01Z", 10.0))
+        .await
+        .expect("insert one");
+    store
+        .insert_snapshot(181_000, &snapshot("2026-06-24T12:03:01Z", 20.0))
+        .await
+        .expect("insert two");
+    store
+        .record_event(
+            2_000,
+            HistoryMarkerType::DaemonStart,
+            "Daemon started",
+            serde_json::json!({"pid": 123}),
+        )
+        .await
+        .expect("record daemon start");
+    store
+        .record_event(
+            3_000,
+            HistoryMarkerType::SettingsChange,
+            "Settings changed",
+            serde_json::json!({"changed": ["pollIntervalMs"]}),
+        )
+        .await
+        .expect("record settings change");
+
+    let markers = store
+        .read_history_markers(
+            HistoryQuery {
+                since_ms: Some(0),
+                until_ms: None,
+                limit: Some(10),
+            },
+            60_000,
+        )
+        .await
+        .expect("markers");
+
+    assert!(
+        markers
+            .iter()
+            .any(|marker| marker.marker_type == HistoryMarkerType::DaemonStart)
+    );
+    assert!(
+        markers
+            .iter()
+            .any(|marker| marker.marker_type == HistoryMarkerType::SettingsChange)
+    );
+    assert!(markers.iter().any(|marker| {
+        marker.marker_type == HistoryMarkerType::CoverageGap
+            && marker.label.contains("3m")
+            && marker.details["gapMs"] == serde_json::json!(180_000)
+    }));
 }

@@ -1,14 +1,22 @@
 [package]
 name = "tinytop-collectors"
-version = "0.1.26"
+version = "0.1.27"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["linux-collector"]
+linux-collector = ["dep:procfs"]
+macos-collector = []
+windows-collector = []
+
 [dependencies]
-procfs.workspace = true
 serde_json.workspace = true
 sysinfo.workspace = true
 time.workspace = true
 tinytop-types = { path = "../tinytop-types" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = { workspace = true, optional = true }

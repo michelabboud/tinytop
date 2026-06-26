@@ -6,12 +6,13 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.26`
+- Version: `0.1.27`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Dashboard UI: `http://127.0.0.1:4274`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: `~/.local/share/tinytop/history.sqlite`
 - SQLite retention: Rust daemon prunes raw samples by the saved retention window and keeps one-minute rollups by the saved rollup window
+- History API: raw snapshots remain available through `/api/history`; rollup-backed chart points and timeline markers are available through `/api/history/points` and `/api/history/markers`
 - Runtime identity: `./tinytop status` and `GET /api/version`
 - Settings: browser-local display preferences plus SQLite-backed daemon defaults at `GET`/`PUT /api/settings`
 - Network exposure: loopback only by default
@@ -161,16 +162,17 @@ For persistent background collection, install user-space systemd services:
 - Apache ECharts History views: line, stacked area, stacked bar, heatmap, and treemap
 - Responsive Bar mode that keeps a minimum bar width and rolls the visible window left as new samples arrive
 - SQLite-backed recent history so browser refreshes refill History instead of starting empty
-- Timestamp-based timeline with Live, 15m, 1h, 6h, and 24h range presets
-- Timeline rail with overview trace, selected datetime context, compact metric values, history coverage, and a return-to-now control
-- Operator status strip with Healthy, Warning, Critical, and Stale states from saved thresholds
-- Process search, sort, density controls, and process detail dialog
+- Timestamp-based timeline with Live, 15m, 1h, 6h, 24h, 7d, and 30d range presets
+- Rollup-backed 6h/24h/7d/30d timeline browsing with daemon-start, settings-change, and coverage-gap markers
+- Timeline rail with overview trace, selected datetime context, compact metric values, history coverage, DB budget status, and a return-to-now control
+- Operator status strip with Healthy, Warning, Critical, and Stale states from saved thresholds plus a detail drawer explaining metric values, thresholds, age, trend, and recent changes
+- Process search, sort, density controls, and process detail drawer with redacted copy-safe command text, parent PID/start time when available, RSS, and per-PID CPU/RAM trend
 - Filesystem root card, system-mount toggle, and threshold-colored filesystem bars
 - Visible collector/dashboard runtime and version metadata in the sidebar
 - In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
 - Browser-local display preferences for theme, graph mode, selected history range, visible series, process table controls, filesystem toggle, and last section
-- Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults, including thresholds and enabled dashboard sections
-- Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, and a no-Bun systemd path
+- Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults, including threshold presets, validation, reset/default actions, unsaved-change guard, effective settings readout, target DB budget, thresholds, and enabled dashboard sections
+- Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, a no-Bun systemd path, and feature-gated native macOS/Windows collector modules started behind opt-in build features
 
 ## Common Commands
 
@@ -217,6 +219,7 @@ Implementation notes:
 
 - The Rust Linux collector uses `procfs` and `sysinfo`; it does not shell out to `df`, `ps`, or `uname`.
 - The live collector keeps a reusable `sysinfo::System` so repeated samples avoid rebuilding all collector state from scratch.
+- Linux is the default supported collector feature. Native macOS and Windows collectors are present as opt-in Rust feature-gated modules for identity, CPU, memory, load equivalent, disks, and processes; Linux remains the reference implementation until those hosts receive full live-machine verification.
 - Local Rust builds require Rust `1.95.0` or newer because the pinned `sysinfo` release uses that MSRV.
 
 ## Documentation Map
@@ -279,13 +282,13 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API.
 
-In the Rust daemon, raw samples are pruned from `metric_samples` using `retentionHours` from `/api/settings`. One-minute rollup buckets are maintained in `metric_rollups_1m` and pruned using `rollupRetentionDays`. Legacy Bun split mode keeps the older manual archive/reset behavior.
+In the Rust daemon, raw samples are pruned from `metric_samples` using `retentionHours` from `/api/settings`. One-minute rollup buckets are maintained in `metric_rollups_1m` and pruned using `rollupRetentionDays`. The dashboard settings also store `targetDatabaseBytes`, which is surfaced in history coverage and DB budget UI. Legacy Bun split mode keeps the older manual archive/reset behavior.
 
 Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, warning/critical thresholds, and enabled sections. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
 
 The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. The range presets are Live, 15m, 1h, 6h, and 24h. Large responses are paged with `/api/history?since_ms=...&until_ms=...`, deduplicated by timestamp, and downsampled for browser rendering when needed. These query windows do not delete older SQLite rows.
 
-The current Rust SQLite implementation stores indexed metric columns plus the complete snapshot JSON, maintains one-minute metric rollups, and exposes history coverage through `GET /api/history/coverage`.
+The current Rust SQLite implementation stores indexed metric columns plus the complete snapshot JSON, maintains one-minute metric rollups, records daemon timeline events, and exposes history coverage through `GET /api/history/coverage`, chart points through `GET /api/history/points`, and markers through `GET /api/history/markers`.
 
 ## Verification
 

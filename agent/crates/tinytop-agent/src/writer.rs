@@ -13,8 +13,12 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use tinytop_collectors::linux::LinuxCollector;
-use tinytop_store::{DashboardSettings, HistoryQuery, HistorySample, SqliteHistoryStore};
+use serde_json::json;
+use tinytop_collectors::NativeCollector;
+use tinytop_store::{
+    DashboardSettings, HistoryMarker, HistoryMarkerType, HistoryPoint, HistoryPointMode,
+    HistoryPointsQuery, HistoryQuery, HistorySample, SqliteHistoryStore,
+};
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
 const DEFAULT_WINDOW_SECONDS: i64 = 300;
@@ -38,7 +42,7 @@ pub enum DashboardAssets {
 
 #[derive(Clone)]
 struct AppState {
-    collector: Arc<Mutex<LinuxCollector>>,
+    collector: Arc<Mutex<NativeCollector>>,
     store: SqliteHistoryStore,
     dashboard_assets: DashboardAssets,
 }
@@ -51,9 +55,37 @@ struct HistoryParams {
     until_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct HistoryPointsParams {
+    limit: Option<i64>,
+    window_seconds: Option<i64>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct HistoryMarkersParams {
+    limit: Option<i64>,
+    window_seconds: Option<i64>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    expected_gap_ms: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 struct HistoryResponse {
     samples: Vec<HistorySample>,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryPointsResponse {
+    points: Vec<HistoryPoint>,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryMarkersResponse {
+    markers: Vec<HistoryMarker>,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,12 +106,25 @@ struct ErrorResponse {
 pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
     let store = SqliteHistoryStore::connect(&options.sqlite_url).await?;
     let state = AppState {
-        collector: Arc::new(Mutex::new(LinuxCollector::default())),
+        collector: Arc::new(Mutex::new(NativeCollector::default())),
         store,
         dashboard_assets: options.dashboard_assets,
     };
 
     collect_and_store(&state).await?;
+    state
+        .store
+        .record_event(
+            now_ms()?,
+            HistoryMarkerType::DaemonStart,
+            "Daemon started",
+            json!({
+                "runtime": "rust",
+                "component": "collector-dashboard-daemon",
+                "version": product_version(),
+            }),
+        )
+        .await?;
     let _collection_task = spawn_collection_loop(state.clone(), options.poll_ms);
 
     let app = router(state);
@@ -108,6 +153,8 @@ fn router(state: AppState) -> Router {
         .route("/api/settings", get(get_settings).put(update_settings))
         .route("/api/snapshot", get(latest_snapshot))
         .route("/api/history/coverage", get(history_coverage))
+        .route("/api/history/points", get(history_points))
+        .route("/api/history/markers", get(history_markers))
         .route("/api/history", get(history))
         .route("/", get(static_file))
         .route("/index.html", get(static_file))
@@ -146,8 +193,20 @@ async fn update_settings(
     State(state): State<AppState>,
     Json(settings): Json<DashboardSettings>,
 ) -> Result<Response, ServeError> {
+    let previous = state.store.get_settings().await?;
     let saved = state.store.put_settings(&settings).await?;
     maintain_history(&state, &saved).await?;
+    state
+        .store
+        .record_event(
+            now_ms()?,
+            HistoryMarkerType::SettingsChange,
+            "Settings changed",
+            json!({
+                "changed": changed_setting_keys(&previous, &saved),
+            }),
+        )
+        .await?;
     Ok(no_store(Json(saved)).into_response())
 }
 
@@ -177,6 +236,29 @@ async fn history_coverage(State(state): State<AppState>) -> Result<Response, Ser
     let settings = state.store.get_settings().await?;
     let coverage = state.store.history_coverage(&settings).await?;
     Ok(no_store(Json(coverage)).into_response())
+}
+
+async fn history_points(
+    State(state): State<AppState>,
+    Query(params): Query<HistoryPointsParams>,
+) -> Result<Response, ServeError> {
+    let points = state
+        .store
+        .read_history_points(history_points_query(params)?)
+        .await?;
+    Ok(no_store(Json(HistoryPointsResponse { points })).into_response())
+}
+
+async fn history_markers(
+    State(state): State<AppState>,
+    Query(params): Query<HistoryMarkersParams>,
+) -> Result<Response, ServeError> {
+    let expected_gap_ms = params.expected_gap_ms.unwrap_or(60_000).max(1);
+    let markers = state
+        .store
+        .read_history_markers(history_query(params.into()), expected_gap_ms)
+        .await?;
+    Ok(no_store(Json(HistoryMarkersResponse { markers })).into_response())
 }
 
 async fn static_file(
@@ -311,6 +393,86 @@ fn history_query(params: HistoryParams) -> HistoryQuery {
     }
 }
 
+fn history_points_query(params: HistoryPointsParams) -> Result<HistoryPointsQuery, ServeError> {
+    let now = now_ms().unwrap_or_default();
+    let window_seconds = params
+        .window_seconds
+        .unwrap_or(DEFAULT_WINDOW_SECONDS)
+        .max(1);
+    let since_ms = params
+        .since_ms
+        .or_else(|| Some(now.saturating_sub(window_seconds.saturating_mul(1000))));
+    let source = params
+        .source
+        .as_deref()
+        .unwrap_or("auto")
+        .parse::<HistoryPointMode>()?;
+
+    Ok(HistoryPointsQuery {
+        since_ms,
+        until_ms: params.until_ms,
+        limit: Some(
+            params
+                .limit
+                .unwrap_or(DEFAULT_HISTORY_LIMIT)
+                .clamp(1, 10_000),
+        ),
+        source,
+    })
+}
+
+impl From<HistoryMarkersParams> for HistoryParams {
+    fn from(params: HistoryMarkersParams) -> Self {
+        Self {
+            limit: params.limit,
+            window_seconds: params.window_seconds,
+            since_ms: params.since_ms,
+            until_ms: params.until_ms,
+        }
+    }
+}
+
+fn changed_setting_keys(
+    previous: &DashboardSettings,
+    saved: &DashboardSettings,
+) -> Vec<&'static str> {
+    let mut changed = Vec::new();
+    if previous.default_theme != saved.default_theme {
+        changed.push("defaultTheme");
+    }
+    if previous.default_graph_mode != saved.default_graph_mode {
+        changed.push("defaultGraphMode");
+    }
+    if previous.poll_interval_ms != saved.poll_interval_ms {
+        changed.push("pollIntervalMs");
+    }
+    if previous.default_history_window != saved.default_history_window {
+        changed.push("defaultHistoryWindow");
+    }
+    if previous.retention_hours != saved.retention_hours {
+        changed.push("retentionHours");
+    }
+    if previous.rollup_retention_days != saved.rollup_retention_days {
+        changed.push("rollupRetentionDays");
+    }
+    if previous.target_database_bytes != saved.target_database_bytes {
+        changed.push("targetDatabaseBytes");
+    }
+    if previous.top_process_count != saved.top_process_count {
+        changed.push("topProcessCount");
+    }
+    if previous.redaction_default != saved.redaction_default {
+        changed.push("redactionDefault");
+    }
+    if previous.thresholds != saved.thresholds {
+        changed.push("thresholds");
+    }
+    if previous.enabled_sections != saved.enabled_sections {
+        changed.push("enabledSections");
+    }
+    changed
+}
+
 fn static_relative_path(path: &str) -> Option<&'static Path> {
     match path {
         "/" | "/index.html" => Some(Path::new("index.html")),
@@ -352,7 +514,7 @@ fn no_store<T: IntoResponse>(response: T) -> Response {
 
 fn now_ms() -> Result<i64, ServeError> {
     let duration = SystemTime::now().duration_since(UNIX_EPOCH)?;
-    Ok(i64::try_from(duration.as_millis()).map_err(|_| ServeError::TimeOverflow)?)
+    i64::try_from(duration.as_millis()).map_err(|_| ServeError::TimeOverflow)
 }
 
 async fn shutdown_signal() {
