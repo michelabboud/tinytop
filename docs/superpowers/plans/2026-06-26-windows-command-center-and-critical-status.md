@@ -1,6 +1,6 @@
 # Windows Command Center And Critical Status Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]` / `- [x]`) syntax for tracking.
 
 **Goal:** Add a practical native Windows control layer for the Rust collector/dashboard and make Critical operator state visually unmistakable in the dashboard.
 
@@ -37,7 +37,7 @@
 - Produces a static contract for `tinytop.ps1` commands and Windows service behavior.
 - Produces Bash wrapper coverage for target-specific Rust feature selection.
 
-- [ ] **Step 1: Write failing PowerShell static tests**
+- [x] **Step 1: Write failing PowerShell static tests**
 
 Create `tests/tinytop-powershell.test.ts` with tests asserting:
 
@@ -86,11 +86,11 @@ describe("Windows PowerShell command center", () => {
 });
 ```
 
-- [ ] **Step 2: Write failing Bash Windows feature-selection tests**
+- [x] **Step 2: Write failing Bash Windows feature-selection tests**
 
 Add tests to `tests/tinytop-script.test.ts` that run `./tinytop --plain rust build --print-command` with `TINYTOP_RELEASE_OS=windows` and assert the command includes `--no-default-features --features windows-collector`.
 
-- [ ] **Step 3: Verify red**
+- [x] **Step 3: Verify red**
 
 Run:
 
@@ -113,7 +113,7 @@ Expected: fails because `tinytop.ps1` does not exist and `rust build --print-com
 - `tinytop.ps1 service install|uninstall|start|stop|restart|status`
 - `./tinytop rust build --print-command`
 
-- [ ] **Step 1: Add PowerShell script**
+- [x] **Step 1: Add PowerShell script**
 
 Create `tinytop.ps1` with:
 
@@ -128,7 +128,7 @@ Create `tinytop.ps1` with:
 - `/api/version` status probe
 - Windows service commands wrapping `New-Service`, `Start-Service`, `Stop-Service`, `Get-Service`, and `sc.exe delete`
 
-- [ ] **Step 2: Update Bash wrapper build command**
+- [x] **Step 2: Update Bash wrapper build command**
 
 Add `rust_build_args` and support `./tinytop rust build --print-command`. Select:
 
@@ -138,7 +138,7 @@ Add `rust_build_args` and support `./tinytop rust build --print-command`. Select
 
 Use `TINYTOP_RELEASE_OS` only for tests and cross-shell simulation.
 
-- [ ] **Step 3: Verify green**
+- [x] **Step 3: Verify green**
 
 Run:
 
@@ -161,7 +161,7 @@ Expected: tests pass, shellcheck passes, Windows collector crate check passes.
 - Existing `data-status="critical"` on `#operator-status`
 - Existing `#operator-state` visible text
 
-- [ ] **Step 1: Write failing CSS tests**
+- [x] **Step 1: Write failing CSS tests**
 
 Extend `tests/dashboard-operator-alert.test.ts` to assert the stylesheet contains:
 
@@ -171,7 +171,7 @@ Extend `tests/dashboard-operator-alert.test.ts` to assert the stylesheet contain
 - `.operator-status[data-status="warning"]`
 - `.operator-status[data-status="stale"]`
 
-- [ ] **Step 2: Verify red**
+- [x] **Step 2: Verify red**
 
 Run:
 
@@ -181,7 +181,7 @@ bun test tests/dashboard-operator-alert.test.ts
 
 Expected: fails because the stronger selectors are absent.
 
-- [ ] **Step 3: Add stronger state styling**
+- [x] **Step 3: Add stronger state styling**
 
 Add CSS so the whole operator strip changes tone by status:
 
@@ -192,11 +192,11 @@ Add CSS so the whole operator strip changes tone by status:
 
 Keep text labels and state names visible so the warning is not color-only.
 
-- [ ] **Step 4: Keep asset parity**
+- [x] **Step 4: Keep asset parity**
 
 Copy the same CSS to `agent/assets/dashboard/styles.css` or edit both trees identically.
 
-- [ ] **Step 5: Verify green**
+- [x] **Step 5: Verify green**
 
 Run:
 
@@ -228,7 +228,7 @@ Expected: tests pass and no asset differences.
 - New version: `0.1.29`
 - Tag: `v0.1.29`
 
-- [ ] **Step 1: Update docs**
+- [x] **Step 1: Update docs**
 
 Document:
 
@@ -238,15 +238,15 @@ Document:
 - Scoop/winget remain future packaging layers after Windows release assets are published.
 - Current release may only include Linux asset until a Windows `.exe` is built and uploaded.
 
-- [ ] **Step 2: Add report**
+- [x] **Step 2: Add report**
 
 Create `docs/reports/2026-06-26-windows-command-center-and-critical-status.md` with scope, implementation notes, service answer, and verification evidence.
 
-- [ ] **Step 3: Bump version**
+- [x] **Step 3: Bump version**
 
 Bump product and crate versions from `0.1.28` to `0.1.29`.
 
-- [ ] **Step 4: Full verification**
+- [x] **Step 4: Full verification**
 
 Run:
 
@@ -260,7 +260,7 @@ bun audit
 cargo audit --file agent/Cargo.lock
 ```
 
-- [ ] **Step 5: Commit, tag, push, release**
+- [x] **Step 5: Commit, tag, push, release**
 
 Commit with Michel's author email and Codex trailer, tag `v0.1.29`, push `main` and tag, create a GitHub release, upload the Linux binary and checksum. Do not claim Windows release binary availability unless a real Windows `.exe` has been built and uploaded.
 
