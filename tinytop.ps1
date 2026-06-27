@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$TinyTopVersion = "0.1.32"
+$TinyTopVersion = "0.1.33"
 $ServiceName = "TinyTop"
 $DefaultHost = if ($env:HOST) { $env:HOST } else { "127.0.0.1" }
 $DefaultPort = if ($env:PORT) { [int]$env:PORT } else { 4274 }
@@ -113,9 +113,22 @@ function Test-TinyTopAdmin {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Require-TinyTopAdmin {
-  if (-not (Test-TinyTopAdmin)) {
-    throw "Run PowerShell as Administrator for TinyTop service install/uninstall."
+function Confirm-TinyTopServiceElevation {
+  param([Parameter(Mandatory = $true)][string]$Action)
+
+  if (Test-TinyTopAdmin) {
+    return
+  }
+
+  $message = "TinyTop service '$Action' usually requires an elevated PowerShell session."
+  if (-not [Environment]::UserInteractive) {
+    throw "$message Run PowerShell as Administrator, or rerun interactively to confirm before continuing."
+  }
+
+  Write-Warning "$message Run PowerShell as Administrator for the safest path."
+  [string]$answer = Read-Host "PowerShell is not elevated. Continue with service $Action anyway? [y/N]"
+  if ($answer.Trim() -notmatch "(?i)^(y|yes)$") {
+    throw "Cancelled TinyTop service $Action. Run PowerShell as Administrator and retry."
   }
 }
 
@@ -258,7 +271,7 @@ function Show-TinyTopLogs {
 }
 
 function Install-TinyTopService {
-  Require-TinyTopAdmin
+  Confirm-TinyTopServiceElevation -Action "install"
   New-TinyTopDirectories
   $agent = Get-TinyTopRunnableAgent
   if (-not (Test-Path $agent)) {
@@ -278,7 +291,7 @@ function Install-TinyTopService {
 }
 
 function Uninstall-TinyTopService {
-  Require-TinyTopAdmin
+  Confirm-TinyTopServiceElevation -Action "uninstall"
   $service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
   if ($service) {
     if ($service.Status -ne "Stopped") {
@@ -297,9 +310,16 @@ function Invoke-TinyTopService {
   switch ($Action) {
     "install" { Install-TinyTopService }
     "uninstall" { Uninstall-TinyTopService }
-    "start" { Start-Service -Name $ServiceName }
-    "stop" { Stop-Service -Name $ServiceName }
+    "start" {
+      Confirm-TinyTopServiceElevation -Action "start"
+      Start-Service -Name $ServiceName
+    }
+    "stop" {
+      Confirm-TinyTopServiceElevation -Action "stop"
+      Stop-Service -Name $ServiceName
+    }
     "restart" {
+      Confirm-TinyTopServiceElevation -Action "restart"
       Stop-Service -Name $ServiceName
       Start-Service -Name $ServiceName
     }

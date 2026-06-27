@@ -40,6 +40,14 @@ describe("Windows PowerShell command center", () => {
 
     expect(script).toContain("function Install-TinyTopService");
     expect(script).toContain("function Test-TinyTopAdmin");
+    expect(script).toContain("function Confirm-TinyTopServiceElevation");
+    expect(script).toContain("[Environment]::UserInteractive");
+    expect(script).toContain("Read-Host");
+    expect(script).toContain("Confirm-TinyTopServiceElevation -Action \"install\"");
+    expect(script).toContain("Confirm-TinyTopServiceElevation -Action \"uninstall\"");
+    expect(script).toContain("Confirm-TinyTopServiceElevation -Action \"start\"");
+    expect(script).toContain("Confirm-TinyTopServiceElevation -Action \"stop\"");
+    expect(script).toContain("Confirm-TinyTopServiceElevation -Action \"restart\"");
     expect(script).toContain("New-Service");
     expect(script).toContain("Start-Service");
     expect(script).toContain("Stop-Service");

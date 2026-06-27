@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.32`
+- Version: `0.1.33`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Windows entrypoint: `.\tinytop.ps1` for Rust install/build/start/stop/status/logs and Windows service commands
 - Dashboard UI: `http://127.0.0.1:4274`
@@ -21,7 +21,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Screenshot
 
-![TinyTop dashboard v0.1.32](docs/assets/tinytop-dashboard-v0.1.32.png)
+![TinyTop dashboard v0.1.33](docs/assets/tinytop-dashboard-v0.1.33.png)
 
 
 ## Install And Run
@@ -52,12 +52,14 @@ On Windows, use the native PowerShell command center:
 .\tinytop.ps1 start
 ```
 
-Windows service install/start is explicit:
+Windows service install/start is explicit and guarded by an elevation check:
 
 ```powershell
 .\tinytop.ps1 service install
 .\tinytop.ps1 service start
 ```
+
+If PowerShell is not elevated, interactive service mutations ask for confirmation before attempting the Windows Service Control Manager action; non-interactive non-elevated service mutations fail with Administrator guidance.
 
 Service install/uninstall require PowerShell running as Administrator. See [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md).
 
@@ -280,6 +282,7 @@ Implementation notes:
 | [docs/reports/2026-06-26-windows-command-center-and-critical-status.md](docs/reports/2026-06-26-windows-command-center-and-critical-status.md) | Windows PowerShell command center, service path, and Critical strip visibility |
 | [docs/reports/2026-06-27-settings-toggles-release.md](docs/reports/2026-06-27-settings-toggles-release.md) | Settings toggle layout fix, screenshot refresh, and v0.1.31 release verification |
 | [docs/reports/2026-06-27-live-readme-screenshot.md](docs/reports/2026-06-27-live-readme-screenshot.md) | Live connected README screenshot refresh and v0.1.32 checkpoint verification |
+| [docs/reports/2026-06-27-windows-service-elevation-guard.md](docs/reports/2026-06-27-windows-service-elevation-guard.md) | Windows service elevation confirmation guard and v0.1.33 checkpoint verification |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/plans/2026-06-26-dashboard-operator-console.md](docs/superpowers/plans/2026-06-26-dashboard-operator-console.md) | Executed plan for operator status, Timeline V2, settings application, process/filesystem controls, and history backend follow-through |
 | [docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md](docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md) | Executed plan for Windows command-center support and Critical status visibility |

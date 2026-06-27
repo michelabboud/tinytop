@@ -100,6 +100,8 @@ Install as a Windows service from an elevated PowerShell session:
 .\tinytop.ps1 service start
 ```
 
+The PowerShell command center checks elevation before `service install`, `start`, `stop`, `restart`, and `uninstall`. If the shell is interactive but not elevated, it asks for confirmation before attempting the service action; non-interactive non-elevated service mutations fail with Administrator guidance.
+
 See [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md) for Windows paths, service behavior, and the package-manager roadmap.
 
 ## Install Development Dependencies

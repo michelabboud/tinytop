@@ -81,6 +81,8 @@ TinyTop can install a real Windows service. Install and uninstall require an ele
 .\tinytop.ps1 service uninstall
 ```
 
+The command center checks elevation before every mutating service action: `install`, `start`, `stop`, `restart`, and `uninstall`. If PowerShell is not elevated in an interactive session, TinyTop warns and asks for explicit confirmation before attempting the service action. Non-interactive non-elevated runs fail with Administrator guidance. `service status` remains read-only and does not prompt.
+
 The service runs `tinytop-agent.exe serve --host 127.0.0.1 --port 4274 --sqlite <path>`. The explicit SQLite path keeps service storage under the TinyTop local state directory instead of relying on a process profile's default home directory.
 
 ## Package Manager Roadmap

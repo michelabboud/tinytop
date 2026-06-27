@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-27 13:50 Asia/Jerusalem
+Date: 2026-06-27 14:08 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.32`
-- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.32`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.32`
-- The `v0.1.32` checkpoint refreshes the README screenshot with a live connected dashboard capture and keeps the Rust dashboard release identity current.
+- Current checkpoint version: `0.1.33`
+- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.33`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.33`
+- The `v0.1.33` checkpoint adds Windows PowerShell service elevation/confirmation guarding and keeps the Rust dashboard release identity current.
 
 ## Runtime State
 
@@ -22,12 +22,12 @@ Date: 2026-06-27 13:50 Asia/Jerusalem
 - History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
 - History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.32 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.33 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `230816`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `355625`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.32-live-screenshot-20260627-135000.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.33-windows-service-guard-20260627-140800.log`
 
 ## Rust Collector Confirmation
 
@@ -44,6 +44,14 @@ Evidence:
 - The legacy Bun dashboard assets now live at `legacy/dashboard/`.
 
 ## Recently Completed
+
+### v0.1.33 - Windows Service Elevation Guard
+
+- Added a shared PowerShell guard for mutating Windows service commands.
+- `service install`, `service start`, `service stop`, `service restart`, and `service uninstall` now check elevation before running.
+- Interactive non-elevated service mutations warn and ask for explicit confirmation; non-interactive non-elevated runs fail with Administrator guidance.
+- Kept `service status` read-only and non-prompting.
+- Updated Windows install docs and regression coverage.
 
 ### v0.1.32 - Live Connected README Screenshot
 

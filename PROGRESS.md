@@ -2,11 +2,19 @@
 
 ## Current Version
 
-- Version: `0.1.32`
+- Version: `0.1.33`
 - Date: 2026-06-27
-- Status: README screenshot replaced with a live connected dashboard capture showing real host/metric/history values and the green Live indicator; Settings dialog effective readout chips fixed, daemon boolean options presented as compact responsive toggles, and embedded Rust collector/dashboard agent rebuilt; Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, stronger Critical/Warning/Stale operator strip styling plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, compact sidebar runtime identity, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, Windows PowerShell command center with Windows service commands, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Status: Windows PowerShell service commands now check elevation before mutating Windows Service Control Manager and require explicit confirmation for interactive non-elevated attempts; README screenshot remains a live connected dashboard capture; Settings dialog effective readout chips fixed, daemon boolean options presented as compact responsive toggles, and embedded Rust collector/dashboard agent rebuilt; Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, stronger Critical/Warning/Stale operator strip styling plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, compact sidebar runtime identity, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, Windows PowerShell command center with Windows service commands, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
+
+### 0.1.33 - Windows Service Elevation Guard
+
+- [x] Added a shared PowerShell guard for mutating Windows service actions.
+- [x] Kept `service status` read-only and non-prompting.
+- [x] Required explicit confirmation before interactive non-elevated service mutations.
+- [x] Failed non-interactive non-elevated service mutations with Administrator guidance.
+- [x] Updated Windows install docs and regression coverage for the service guard.
 
 ### 0.1.32 - Live Connected README Screenshot
 

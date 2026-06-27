@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.33 - 2026-06-27
+
+- Bumped product, command-center, PowerShell, and Rust crate versions to 0.1.33.
+- Added a shared PowerShell elevation/confirmation guard for mutating Windows service commands.
+- `.\tinytop.ps1 service install|start|stop|restart|uninstall` now checks for elevated PowerShell before touching Windows Service Control Manager.
+- Interactive non-elevated service mutations now warn and require explicit confirmation; non-interactive non-elevated service mutations fail with Administrator guidance.
+- Refreshed Windows installation docs for the service elevation behavior.
+
 ## 0.1.32 - 2026-06-27
 
 - Replaced the README dashboard screenshot with a fresh live capture from the connected Rust collector/dashboard daemon.
