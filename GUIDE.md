@@ -54,7 +54,7 @@ The operator strip shows:
 
 Click the operator strip or its `Details` button to open the alert detail drawer. It lists the current metric values, warning/critical thresholds, sample age, recent trend, and what changed recently for the worst offender.
 
-The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.27`. The same identity is available from:
+The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.31`. The same identity is available from:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/api/version
@@ -91,7 +91,7 @@ The Settings dialog opens from the left rail and is split by scope:
 - `This Browser` controls the active theme, graph mode, and history window for the current browser profile. Additional browser-local state includes visible chart series, process table filter/sort/density, filesystem system-mount toggle, and last-used section.
 - `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, target DB budget, top process count, redaction default, warning/critical thresholds, and enabled dashboard sections.
 
-The dialog validates ranges before saving, warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Saving daemon defaults uses `PUT /api/settings`. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
+The dialog validates ranges before saving, warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Boolean daemon options, including redaction and enabled dashboard sections, render as compact responsive toggle controls so several options can fit per row on desktop while remaining touch-friendly on narrow screens. Saving daemon defaults uses `PUT /api/settings`. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
 
 ## History
 

@@ -244,7 +244,7 @@ curl -fsS http://127.0.0.1:4274/snapshot/collect
 
 ## Browser Shows Old UI
 
-The server sends `cache-control: no-store`, but browser state can still preserve settings.
+The server sends `cache-control: no-store`, but browser state can still preserve settings. The Rust daemon embeds dashboard assets into the `tinytop-agent` binary, so CSS or JavaScript changes require rebuilding the Rust agent and restarting the daemon before the browser can receive those embedded assets.
 
 Try:
 

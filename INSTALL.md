@@ -280,7 +280,7 @@ ok
 3. Run `./tinytop deps`.
 4. Run `./tinytop check`.
 5. Start `./tinytop systemd start` or `./tinytop start`.
-6. Open the dashboard and confirm the sidebar version line plus History hydration after a browser refresh.
+6. Open the dashboard and confirm the sidebar version line, Settings toggle layout, and History hydration after a browser refresh.
 
 The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. The Rust daemon adds the `app_settings`, `metric_rollups_1m`, and `app_events` tables automatically when it starts.
 

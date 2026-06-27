@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-26 22:29 Asia/Jerusalem
+Date: 2026-06-27 10:10 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.29`
-- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.29`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.29`
-- The `v0.1.29` checkpoint adds a Windows PowerShell command center, Windows service commands, target-specific Windows Rust build selection, stronger operator status strip styling, and a compact sidebar runtime identity while keeping the Rust embedded and legacy Bun dashboard trees byte-identical.
+- Current checkpoint version: `0.1.31`
+- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.31`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.31`
+- The `v0.1.31` checkpoint adds a stable Rust/legacy parity update including the most recent dashboard fixes and version identity bump.
 
 ## Runtime State
 
@@ -22,12 +22,12 @@ Date: 2026-06-26 22:29 Asia/Jerusalem
 - History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
 - History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.29 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.31 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `1894345`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `77720`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.29.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.31-toggles-20260627-100143.log`
 
 ## Rust Collector Confirmation
 
@@ -44,6 +44,15 @@ Evidence:
 - The legacy Bun dashboard assets now live at `legacy/dashboard/`.
 
 ## Recently Completed
+
+### v0.1.31 - Settings Readout And Rust Agent Rebuild
+
+- Fixed the Settings dialog effective-settings readout so compact browser/daemon defaults no longer stretch into oversized ovals.
+- Changed daemon redaction and enabled-section checkboxes into compact responsive toggle controls.
+- Kept the Rust embedded dashboard asset tree and legacy Bun dashboard asset tree aligned for the CSS fix.
+- Bumped product and Rust crate versions to `0.1.31`.
+- Added a fresh rendered dashboard screenshot to the README.
+- Rebuilt the release `tinytop-agent` binary with the embedded dashboard layout fixes.
 
 ### v0.1.14 - Web UI Confirmation Dialogs
 

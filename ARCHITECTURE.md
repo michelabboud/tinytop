@@ -275,6 +275,7 @@ Web UI interaction policy:
 - Inline errors render through the `status-message` surface.
 - Browser-local destructive actions use the reusable `<dialog>` confirmation flow in the dashboard `app.js`.
 - Confirmed actions must describe their scope before continuing; for example, clearing History affects only the current tab's loaded samples and does not delete SQLite history.
+- Settings checkboxes keep native checkbox semantics in the DOM but are presented as responsive toggle controls so enabled-section and redaction settings remain dense, touch-friendly, and keyboard-focusable.
 
 ## Runtime Detection
 

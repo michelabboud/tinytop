@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.29`
+- Version: `0.1.31`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Windows entrypoint: `.\tinytop.ps1` for Rust install/build/start/stop/status/logs and Windows service commands
 - Dashboard UI: `http://127.0.0.1:4274`
@@ -18,6 +18,11 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 - Settings: browser-local display preferences plus SQLite-backed daemon defaults at `GET`/`PUT /api/settings`
 - Dashboard assets: Rust embedded and legacy Bun dashboard trees stay byte-identical, including the SVG favicon served at `/favicon.svg`
 - Network exposure: loopback only by default
+
+## Screenshot
+
+![TinyTop dashboard v0.1.31](docs/assets/tinytop-dashboard-v0.1.31.png)
+
 
 ## Install And Run
 
@@ -191,7 +196,7 @@ For persistent background collection, install user-space systemd services:
 - Visible collector/dashboard runtime and version metadata in the sidebar
 - In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
 - Browser-local display preferences for theme, graph mode, selected history range, visible series, process table controls, filesystem toggle, and last section
-- Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults, including threshold presets, validation, reset/default actions, unsaved-change guard, effective settings readout, target DB budget, thresholds, and enabled dashboard sections
+- Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults, including threshold presets, validation, reset/default actions, unsaved-change guard, effective settings readout, target DB budget, thresholds, and compact toggle controls for enabled dashboard sections
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, a no-Bun systemd path, and feature-gated native macOS/Windows collector modules started behind opt-in build features
 - Native Windows PowerShell command center for the Rust daemon, including foreground lifecycle and Windows service commands
 
@@ -273,6 +278,7 @@ Implementation notes:
 | [docs/reports/2026-06-26-dashboard-operator-console.md](docs/reports/2026-06-26-dashboard-operator-console.md) | Operator console dashboard slice, retention enforcement, rollups, and verification |
 | [docs/reports/2026-06-26-select-dropdown-contrast.md](docs/reports/2026-06-26-select-dropdown-contrast.md) | Native dropdown contrast fix and embedded dashboard verification |
 | [docs/reports/2026-06-26-windows-command-center-and-critical-status.md](docs/reports/2026-06-26-windows-command-center-and-critical-status.md) | Windows PowerShell command center, service path, and Critical strip visibility |
+| [docs/reports/2026-06-27-settings-toggles-release.md](docs/reports/2026-06-27-settings-toggles-release.md) | Settings toggle layout fix, screenshot refresh, and v0.1.31 release verification |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/plans/2026-06-26-dashboard-operator-console.md](docs/superpowers/plans/2026-06-26-dashboard-operator-console.md) | Executed plan for operator status, Timeline V2, settings application, process/filesystem controls, and history backend follow-through |
 | [docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md](docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md) | Executed plan for Windows command-center support and Critical status visibility |
@@ -313,7 +319,7 @@ In the Rust daemon, raw samples are pruned from `metric_samples` using `retentio
 
 Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, warning/critical thresholds, and enabled sections. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
 
-The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. The range presets are Live, 15m, 1h, 6h, and 24h. Large responses are paged with `/api/history?since_ms=...&until_ms=...`, deduplicated by timestamp, and downsampled for browser rendering when needed. These query windows do not delete older SQLite rows.
+The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. The range presets are Live, 15m, 1h, 6h, 24h, 7d, and 30d. Large raw responses are paged with `/api/history?since_ms=...&until_ms=...`, longer ranges use `/api/history/points`, and browser rendering may downsample loaded points when needed. These query windows do not delete older SQLite rows.
 
 The current Rust SQLite implementation stores indexed metric columns plus the complete snapshot JSON, maintains one-minute metric rollups, records daemon timeline events, and exposes history coverage through `GET /api/history/coverage`, chart points through `GET /api/history/points`, and markers through `GET /api/history/markers`.
 

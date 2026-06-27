@@ -2,11 +2,20 @@
 
 ## Current Version
 
-- Version: `0.1.29`
-- Date: 2026-06-26
-- Status: Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, stronger Critical/Warning/Stale operator strip styling plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, compact sidebar runtime identity, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, Windows PowerShell command center with Windows service commands, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
+- Version: `0.1.31`
+- Date: 2026-06-27
+- Status: Settings dialog effective readout chips fixed, daemon boolean options presented as compact responsive toggles, README screenshot refreshed, and embedded Rust collector/dashboard agent rebuilt; Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, stronger Critical/Warning/Stale operator strip styling plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, compact sidebar runtime identity, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, Windows PowerShell command center with Windows service commands, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Completed
+
+### 0.1.31 - Settings Readout And Rust Agent Rebuild
+
+- [x] Fixed the Settings dialog effective-settings readout so browser/daemon defaults render as compact chips instead of stretched ovals.
+- [x] Changed daemon redaction and enabled-section checkboxes into compact responsive toggle controls without changing settings IDs or storage.
+- [x] Kept Rust embedded and legacy Bun dashboard assets byte-identical for the CSS fix.
+- [x] Added a fresh rendered dashboard screenshot to the README.
+- [x] Bumped product, command-center, PowerShell, and Rust crate versions to 0.1.31.
+- [x] Rebuilt the release `tinytop-agent` binary with the embedded dashboard CSS fix.
 
 ### 0.1.0 - Initial Dashboard
 

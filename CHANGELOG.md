@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.31 - 2026-06-27
+
+- Bumped product and Rust crate versions to 0.1.31.
+- Fixed the Settings dialog effective-settings readout so compact chips no longer stretch into oversized ovals beside the taller daemon settings column.
+- Changed daemon boolean settings from tall single-column checkboxes to compact responsive toggle controls while keeping the underlying checkbox semantics and IDs intact.
+- Added a fresh rendered dashboard screenshot to the README.
+- Rebuilt the embedded Rust collector/dashboard agent so the packaged dashboard includes the Settings layout fixes.
+- Added a release verification report for the Settings layout, screenshot, and v0.1.31 closeout.
+
+## 0.1.30 - 2026-06-26
+
+- Bumped product version to 0.1.30.
+- Re-verified embedded Rust dashboard runtime behavior and ensured current release files and crate metadata are aligned with the new patch version.
+
 ## 0.1.29 - 2026-06-26
 
 - Added `tinytop.ps1` as a native Windows PowerShell command center for the Rust collector/dashboard daemon.
