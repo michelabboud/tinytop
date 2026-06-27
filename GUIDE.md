@@ -54,7 +54,7 @@ The operator strip shows:
 
 Click the operator strip or its `Details` button to open the alert detail drawer. It lists the current metric values, warning/critical thresholds, sample age, recent trend, and what changed recently for the worst offender.
 
-The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.33`. The same identity is available from:
+The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.34`. The same identity is available from:
 
 ```bash
 curl -fsS http://127.0.0.1:4274/api/version

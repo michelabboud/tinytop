@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-27 14:08 Asia/Jerusalem
+Date: 2026-06-27 14:35 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.33`
-- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.33`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.33`
-- The `v0.1.33` checkpoint adds Windows PowerShell service elevation/confirmation guarding and keeps the Rust dashboard release identity current.
+- Current checkpoint version: `0.1.34`
+- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.34`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.34`
+- The `v0.1.34` checkpoint adds an on-demand GitHub Actions binary workflow for Linux, Windows, and macOS release assets.
 
 ## Runtime State
 
@@ -22,12 +22,12 @@ Date: 2026-06-27 14:08 Asia/Jerusalem
 - History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
 - History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.33 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.34 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `355625`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `581326`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.33-windows-service-guard-20260627-140800.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.34-binary-workflow-20260627-143500.log`
 
 ## Rust Collector Confirmation
 
@@ -44,6 +44,18 @@ Evidence:
 - The legacy Bun dashboard assets now live at `legacy/dashboard/`.
 
 ## Recently Completed
+
+### v0.1.34 - On-Demand Cross-Platform Binary Workflow
+
+- Added `.github/workflows/build-binaries.yml`.
+- The workflow is `workflow_dispatch` only and accepts `platform`, `release_tag`, and `upload_to_release` inputs.
+- `platform=linux` builds `tinytop-agent-linux-x86_64` on `ubuntu-24.04`.
+- `platform=windows` builds `tinytop-agent-windows-x86_64.exe` on `windows-2025`.
+- `platform=macos` builds both `tinytop-agent-macos-x86_64` on `macos-15-intel` and `tinytop-agent-macos-aarch64` on `macos-15`.
+- `platform=all` builds all of the above.
+- Every build uploads the binary plus `.sha256` as workflow artifacts.
+- When `upload_to_release=true`, the workflow attaches assets to the existing `release_tag` with `gh release upload --clobber`.
+- Added `tests/github-actions-build-binaries.test.ts` and `docs/guides/RELEASE_BUILDS.md`.
 
 ### v0.1.33 - Windows Service Elevation Guard
 

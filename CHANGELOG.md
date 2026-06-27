@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.34 - 2026-06-27
+
+- Added an on-demand GitHub Actions workflow for building TinyTop release binaries.
+- The manual workflow can build Linux x86_64, Windows x86_64, macOS x86_64, macOS aarch64, or all supported release binaries in one run.
+- Each build uploads the binary and `.sha256` checksum as workflow artifacts.
+- The workflow can optionally attach built assets to an existing GitHub release tag with `gh release upload --clobber`.
+- Added regression coverage for the workflow contract and documented the release-build process.
+
 ## 0.1.33 - 2026-06-27
 
 - Bumped product, command-center, PowerShell, and Rust crate versions to 0.1.33.

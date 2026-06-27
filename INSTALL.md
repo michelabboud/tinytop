@@ -104,6 +104,18 @@ The PowerShell command center checks elevation before `service install`, `start`
 
 See [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md) for Windows paths, service behavior, and the package-manager roadmap.
 
+## On-Demand Release Binaries
+
+Maintainers can build release binaries from GitHub Actions without a local platform machine:
+
+```text
+Actions -> Build release binaries -> Run workflow
+```
+
+Choose `all`, `linux`, `windows`, or `macos`. The workflow builds on native hosted runners and uploads binaries plus `.sha256` checksums as artifacts. To attach them to an existing release, provide `release_tag` and enable `upload_to_release`.
+
+See [docs/guides/RELEASE_BUILDS.md](docs/guides/RELEASE_BUILDS.md) for asset names, inputs, and release-upload behavior.
+
 ## Install Development Dependencies
 
 ```bash

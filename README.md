@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.33`
+- Version: `0.1.34`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Windows entrypoint: `.\tinytop.ps1` for Rust install/build/start/stop/status/logs and Windows service commands
 - Dashboard UI: `http://127.0.0.1:4274`
@@ -21,7 +21,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Screenshot
 
-![TinyTop dashboard v0.1.33](docs/assets/tinytop-dashboard-v0.1.33.png)
+![TinyTop live dashboard](docs/assets/tinytop-dashboard-v0.1.33.png)
 
 
 ## Install And Run
@@ -60,6 +60,29 @@ Windows service install/start is explicit and guarded by an elevation check:
 ```
 
 If PowerShell is not elevated, interactive service mutations ask for confirmation before attempting the Windows Service Control Manager action; non-interactive non-elevated service mutations fail with Administrator guidance.
+
+## On-Demand Release Binary Builds
+
+TinyTop ships a manual GitHub Actions workflow for building release binaries without waiting for a push-triggered CI run:
+
+```text
+Actions -> Build release binaries -> Run workflow
+```
+
+Inputs:
+
+- `platform`: `all`, `linux`, `windows`, or `macos`
+- `release_tag`: existing tag to attach assets to when release upload is enabled
+- `upload_to_release`: attach built binaries and checksums to `release_tag`
+
+Artifacts produced:
+
+- `tinytop-agent-linux-x86_64`
+- `tinytop-agent-windows-x86_64.exe`
+- `tinytop-agent-macos-x86_64`
+- `tinytop-agent-macos-aarch64`
+
+Each artifact includes a sibling `.sha256` checksum. See [docs/guides/RELEASE_BUILDS.md](docs/guides/RELEASE_BUILDS.md) for the operator flow.
 
 Service install/uninstall require PowerShell running as Administrator. See [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md).
 
@@ -266,6 +289,7 @@ Implementation notes:
 | [docs/guides/API.md](docs/guides/API.md) | Public dashboard API and internal collector API |
 | [docs/guides/OPERATIONS.md](docs/guides/OPERATIONS.md) | Runtime checks, SQLite inspection, backup/reset, troubleshooting |
 | [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md) | Native Windows PowerShell command center, service commands, and packaging roadmap |
+| [docs/guides/RELEASE_BUILDS.md](docs/guides/RELEASE_BUILDS.md) | Manual GitHub Actions workflow for Linux, Windows, and macOS release binaries |
 | [docs/sqlite-history-architecture.md](docs/sqlite-history-architecture.md) | Persistence design and current SQLite implementation |
 | [docs/reports/2026-06-24-rust-agent-dependency-vetting.md](docs/reports/2026-06-24-rust-agent-dependency-vetting.md) | Rust collector dependency and SQLx vetting |
 | [docs/reports/2026-06-25-rust-daemon-dependency-vetting.md](docs/reports/2026-06-25-rust-daemon-dependency-vetting.md) | Rust daemon and vendored dashboard asset dependency vetting |
@@ -283,6 +307,7 @@ Implementation notes:
 | [docs/reports/2026-06-27-settings-toggles-release.md](docs/reports/2026-06-27-settings-toggles-release.md) | Settings toggle layout fix, screenshot refresh, and v0.1.31 release verification |
 | [docs/reports/2026-06-27-live-readme-screenshot.md](docs/reports/2026-06-27-live-readme-screenshot.md) | Live connected README screenshot refresh and v0.1.32 checkpoint verification |
 | [docs/reports/2026-06-27-windows-service-elevation-guard.md](docs/reports/2026-06-27-windows-service-elevation-guard.md) | Windows service elevation confirmation guard and v0.1.33 checkpoint verification |
+| [docs/reports/2026-06-27-on-demand-binary-workflow.md](docs/reports/2026-06-27-on-demand-binary-workflow.md) | On-demand Linux, Windows, and macOS binary workflow and v0.1.34 verification |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/plans/2026-06-26-dashboard-operator-console.md](docs/superpowers/plans/2026-06-26-dashboard-operator-console.md) | Executed plan for operator status, Timeline V2, settings application, process/filesystem controls, and history backend follow-through |
 | [docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md](docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md) | Executed plan for Windows command-center support and Critical status visibility |

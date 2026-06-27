@@ -1,0 +1,131 @@
+name: Build release binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform family to build"
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - linux
+          - windows
+          - macos
+      release_tag:
+        description: "Existing release tag to attach assets to when upload_to_release is true"
+        required: false
+        type: string
+      upload_to_release:
+        description: "Attach built assets to release_tag with gh release upload --clobber"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  plan:
+    name: Plan selected build matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Build selected matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ inputs.upload_to_release }}" == "true" && -z "${{ inputs.release_tag }}" ]]; then
+            echo "::error::release_tag is required when upload_to_release is true"
+            exit 1
+          fi
+
+          linux='{"platform":"linux","runner":"ubuntu-24.04","asset_name":"tinytop-agent-linux-x86_64","binary_path":"agent/target/release/tinytop-agent","features":"linux-collector"}'
+          windows='{"platform":"windows","runner":"windows-2025","asset_name":"tinytop-agent-windows-x86_64.exe","binary_path":"agent/target/release/tinytop-agent.exe","features":"windows-collector"}'
+          macos_x86='{"platform":"macos-x86_64","runner":"macos-15-intel","asset_name":"tinytop-agent-macos-x86_64","binary_path":"agent/target/release/tinytop-agent","features":"macos-collector"}'
+          macos_arm='{"platform":"macos-aarch64","runner":"macos-15","asset_name":"tinytop-agent-macos-aarch64","binary_path":"agent/target/release/tinytop-agent","features":"macos-collector"}'
+
+          case "${{ inputs.platform }}" in
+            all)
+              matrix="[$linux,$windows,$macos_x86,$macos_arm]"
+              ;;
+            linux)
+              matrix="[$linux]"
+              ;;
+            windows)
+              matrix="[$windows]"
+              ;;
+            macos)
+              matrix="[$macos_x86,$macos_arm]"
+              ;;
+            *)
+              echo "::error::Unsupported platform input: ${{ inputs.platform }}"
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "matrix<<JSON"
+            echo "$matrix"
+            echo "JSON"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.asset_name }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Select stable Rust
+        run: |
+          rustup update stable
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Build TinyTop agent
+        run: cargo build --release --manifest-path agent/Cargo.toml -p tinytop-agent --no-default-features --features ${{ matrix.features }}
+
+      - name: Smoke binary help
+        shell: bash
+        run: '"${{ matrix.binary_path }}" --help >/dev/null'
+
+      - name: Package binary and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "${{ matrix.binary_path }}" "dist/${{ matrix.asset_name }}"
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.asset_name }}" > "${{ matrix.asset_name }}.sha256"
+          fi
+          cat "${{ matrix.asset_name }}.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset_name }}
+          path: |
+            dist/${{ matrix.asset_name }}
+            dist/${{ matrix.asset_name }}.sha256
+          if-no-files-found: error
+
+      - name: Attach assets to GitHub release
+        if: ${{ inputs.upload_to_release == true && inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "${{ inputs.release_tag }}" "dist/${{ matrix.asset_name }}" "dist/${{ matrix.asset_name }}.sha256" --clobber
