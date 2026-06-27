@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$TinyTopVersion = "0.1.31"
+$TinyTopVersion = "0.1.32"
 $ServiceName = "TinyTop"
 $DefaultHost = if ($env:HOST) { $env:HOST } else { "127.0.0.1" }
 $DefaultPort = if ($env:PORT) { [int]$env:PORT } else { 4274 }

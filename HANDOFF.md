@@ -1,16 +1,16 @@
 # TinyTop Handoff
 
-Date: 2026-06-27 10:10 Asia/Jerusalem
+Date: 2026-06-27 13:50 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.31`
-- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.31`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.31`
-- The `v0.1.31` checkpoint adds a stable Rust/legacy parity update including the most recent dashboard fixes and version identity bump.
+- Current checkpoint version: `0.1.32`
+- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.32`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.32`
+- The `v0.1.32` checkpoint refreshes the README screenshot with a live connected dashboard capture and keeps the Rust dashboard release identity current.
 
 ## Runtime State
 
@@ -22,12 +22,12 @@ Date: 2026-06-27 10:10 Asia/Jerusalem
 - History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
 - History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.31 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.32 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `77720`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `230816`
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.31-toggles-20260627-100143.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.32-live-screenshot-20260627-135000.log`
 
 ## Rust Collector Confirmation
 
@@ -44,6 +44,13 @@ Evidence:
 - The legacy Bun dashboard assets now live at `legacy/dashboard/`.
 
 ## Recently Completed
+
+### v0.1.32 - Live Connected README Screenshot
+
+- Replaced the README screenshot with a fresh rendered capture from the running Rust collector/dashboard daemon.
+- The screenshot now shows real connected dashboard values, including host identity, health, CPU, RAM, swap, load, history samples, and the green `Live` indicator.
+- Bumped product and Rust crate versions to `0.1.32`.
+- Rebuilt the release `tinytop-agent` binary so `/api/version` reports the current checkpoint.
 
 ### v0.1.31 - Settings Readout And Rust Agent Rebuild
 

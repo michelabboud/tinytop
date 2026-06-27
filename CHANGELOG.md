@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.32 - 2026-06-27
+
+- Replaced the README dashboard screenshot with a fresh live capture from the connected Rust collector/dashboard daemon.
+- The new screenshot shows real host, CPU, RAM, swap, load, history, health, and `Live` connection values instead of an empty or pre-hydration view.
+- Bumped product and Rust crate versions to 0.1.32 for the screenshot documentation checkpoint.
+
 ## 0.1.31 - 2026-06-27
 
 - Bumped product and Rust crate versions to 0.1.31.
