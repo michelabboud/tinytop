@@ -17,14 +17,17 @@ Use `./tinytop` for day-to-day operations:
 
 The Bash command center can install or build the Rust collector, bootstrap Bun for
 development, run the setup wizard, manage user-space systemd services, and
-perform SQLite backup/check/reset operations. On Windows, use `.\tinytop.ps1`
-for Rust install/build/start/stop/status/logs and Windows service commands.
+perform SQLite backup/check/reset operations. On Windows, use `.\tinytop.cmd`
+or process-scoped `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+before `.\tinytop.ps1` for Rust install/build/start/stop/status/logs and
+Windows service commands.
 
 ## Runtime Processes
 
 Default persistent mode runs one Rust daemon:
 
 - Rust collector/dashboard daemon: `tinytop-agent serve` on `127.0.0.1:4274`
+- Native Windows Rust collector/dashboard daemon: `tinytop-agent.exe serve` on `127.0.0.1:4275`
 
 Legacy Bun development mode starts two processes:
 
@@ -43,7 +46,7 @@ Check health:
 curl -fsS http://127.0.0.1:4274/health
 ```
 
-Check the exact running runtime and product version:
+The health response includes daemon OS, executable path, bind host/port, and SQLite path. Check the exact running runtime and product version:
 
 ```bash
 ./tinytop status
@@ -88,18 +91,18 @@ Stop systemd services when installed:
 On Windows:
 
 ```powershell
-.\tinytop.ps1 start
-.\tinytop.ps1 status
-.\tinytop.ps1 stop
+.\tinytop.cmd start
+.\tinytop.cmd status
+.\tinytop.cmd stop
 ```
 
 Windows service commands:
 
 ```powershell
-.\tinytop.ps1 service install
-.\tinytop.ps1 service start
-.\tinytop.ps1 service status
-.\tinytop.ps1 service stop
+.\tinytop.cmd service install
+.\tinytop.cmd service start
+.\tinytop.cmd service status
+.\tinytop.cmd service stop
 ```
 
 `service install` and `service uninstall` require PowerShell running as Administrator.

@@ -77,9 +77,12 @@ describe("createFetchHandler", () => {
     });
 
     const response = await handler(new Request("http://127.0.0.1:4274/health"));
+    const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(await response.text()).toBe("ok");
+    expect(body.status).toBe("ok");
+    expect(body.daemon.os).toBe(process.platform);
+    expect(body.daemon.install.workingDirectory).toBe(process.cwd());
   });
 
   test("serves legacy dashboard version metadata", async () => {
@@ -107,6 +110,8 @@ describe("createFetchHandler", () => {
     expect(body.component).toBe("dashboard");
     expect(body.dashboard).toBe("legacy");
     expect(body.collector.component).toBe("collector");
+    expect(body.daemon.os).toBe(process.platform);
+    expect(body.daemon.storage.sqlitePath).toContain("history.sqlite");
   });
 
   test("serves legacy dashboard settings metadata", async () => {

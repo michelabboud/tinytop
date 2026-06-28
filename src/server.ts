@@ -1,5 +1,5 @@
 import { collectSnapshot, type SystemSnapshot } from "./collector";
-import type { HistoryQuery, HistorySample } from "./history-store";
+import { defaultHistoryDbPath, type HistoryQuery, type HistorySample } from "./history-store";
 import { cloneDashboardSettings, normalizeDashboardSettings } from "./settings";
 import { versionMetadata } from "./version";
 
@@ -70,6 +70,24 @@ function historyQueryFromUrl(url: URL): HistoryQuery {
     sinceMs,
     untilMs: parseOptionalNumber(url.searchParams.get("until_ms")),
     limit: parseOptionalNumber(url.searchParams.get("limit")),
+  };
+}
+
+function legacyDaemonMetadata(url: URL) {
+  return {
+    os: process.platform,
+    arch: process.arch,
+    install: {
+      executable: process.execPath,
+      workingDirectory: process.cwd(),
+    },
+    bind: {
+      host: url.hostname,
+      port: Number(url.port || DEFAULT_PORT),
+    },
+    storage: {
+      sqlitePath: defaultHistoryDbPath(),
+    },
   };
 }
 
@@ -154,8 +172,16 @@ export function createFetchHandler(options: FetchHandlerOptions): (request: Requ
     }
 
     if (url.pathname === "/health") {
-      return new Response("ok", {
-        headers: { "content-type": "text/plain; charset=utf-8" },
+      return Response.json(await versionMetadata({
+        runtime: "legacy-bun",
+        component: "dashboard",
+        dashboard: "legacy",
+        collector: await collectorVersion(options.writerFetch),
+        daemon: legacyDaemonMetadata(url),
+      }), {
+        headers: {
+          "cache-control": "no-store",
+        },
       });
     }
 
@@ -165,6 +191,7 @@ export function createFetchHandler(options: FetchHandlerOptions): (request: Requ
         component: "dashboard",
         dashboard: "legacy",
         collector: await collectorVersion(options.writerFetch),
+        daemon: legacyDaemonMetadata(url),
       }), {
         headers: {
           "cache-control": "no-store",

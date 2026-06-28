@@ -6,6 +6,11 @@ function readPowerShellScript(): string {
   return readFileSync("tinytop.ps1", "utf8");
 }
 
+function readCmdWrapper(): string {
+  expect(existsSync("tinytop.cmd")).toBe(true);
+  return readFileSync("tinytop.cmd", "utf8");
+}
+
 describe("Windows PowerShell command center", () => {
   test("ships a native Windows command center", () => {
     const script = readPowerShellScript();
@@ -25,6 +30,16 @@ describe("Windows PowerShell command center", () => {
     expect(script).toContain("tinytop-agent.exe");
     expect(script).toContain("tinytop.log");
     expect(script).toContain("tinytop.pid");
+    expect(script).toContain("history.sqlite");
+  });
+
+  test("defaults Windows to its own dashboard port to avoid WSL loopback collisions", () => {
+    const script = readPowerShellScript();
+
+    expect(script).toContain("$WslDashboardPort = 4274");
+    expect(script).toContain("else { 4275 }");
+    expect(script).toContain("Detected another TinyTop daemon");
+    expect(script).toContain("http://$DefaultHost`:$DefaultPort");
   });
 
   test("builds the Windows collector feature explicitly", () => {
@@ -52,6 +67,20 @@ describe("Windows PowerShell command center", () => {
     expect(script).toContain("Start-Service");
     expect(script).toContain("Stop-Service");
     expect(script).toContain("Run PowerShell as Administrator");
+  });
+
+  test("keeps service subcommands as an array under strict mode", () => {
+    const script = readPowerShellScript();
+
+    expect(script).toContain("$Rest = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }");
+  });
+
+  test("ships an execution-policy-safe cmd wrapper", () => {
+    const wrapper = readCmdWrapper();
+
+    expect(wrapper).toContain("powershell.exe");
+    expect(wrapper).toContain("-ExecutionPolicy Bypass");
+    expect(wrapper).toContain("tinytop.ps1");
   });
 
   test("does not mention systemd as the Windows service mechanism", () => {

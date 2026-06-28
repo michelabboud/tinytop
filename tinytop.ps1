@@ -1,10 +1,11 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$TinyTopVersion = "0.1.34"
+$TinyTopVersion = "0.1.35"
 $ServiceName = "TinyTop"
 $DefaultHost = if ($env:HOST) { $env:HOST } else { "127.0.0.1" }
-$DefaultPort = if ($env:PORT) { [int]$env:PORT } else { 4274 }
+$DefaultPort = if ($env:PORT) { [int]$env:PORT } else { 4275 }
+$WslDashboardPort = 4274
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Get-TinyTopBaseDir {
@@ -89,9 +90,17 @@ Usage:
   .\tinytop.ps1 service install
   .\tinytop.ps1 service uninstall
   .\tinytop.ps1 service start|stop|restart|status
+  .\tinytop.cmd help
 
 Dashboard:
   http://$DefaultHost`:$DefaultPort
+
+If PowerShell scripts are disabled for this session:
+  Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+  .\tinytop.ps1 help
+
+Or use the policy-safe cmd wrapper:
+  .\tinytop.cmd help
 
 Windows paths:
   Binary:  $(Get-TinyTopAgentPath)
@@ -194,6 +203,7 @@ function Invoke-TinyTopRustBuild {
 
 function Start-TinyTop {
   New-TinyTopDirectories
+  Show-TinyTopLoopbackNeighbor
   $agent = Get-TinyTopRunnableAgent
   if (-not (Test-Path $agent)) {
     throw "Rust collector binary is missing. Run .\tinytop.ps1 rust install-binary or .\tinytop.ps1 rust build."
@@ -239,9 +249,16 @@ function Get-TinyTopStatus {
   try {
     $version = Invoke-RestMethod -Uri $url -TimeoutSec 2
     Write-Host "Running daemon: $($version.runtime) $($version.component) v$($version.version) ($($version.dashboard) dashboard)"
+    if ($version.daemon) {
+      Write-Host "Daemon OS: $($version.daemon.os) $($version.daemon.arch)"
+      Write-Host "Daemon binary: $($version.daemon.install.executable)"
+      Write-Host "SQLite: $($version.daemon.storage.sqlitePath)"
+    }
   } catch {
     Write-Host "Running daemon: unknown ($url unavailable)"
   }
+
+  Show-TinyTopLoopbackNeighbor
 
   $agent = Get-TinyTopRunnableAgent
   if (Test-Path $agent) {
@@ -255,6 +272,20 @@ function Get-TinyTopStatus {
     Write-Host "Windows service: $($service.Status)"
   } else {
     Write-Host "Windows service: not installed"
+  }
+}
+
+function Show-TinyTopLoopbackNeighbor {
+  if ($DefaultPort -eq $WslDashboardPort) {
+    return
+  }
+
+  $url = "http://$DefaultHost`:$WslDashboardPort/api/version"
+  try {
+    $version = Invoke-RestMethod -Uri $url -TimeoutSec 1
+    Write-Warning "Detected another TinyTop daemon on $url: $($version.runtime) $($version.component) v$($version.version). Windows defaults to http://$DefaultHost`:$DefaultPort to avoid colliding with the WSL/Linux dashboard."
+  } catch {
+    return
   }
 }
 
@@ -351,7 +382,7 @@ function Invoke-TinyTopRust {
 }
 
 $Command = if ($args.Count -gt 0) { $args[0] } else { "help" }
-$Rest = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
+$Rest = if ($args.Count -gt 1) { @($args[1..($args.Count - 1)]) } else { @() }
 
 switch ($Command) {
   "help" { Write-TinyTopHelp }

@@ -11,6 +11,7 @@ mod writer;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_DASHBOARD_PORT: u16 = 4274;
+const DEFAULT_WINDOWS_DASHBOARD_PORT: u16 = 4275;
 const DEFAULT_WRITER_PORT: u16 = 4276;
 const DEFAULT_POLL_MS: u64 = 1500;
 
@@ -72,7 +73,7 @@ impl ServeDefaults {
         Self {
             host_env: "HOST",
             port_env: "PORT",
-            default_port: DEFAULT_DASHBOARD_PORT,
+            default_port: default_dashboard_port(),
             include_dashboard: true,
         }
     }
@@ -248,12 +249,58 @@ fn require_value(
 }
 
 fn default_sqlite_url() -> Result<String, Box<dyn std::error::Error>> {
-    if let Ok(value) = std::env::var("TINYTOP_HISTORY_DB") {
+    default_sqlite_url_from_env(|key| std::env::var(key).ok(), std::env::consts::OS)
+}
+
+fn default_dashboard_port() -> u16 {
+    default_dashboard_port_for_os(std::env::consts::OS)
+}
+
+fn default_dashboard_port_for_os(os: &str) -> u16 {
+    if os == "windows" {
+        DEFAULT_WINDOWS_DASHBOARD_PORT
+    } else {
+        DEFAULT_DASHBOARD_PORT
+    }
+}
+
+fn default_sqlite_url_from_env<F>(lookup: F, os: &str) -> Result<String, Box<dyn std::error::Error>>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if let Some(value) = lookup("TINYTOP_HISTORY_DB") {
         return normalize_sqlite_url(&value);
     }
 
-    let home = std::env::var("HOME")?;
-    normalize_sqlite_url(&format!("{home}/.local/share/tinytop/history.sqlite"))
+    let path = if os == "windows" {
+        if let Some(local_app_data) = lookup("LOCALAPPDATA") {
+            PathBuf::from(local_app_data)
+                .join("TinyTop")
+                .join("state")
+                .join("history.sqlite")
+        } else if let Some(user_profile) = lookup("USERPROFILE") {
+            PathBuf::from(user_profile)
+                .join("AppData")
+                .join("Local")
+                .join("TinyTop")
+                .join("state")
+                .join("history.sqlite")
+        } else {
+            return Err(
+                "TINYTOP_HISTORY_DB is unset and neither LOCALAPPDATA nor USERPROFILE is available"
+                    .into(),
+            );
+        }
+    } else {
+        let home = lookup("HOME").ok_or("TINYTOP_HISTORY_DB is unset and HOME is unavailable")?;
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("tinytop")
+            .join("history.sqlite")
+    };
+
+    normalize_sqlite_url(&path.to_string_lossy())
 }
 
 fn normalize_sqlite_url(value: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -310,4 +357,48 @@ Examples:
   tinytop-agent serve-writer --host 127.0.0.1 --port 4276
 "#
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn env_lookup(values: HashMap<&'static str, &'static str>) -> impl Fn(&str) -> Option<String> {
+        move |key| values.get(key).map(|value| value.to_string())
+    }
+
+    #[test]
+    fn windows_dashboard_default_port_avoids_wsl_dashboard_default() {
+        assert_eq!(default_dashboard_port_for_os("windows"), 4275);
+        assert_eq!(default_dashboard_port_for_os("linux"), 4274);
+        assert_eq!(default_dashboard_port_for_os("macos"), 4274);
+    }
+
+    #[test]
+    fn windows_default_sqlite_url_uses_localappdata_state_path() {
+        let mut values = HashMap::new();
+        values.insert("LOCALAPPDATA", r"C:\Users\michel\AppData\Local");
+
+        let url = default_sqlite_url_from_env(env_lookup(values), "windows").unwrap();
+
+        assert!(url.contains(r"C:\Users\michel\AppData\Local"));
+        assert!(url.contains(r"TinyTop"));
+        assert!(url.contains(r"state"));
+        assert!(url.contains(r"history.sqlite"));
+    }
+
+    #[test]
+    fn windows_default_sqlite_url_falls_back_to_userprofile() {
+        let mut values = HashMap::new();
+        values.insert("USERPROFILE", r"C:\Users\michel");
+
+        let url = default_sqlite_url_from_env(env_lookup(values), "windows").unwrap();
+
+        assert!(url.contains(r"C:\Users\michel"));
+        assert!(url.contains(r"AppData"));
+        assert!(url.contains(r"Local"));
+        assert!(url.contains(r"TinyTop"));
+        assert!(url.contains(r"history.sqlite"));
+    }
 }

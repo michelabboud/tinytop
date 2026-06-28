@@ -83,4 +83,13 @@ describe("dashboard timestamp timeline", () => {
     expect(styles).toContain(".runtime-reason");
     expect(styles).toContain("line-clamp");
   });
+
+  test("warns when the browser platform and served daemon runtime differ", () => {
+    expect(html).toContain('id="runtime-origin-notice"');
+    expect(app).toContain("detectClientRuntimeKind");
+    expect(app).toContain("renderRuntimeOriginNotice");
+    expect(app).toContain("metadata.daemon?.os");
+    expect(app).toContain("snapshot.identity.runtime.kind");
+    expect(styles).toContain(".runtime-origin-notice");
+  });
 });

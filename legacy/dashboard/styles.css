@@ -558,6 +558,33 @@ h1 {
   padding: 0.9rem 1rem;
 }
 
+.runtime-origin-notice {
+  border: 1px solid color-mix(in srgb, var(--cyan) 46%, var(--border));
+  border-radius: 12px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--cyan) 14%, transparent), transparent),
+    var(--panel-bg-strong);
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.45;
+  padding: 0.9rem 1rem;
+}
+
+.runtime-origin-notice[data-runtime="windows"] {
+  border-color: color-mix(in srgb, var(--amber) 48%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--amber) 13%, transparent), transparent),
+    var(--panel-bg-strong);
+}
+
+.runtime-origin-notice[data-runtime="wsl"] {
+  border-color: color-mix(in srgb, var(--green) 48%, var(--border));
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--green) 12%, transparent), transparent),
+    var(--panel-bg-strong);
+}
+
 .operator-status {
   display: grid;
   grid-template-columns: 0.78fr minmax(0, 1.8fr) minmax(160px, 0.9fr) minmax(120px, 0.7fr) auto;

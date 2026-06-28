@@ -35,7 +35,11 @@ fn serve_exposes_dashboard_and_history_api() {
 
     let result = wait_for_server(port)
         .and_then(|_| http_get(port, "/health"))
-        .map(|response| assert!(response.contains("\r\n\r\nok")))
+        .map(|response| {
+            assert!(response.contains(r#""status":"ok""#));
+            assert!(response.contains(r#""sqlitePath":"memory""#));
+            assert!(response.contains(r#""os":"#));
+        })
         .and_then(|_| http_get(port, "/"))
         .map(|response| assert!(response.contains("TinyTop test dashboard")))
         .and_then(|_| http_get(port, "/api/history?limit=1"))
@@ -157,6 +161,13 @@ fn serve_exposes_version_identity() {
             assert!(response.contains(r#""runtime":"rust""#));
             assert!(response.contains(r#""component":"collector-dashboard-daemon""#));
             assert!(response.contains(r#""dashboard":"disabled""#));
+            assert!(response.contains(r#""daemon":{"#));
+            assert!(response.contains(r#""install":{"#));
+            assert!(response.contains(r#""storage":{"#));
+            assert!(response.contains(r#""sqliteUrl":"sqlite::memory:""#));
+            assert!(response.contains(r#""sqlitePath":"memory""#));
+            assert!(response.contains(r#""bind":{"#));
+            assert!(response.contains(&format!(r#""port":{port}"#)));
         })
         .and_then(|_| http_get(port, "/version"))
         .map(|response| {
@@ -402,7 +413,7 @@ fn wait_for_server(port: u16) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if let Ok(response) = http_get(port, "/health")
-            && response.contains("\r\n\r\nok")
+            && response.contains(r#""status":"ok""#)
         {
             return Ok(());
         }

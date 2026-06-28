@@ -6,12 +6,12 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.34`
+- Version: `0.1.35`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
-- Windows entrypoint: `.\tinytop.ps1` for Rust install/build/start/stop/status/logs and Windows service commands
-- Dashboard UI: `http://127.0.0.1:4274`
+- Windows entrypoint: `.\tinytop.cmd` or process-scoped `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` before `.\tinytop.ps1`
+- Dashboard UI: Linux/WSL `http://127.0.0.1:4274`; native Windows defaults to `http://127.0.0.1:4275` to avoid loopback collisions with WSL
 - Legacy collector API: `http://127.0.0.1:4276`
-- Default SQLite database: `~/.local/share/tinytop/history.sqlite`
+- Default SQLite database: Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite`
 - SQLite retention: Rust daemon prunes raw samples by the saved retention window and keeps one-minute rollups by the saved rollup window
 - History API: raw snapshots remain available through `/api/history`; rollup-backed chart points and timeline markers are available through `/api/history/points` and `/api/history/markers`
 - Runtime identity: `./tinytop status` and `GET /api/version`
@@ -47,16 +47,24 @@ For persistent installs without Bun, use the Rust collector/dashboard daemon:
 On Windows, use the native PowerShell command center:
 
 ```powershell
+.\tinytop.cmd rust install-binary
+# or: .\tinytop.cmd rust build
+.\tinytop.cmd start
+```
+
+If you prefer calling the PowerShell script directly on a system where scripts are disabled, enable bypass only for the current shell first:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\tinytop.ps1 rust install-binary
-# or: .\tinytop.ps1 rust build
 .\tinytop.ps1 start
 ```
 
 Windows service install/start is explicit and guarded by an elevation check:
 
 ```powershell
-.\tinytop.ps1 service install
-.\tinytop.ps1 service start
+.\tinytop.cmd service install
+.\tinytop.cmd service start
 ```
 
 If PowerShell is not elevated, interactive service mutations ask for confirmation before attempting the Windows Service Control Manager action; non-interactive non-elevated service mutations fail with Administrator guidance.
@@ -223,7 +231,8 @@ For persistent background collection, install user-space systemd services:
 - Browser-local display preferences for theme, graph mode, selected history range, visible series, process table controls, filesystem toggle, and last section
 - Settings dialog with separate `This Browser` local preferences and `This Daemon` SQLite-backed defaults, including threshold presets, validation, reset/default actions, unsaved-change guard, effective settings readout, target DB budget, thresholds, and compact toggle controls for enabled dashboard sections
 - Rust Linux/WSL daemon under `agent/` with shared snapshot types, crate-backed collection, SQLx SQLite history, a no-Bun systemd path, and feature-gated native macOS/Windows collector modules started behind opt-in build features
-- Native Windows PowerShell command center for the Rust daemon, including foreground lifecycle and Windows service commands
+- Native Windows command center for the Rust daemon, including foreground lifecycle, Windows service commands, process-scoped execution-policy guidance, and a `.\tinytop.cmd` wrapper
+- Runtime-origin notice when a browser is connected to the Windows daemon instead of the WSL/Linux daemon, or vice versa
 
 ## Common Commands
 
@@ -233,9 +242,9 @@ For persistent background collection, install user-space systemd services:
 ./tinytop rust build
 ./tinytop rust serve
 ./tinytop systemd render
-pwsh -File ./tinytop.ps1 help
-pwsh -File ./tinytop.ps1 rust build
-pwsh -File ./tinytop.ps1 service status
+powershell.exe -ExecutionPolicy Bypass -File ./tinytop.ps1 help
+powershell.exe -ExecutionPolicy Bypass -File ./tinytop.ps1 rust build
+powershell.exe -ExecutionPolicy Bypass -File ./tinytop.ps1 service status
 ./tinytop start
 ./tinytop start:split
 ./tinytop db stats
@@ -308,6 +317,7 @@ Implementation notes:
 | [docs/reports/2026-06-27-live-readme-screenshot.md](docs/reports/2026-06-27-live-readme-screenshot.md) | Live connected README screenshot refresh and v0.1.32 checkpoint verification |
 | [docs/reports/2026-06-27-windows-service-elevation-guard.md](docs/reports/2026-06-27-windows-service-elevation-guard.md) | Windows service elevation confirmation guard and v0.1.33 checkpoint verification |
 | [docs/reports/2026-06-27-on-demand-binary-workflow.md](docs/reports/2026-06-27-on-demand-binary-workflow.md) | On-demand Linux, Windows, and macOS binary workflow and v0.1.34 verification |
+| [docs/reports/2026-06-29-windows-native-runtime-fixes.md](docs/reports/2026-06-29-windows-native-runtime-fixes.md) | Windows execution-policy, service dispatch, default port, SQLite path, and runtime-origin metadata fixes |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/plans/2026-06-26-dashboard-operator-console.md](docs/superpowers/plans/2026-06-26-dashboard-operator-console.md) | Executed plan for operator status, Timeline V2, settings application, process/filesystem controls, and history backend follow-through |
 | [docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md](docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md) | Executed plan for Windows command-center support and Critical status visibility |
@@ -323,13 +333,13 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HOST` | `127.0.0.1` | Dashboard bind host |
-| `PORT` | `4274` | Dashboard port |
+| `PORT` | `4274` on Linux/WSL, `4275` on native Windows | Dashboard port |
 | `HISTORY_WRITER_HOST` | `127.0.0.1` | Legacy collector bind host; env name retained for compatibility |
 | `HISTORY_WRITER_PORT` | `4276` | Legacy collector port; env name retained for compatibility |
 | `HISTORY_WRITER_URL` | unset | Existing collector URL; when set, dashboard does not spawn a collector |
 | `HISTORY_POLL_MS` | `1500` | Collector sampling interval |
 | `TINYTOP_RUNTIME` | `auto` | Runtime selection for `./tinytop start`: `auto`, `rust`, `legacy`, or `bun` |
-| `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | SQLite database path |
+| `TINYTOP_HISTORY_DB` | Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite` | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
 | `TINYTOP_PUBLIC_DIR` | unset | Optional development override for Rust dashboard assets; unset uses embedded assets |
 
@@ -337,7 +347,8 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 
 The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
-- `127.0.0.1:4274` - dashboard UI
+- `127.0.0.1:4274` - Linux/WSL dashboard UI
+- `127.0.0.1:4275` - native Windows dashboard UI
 - `127.0.0.1:4276` - legacy/internal collector API for split mode
 
 ## Persistence

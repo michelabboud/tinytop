@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.35 - 2026-06-29
+
+- Fixed native Windows direct `tinytop-agent.exe serve` startup when `HOME` is not set by resolving the default SQLite database to `%LOCALAPPDATA%\TinyTop\state\history.sqlite`, with a `USERPROFILE\AppData\Local` fallback.
+- Changed the native Windows dashboard default port to `127.0.0.1:4275` so it can run beside a WSL/Linux TinyTop daemon on `127.0.0.1:4274`.
+- Fixed `tinytop.ps1 service install` under `Set-StrictMode` by preserving service subcommands as an array when exactly one rest argument is present.
+- Added `tinytop.cmd` as a policy-safe Windows wrapper around `tinytop.ps1`; docs now recommend `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` for direct `.ps1` calls when scripts are disabled.
+- Added Windows loopback-neighbor detection that warns when another TinyTop daemon is visible on the WSL/Linux default port.
+- Added daemon OS, architecture, executable path, working directory, bind host/port, and SQLite URL/path metadata to Rust `/health`, Rust `/api/version`, and legacy Bun metadata surfaces.
+- Added a dashboard runtime-origin notice so users can see when the browser is connected to native Windows versus WSL/Linux, including the reported SQLite location.
+- Bumped product, command-center, PowerShell, and Rust crate versions to 0.1.35.
+
 ## 0.1.34 - 2026-06-27
 
 - Added an on-demand GitHub Actions workflow for building TinyTop release binaries.

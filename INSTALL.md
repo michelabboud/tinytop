@@ -69,38 +69,47 @@ For an existing local checkout:
 cd /path/to/tinytop
 ```
 
-## Windows PowerShell Install
+## Windows Install
 
-Windows uses `tinytop.ps1` instead of the Bash command center:
+Windows uses `tinytop.cmd` or `tinytop.ps1` instead of the Bash command center. Prefer the `.cmd` wrapper on systems where PowerShell scripts are disabled:
 
 ```powershell
+.\tinytop.cmd help
+.\tinytop.cmd doctor
+.\tinytop.cmd rust install-binary
+```
+
+If you call the PowerShell script directly and script execution is disabled, use a process-scoped bypass for only the current shell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\tinytop.ps1 help
-.\tinytop.ps1 doctor
-.\tinytop.ps1 rust install-binary
 ```
 
 If the release does not contain a Windows `.exe` yet, compile locally:
 
 ```powershell
-.\tinytop.ps1 rust build
+.\tinytop.cmd rust build
 ```
 
 Start the Rust collector/dashboard daemon:
 
 ```powershell
-.\tinytop.ps1 start
-.\tinytop.ps1 status
-.\tinytop.ps1 logs
+.\tinytop.cmd start
+.\tinytop.cmd status
+.\tinytop.cmd logs
 ```
 
 Install as a Windows service from an elevated PowerShell session:
 
 ```powershell
-.\tinytop.ps1 service install
-.\tinytop.ps1 service start
+.\tinytop.cmd service install
+.\tinytop.cmd service start
 ```
 
 The PowerShell command center checks elevation before `service install`, `start`, `stop`, `restart`, and `uninstall`. If the shell is interactive but not elevated, it asks for confirmation before attempting the service action; non-interactive non-elevated service mutations fail with Administrator guidance.
+
+Native Windows defaults to `http://127.0.0.1:4275` so it can run beside a WSL/Linux TinyTop daemon on `http://127.0.0.1:4274`. `/health` and `/api/version` report the daemon OS, executable path, bind port, and SQLite path so you can tell which side is serving the dashboard.
 
 See [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md) for Windows paths, service behavior, and the package-manager roadmap.
 
@@ -130,13 +139,14 @@ The Rust daemon has its own Cargo workspace under `agent/`.
 
 The default local ports are:
 
-- `127.0.0.1:4274` - dashboard UI
+- `127.0.0.1:4274` - Linux/WSL dashboard UI
+- `127.0.0.1:4275` - native Windows dashboard UI
 - `127.0.0.1:4276` - legacy collector API when using split mode
 
 Check live listeners:
 
 ```bash
-ss -ltnp '( sport = :4274 or sport = :4276 )'
+ss -ltnp '( sport = :4274 or sport = :4275 or sport = :4276 )'
 ```
 
 Check the local fleet claim:
@@ -200,13 +210,13 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 | Variable | Default | Applies to | Description |
 | --- | --- | --- | --- |
 | `HOST` | `127.0.0.1` | dashboard | Dashboard bind host |
-| `PORT` | `4274` | dashboard | Dashboard port |
+| `PORT` | `4274` on Linux/WSL, `4275` on native Windows | dashboard | Dashboard port |
 | `HISTORY_WRITER_HOST` | `127.0.0.1` | collector and dashboard spawn env | Collector bind host; env name retained for compatibility |
 | `HISTORY_WRITER_PORT` | `4276` | collector and dashboard proxy URL | Collector port; env name retained for compatibility |
 | `HISTORY_WRITER_URL` | unset | dashboard | Full URL for an existing collector; disables auto-spawn |
 | `HISTORY_POLL_MS` | `1500` | Rust daemon and legacy Bun collector | Collection interval in milliseconds |
 | `TINYTOP_RUNTIME` | `auto` | command center | Runtime selection for `./tinytop start`: `auto`, `rust`, `legacy`, or `bun` |
-| `TINYTOP_HISTORY_DB` | `~/.local/share/tinytop/history.sqlite` | Rust daemon and legacy Bun collector | SQLite database path |
+| `TINYTOP_HISTORY_DB` | Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite` | Rust daemon and legacy Bun collector | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running legacy Bun collector |
 | `TINYTOP_PUBLIC_DIR` | unset | Rust daemon | Optional development override for dashboard assets; unset uses embedded assets |
 | `XDG_DATA_HOME` | `~/.local/share` | Legacy Bun collector | Base directory for default SQLite path |
@@ -217,6 +227,12 @@ Default:
 
 ```text
 ~/.local/share/tinytop/history.sqlite
+```
+
+Native Windows default:
+
+```text
+%LOCALAPPDATA%\TinyTop\state\history.sqlite
 ```
 
 Override:

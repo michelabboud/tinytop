@@ -1,20 +1,21 @@
 # TinyTop Handoff
 
-Date: 2026-06-27 14:35 Asia/Jerusalem
+Date: 2026-06-29 02:15 Asia/Jerusalem
 
 ## Current Repo State
 
 - Repo: `/home/michel/projects/tinytop`
 - Branch: `main`
 - Remote: `origin` at `git@github.com:michelabboud/tinytop.git`
-- Current checkpoint version: `0.1.34`
-- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.34`
-- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.34`
-- The `v0.1.34` checkpoint adds an on-demand GitHub Actions binary workflow for Linux, Windows, and macOS release assets.
+- Current checkpoint version: `0.1.35`
+- Version files: `VERSION`, `package.json`, `tinytop`, and `tinytop.ps1` all read `0.1.35`
+- Rust crate package versions under `agent/crates/*/Cargo.toml` read `0.1.35`
+- The `v0.1.35` checkpoint fixes native Windows startup/service issues, adds the `tinytop.cmd` wrapper, moves native Windows to dashboard port `4275`, and exposes daemon OS/install/bind/SQLite metadata through `/health` and `/api/version`.
 
 ## Runtime State
 
 - Dashboard URL when running: `http://127.0.0.1:4274`
+- Native Windows dashboard URL when running: `http://127.0.0.1:4275`
 - Health endpoint when running: `http://127.0.0.1:4274/health`
 - Version endpoint when running: `http://127.0.0.1:4274/api/version`
 - Settings endpoint when running: `http://127.0.0.1:4274/api/settings`
@@ -22,12 +23,12 @@ Date: 2026-06-27 14:35 Asia/Jerusalem
 - History points endpoint when running: `http://127.0.0.1:4274/api/history/points`
 - History markers endpoint when running: `http://127.0.0.1:4274/api/history/markers`
 - Health status at handoff refresh time: running
-- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.34 (embedded dashboard)`
+- Runtime identity at handoff refresh time: `rust collector-dashboard-daemon v0.1.35 (embedded dashboard)`
 - Dashboard port `127.0.0.1:4274`: in use by `tinytop-agent serve`
 - Legacy Bun collector port `127.0.0.1:4276`: free
-- Active TinyTop foreground process at handoff refresh time: Rust daemon PID `581326`
+- Active TinyTop foreground process at handoff refresh time: Rust daemon started detached after the v0.1.35 rebuild
 - Foreground daemon was started detached with `setsid ./tinytop start`, which auto-selected Rust.
-- Current foreground daemon log: `/tmp/tinytop-v0.1.34-binary-workflow-20260627-143500.log`
+- Current foreground daemon log: `/tmp/tinytop-v0.1.35-windows-runtime-fixes.log`
 
 ## Rust Collector Confirmation
 
@@ -44,6 +45,16 @@ Evidence:
 - The legacy Bun dashboard assets now live at `legacy/dashboard/`.
 
 ## Recently Completed
+
+### v0.1.35 - Windows Native Runtime Identity And Startup Fixes
+
+- Fixed native Windows direct `tinytop-agent.exe serve` startup when `HOME` is absent by resolving default SQLite to `%LOCALAPPDATA%\TinyTop\state\history.sqlite`, with a `USERPROFILE\AppData\Local` fallback.
+- Changed the native Windows dashboard default port to `127.0.0.1:4275` so native Windows can run beside WSL/Linux on `127.0.0.1:4274`.
+- Fixed `tinytop.ps1 service install` under strict mode by wrapping rest arguments in an array.
+- Added `tinytop.cmd` as a policy-safe Windows wrapper and documented `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` for direct `.ps1` calls.
+- Added Windows-side neighbor detection for a TinyTop daemon already visible on the WSL/Linux default port.
+- Added daemon OS, architecture, executable path, working directory, bind host/port, and SQLite URL/path metadata to `/health` and `/api/version`.
+- Added a dashboard runtime-origin notice that says when the page is served by native Windows or WSL/Linux and shows the reported SQLite path.
 
 ### v0.1.34 - On-Demand Cross-Platform Binary Workflow
 
@@ -259,20 +270,19 @@ Evidence:
 
 ## Verification Evidence From Latest Feature Checkpoint
 
-- `./tinytop check`
-  - Bun tests: `43 pass`, `0 fail`
+- `bun run check`
+  - Bun tests: `92 pass`, `0 fail`
   - `src/server.ts --check`: `status: ok`
   - `legacy/bun-collector.ts --check`: `status: ok`, in-memory DB
+  - `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
   - Rust workspace tests: passed
-  - Browser bundle: built `legacy/dashboard/app.js` successfully
-- `cargo fmt --manifest-path agent/Cargo.toml --all -- --check`: clean
-- `./tinytop rust build`: built `agent/target/release/tinytop-agent`
-- Embedded dashboard smoke test with `./tinytop rust serve --sqlite sqlite::memory: --poll-ms 100000`
-  - `/health`: `ok`
-  - `/`: contained `<title>TinyTop</title>`
-  - `/app.js`: contained `requestConfirmation`
-  - `/vendor/echarts.min.js`: contained `echarts`
-  - Process stopped after the smoke test; default ports are free
+- `./tinytop rust build`: built `agent/target/release/tinytop-agent` at package version `0.1.35`
+- Release binary smoke test with `./agent/target/release/tinytop-agent serve --host 127.0.0.1 --port 4285 --sqlite sqlite::memory: --poll-ms 100000 --no-dashboard`
+  - `/health`: returned JSON with `version: 0.1.35`, `daemon.os: linux`, `daemon.bind.port: 4285`, and `daemon.storage.sqlitePath: memory`
+  - `/api/version`: returned Rust `collector-dashboard-daemon` identity with `version: 0.1.35`
+  - Process stopped after the smoke test
+- `bun audit`: no vulnerabilities found
+- `cargo audit`: scanned `agent/Cargo.lock` successfully with exit code 0
 - `git diff --check`: clean
 
 ## Verification Evidence From v0.1.18 Documentation Sweep

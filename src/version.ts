@@ -1,3 +1,19 @@
+export type TinyTopDaemonMetadata = {
+  os: string;
+  arch: string;
+  install: {
+    executable: string;
+    workingDirectory: string;
+  };
+  bind?: {
+    host: string;
+    port: number;
+  };
+  storage: {
+    sqlitePath: string;
+  };
+};
+
 export type TinyTopVersionMetadata = {
   status: "ok";
   app: "tinytop";
@@ -5,6 +21,7 @@ export type TinyTopVersionMetadata = {
   runtime: "legacy-bun";
   component: "dashboard" | "collector";
   dashboard: "legacy" | "none";
+  daemon?: TinyTopDaemonMetadata;
   collector?: unknown;
 };
 

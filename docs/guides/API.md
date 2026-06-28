@@ -6,7 +6,8 @@ This guide documents the local HTTP APIs used by TinyTop.
 
 | Process | URL | Audience |
 | --- | --- | --- |
-| Rust collector/dashboard daemon | `http://127.0.0.1:4274` | Browser, local user, and legacy collector API clients |
+| Rust collector/dashboard daemon on Linux/WSL | `http://127.0.0.1:4274` | Browser, local user, and legacy collector API clients |
+| Rust collector/dashboard daemon on native Windows | `http://127.0.0.1:4275` | Browser and local Windows user |
 | Legacy Bun collector | `http://127.0.0.1:4276` | Internal dashboard process when using Bun split mode |
 
 Most TinyTop APIs are `GET` requests. `PUT /api/settings` is the supported write endpoint for daemon dashboard defaults. Unsupported methods return JSON errors with HTTP `405`.
@@ -19,8 +20,28 @@ Health check for the Rust collector/dashboard daemon or legacy Bun dashboard pro
 
 Response:
 
-```text
-ok
+```json
+{
+  "status": "ok",
+  "app": "tinytop",
+  "version": "0.1.35",
+  "daemon": {
+    "os": "windows",
+    "arch": "x86_64",
+    "install": {
+      "executable": "C:\\Users\\michel\\AppData\\Local\\TinyTop\\bin\\tinytop-agent.exe",
+      "workingDirectory": "C:\\Users\\michel\\repos\\tinytop"
+    },
+    "bind": {
+      "host": "127.0.0.1",
+      "port": 4275
+    },
+    "storage": {
+      "sqliteUrl": "sqlite://C:\\Users\\michel\\AppData\\Local\\TinyTop\\state\\history.sqlite",
+      "sqlitePath": "C:\\Users\\michel\\AppData\\Local\\TinyTop\\state\\history.sqlite"
+    }
+  }
+}
 ```
 
 ### GET /api/version
@@ -39,10 +60,26 @@ Rust response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
-  "dashboard": "embedded"
+  "dashboard": "embedded",
+  "daemon": {
+    "os": "linux",
+    "arch": "x86_64",
+    "install": {
+      "executable": "/home/michel/projects/tinytop/agent/target/release/tinytop-agent",
+      "workingDirectory": "/home/michel/projects/tinytop"
+    },
+    "bind": {
+      "host": "127.0.0.1",
+      "port": 4274
+    },
+    "storage": {
+      "sqliteUrl": "sqlite:///home/michel/.local/share/tinytop/history.sqlite",
+      "sqlitePath": "/home/michel/.local/share/tinytop/history.sqlite"
+    }
+  }
 }
 ```
 
@@ -52,17 +89,32 @@ Legacy Bun response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "runtime": "legacy-bun",
   "component": "dashboard",
   "dashboard": "legacy",
   "collector": {
     "status": "ok",
     "app": "tinytop",
-    "version": "0.1.34",
+    "version": "0.1.35",
     "runtime": "legacy-bun",
     "component": "collector",
-    "dashboard": "none"
+    "dashboard": "none",
+    "daemon": {
+      "os": "linux",
+      "arch": "x64",
+      "install": {
+        "executable": "/home/michel/.bun/bin/bun",
+        "workingDirectory": "/home/michel/projects/tinytop"
+      },
+      "bind": {
+        "host": "127.0.0.1",
+        "port": 4276
+      },
+      "storage": {
+        "sqlitePath": "/home/michel/.local/share/tinytop/history.sqlite"
+      }
+    }
   }
 }
 ```
@@ -355,8 +407,31 @@ Health check for the Rust daemon or legacy Bun collector process.
 
 Response:
 
-```text
-ok
+```json
+{
+  "status": "ok",
+  "app": "tinytop",
+  "version": "0.1.35",
+  "runtime": "rust",
+  "component": "collector-dashboard-daemon",
+  "dashboard": "embedded",
+  "daemon": {
+    "os": "linux",
+    "arch": "x86_64",
+    "install": {
+      "executable": "/home/michel/projects/tinytop/agent/target/release/tinytop-agent",
+      "workingDirectory": "/home/michel/projects/tinytop"
+    },
+    "bind": {
+      "host": "127.0.0.1",
+      "port": 4274
+    },
+    "storage": {
+      "sqliteUrl": "sqlite:///home/michel/.local/share/tinytop/history.sqlite",
+      "sqlitePath": "/home/michel/.local/share/tinytop/history.sqlite"
+    }
+  }
+}
 ```
 
 ### GET /version
@@ -369,10 +444,26 @@ Response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.34",
+  "version": "0.1.35",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
-  "dashboard": "embedded"
+  "dashboard": "embedded",
+  "daemon": {
+    "os": "linux",
+    "arch": "x86_64",
+    "install": {
+      "executable": "/home/michel/projects/tinytop/agent/target/release/tinytop-agent",
+      "workingDirectory": "/home/michel/projects/tinytop"
+    },
+    "bind": {
+      "host": "127.0.0.1",
+      "port": 4274
+    },
+    "storage": {
+      "sqliteUrl": "sqlite:///home/michel/.local/share/tinytop/history.sqlite",
+      "sqlitePath": "/home/michel/.local/share/tinytop/history.sqlite"
+    }
+  }
 }
 ```
 

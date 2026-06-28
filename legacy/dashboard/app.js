@@ -144,6 +144,7 @@ const state = {
   historyChartInstance: null,
   pollMs: DEFAULT_POLL_MS,
   daemonSettings: cloneSettings(DEFAULT_DAEMON_SETTINGS),
+  versionMetadata: null,
   settingsBaseline: cloneSettings(DEFAULT_DAEMON_SETTINGS),
   settingsDirty: false,
   settingsErrors: [],
@@ -182,6 +183,7 @@ const elements = {
   liveLabel: document.querySelector("#live-label"),
   runtimeSummary: document.querySelector("#runtime-summary"),
   runtimeReason: document.querySelector("#runtime-reason"),
+  runtimeOriginNotice: document.querySelector("#runtime-origin-notice"),
   daemonVersion: document.querySelector("#daemon-version"),
   hostName: document.querySelector("#host-name"),
   kernelName: document.querySelector("#kernel-name"),
@@ -2115,6 +2117,7 @@ function renderSnapshotDetails(snapshot) {
   if (elements.runtimeReason) elements.runtimeReason.title = reason;
   setText(elements.runtimeKind, snapshot.identity.runtime.kind);
   setText(elements.runtimeConfidence, `${snapshot.identity.runtime.confidence} confidence`);
+  renderRuntimeOriginNotice(state.versionMetadata, snapshot);
 
   setText(elements.cpuValue, formatPercent(snapshot.cpu.usagePercent));
   setText(elements.cpuCores, `${snapshot.cpu.cores} cores`);
@@ -2168,13 +2171,67 @@ function versionComponentLabel(metadata) {
   return "Legacy Bun dashboard";
 }
 
+function detectClientRuntimeKind() {
+  const platform = `${navigator.userAgentData?.platform ?? ""} ${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`;
+  if (/windows|win32|win64/i.test(platform)) return "Windows";
+  if (/mac|darwin/i.test(platform)) return "macOS";
+  if (/linux/i.test(platform)) return "Linux";
+  return "Unknown";
+}
+
+function daemonRuntimeKind(metadata, snapshot) {
+  if (metadata.daemon?.os === "windows") return "Windows";
+  if (metadata.daemon?.os === "macos") return "macOS";
+  if (snapshot.identity.runtime.kind === "WSL") return "WSL";
+  if (metadata.daemon?.os === "linux") return "Linux";
+  return snapshot.identity.runtime.kind ?? "Unknown";
+}
+
+function runtimeNoticeSqlite(metadata) {
+  const path = metadata.daemon?.storage?.sqlitePath;
+  return path ? ` SQLite: ${path}.` : "";
+}
+
+function renderRuntimeOriginNotice(metadata, snapshot) {
+  const node = elements.runtimeOriginNotice;
+  if (!node || !metadata || !snapshot) return;
+
+  const clientKind = detectClientRuntimeKind();
+  const servedKind = daemonRuntimeKind(metadata, snapshot);
+  const sqlite = runtimeNoticeSqlite(metadata);
+  let message = "";
+
+  if (servedKind === "Windows") {
+    message = `Native Windows TinyTop is serving this page on port ${metadata.daemon?.bind?.port ?? "?"}. If you meant the WSL/Linux daemon, open the WSL dashboard on port 4274.${sqlite}`;
+  } else if (servedKind === "WSL") {
+    message = `WSL/Linux TinyTop is serving this page on port ${metadata.daemon?.bind?.port ?? "?"}. Native Windows TinyTop defaults to port 4275.${sqlite}`;
+  } else if (clientKind !== "Unknown" && servedKind !== "Unknown" && clientKind !== servedKind) {
+    message = `Your browser looks like ${clientKind}, but this dashboard is served by ${servedKind}.${sqlite}`;
+  }
+
+  if (!message) {
+    setHidden(node, true);
+    setText(node, "");
+    return;
+  }
+
+  node.dataset.runtime = servedKind.toLowerCase();
+  setText(node, message);
+  setHidden(node, false);
+}
+
 function renderVersion(metadata) {
+  state.versionMetadata = metadata;
   const label = versionComponentLabel(metadata);
   const version = metadata.version ? `v${metadata.version}` : "version unknown";
   setText(elements.daemonVersion, `${label} ${version}`);
   if (elements.daemonVersion) {
-    elements.daemonVersion.title = metadata.dashboard ? `Dashboard assets: ${metadata.dashboard}` : label;
+    const sqlite = metadata.daemon?.storage?.sqlitePath;
+    elements.daemonVersion.title = sqlite
+      ? `Dashboard assets: ${metadata.dashboard}; SQLite: ${sqlite}`
+      : metadata.dashboard ? `Dashboard assets: ${metadata.dashboard}` : label;
   }
+  renderRuntimeOriginNotice(metadata, state.lastSnapshot);
 }
 
 async function fetchVersion() {

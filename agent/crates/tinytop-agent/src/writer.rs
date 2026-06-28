@@ -45,6 +45,7 @@ struct AppState {
     collector: Arc<Mutex<NativeCollector>>,
     store: SqliteHistoryStore,
     dashboard_assets: DashboardAssets,
+    daemon: DaemonMetadata,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -96,6 +97,47 @@ struct VersionResponse {
     runtime: &'static str,
     component: &'static str,
     dashboard: &'static str,
+    daemon: DaemonMetadata,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HealthResponse {
+    status: &'static str,
+    app: &'static str,
+    version: String,
+    daemon: DaemonMetadata,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DaemonMetadata {
+    os: String,
+    arch: String,
+    install: InstallMetadata,
+    bind: BindMetadata,
+    storage: StorageMetadata,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallMetadata {
+    executable: String,
+    working_directory: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BindMetadata {
+    host: String,
+    port: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageMetadata {
+    sqlite_url: String,
+    sqlite_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,7 +150,8 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
     let state = AppState {
         collector: Arc::new(Mutex::new(NativeCollector::default())),
         store,
-        dashboard_assets: options.dashboard_assets,
+        dashboard_assets: options.dashboard_assets.clone(),
+        daemon: daemon_metadata(&options),
     };
 
     collect_and_store(&state).await?;
@@ -165,14 +208,13 @@ fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health() -> impl IntoResponse {
-    (
-        [(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("text/plain; charset=utf-8"),
-        )],
-        "ok",
-    )
+async fn health(State(state): State<AppState>) -> Response {
+    no_store(Json(HealthResponse {
+        status: "ok",
+        app: "tinytop",
+        version: product_version(),
+        daemon: state.daemon,
+    }))
 }
 
 async fn version(State(state): State<AppState>) -> Response {
@@ -183,6 +225,7 @@ async fn version(State(state): State<AppState>) -> Response {
         runtime: "rust",
         component: "collector-dashboard-daemon",
         dashboard: dashboard_asset_label(&state.dashboard_assets),
+        daemon: state.daemon,
     }))
 }
 
@@ -506,6 +549,54 @@ fn dashboard_asset_label(assets: &DashboardAssets) -> &'static str {
         DashboardAssets::Directory(_) => "directory",
         DashboardAssets::Disabled => "disabled",
     }
+}
+
+fn daemon_metadata(options: &ServeOptions) -> DaemonMetadata {
+    DaemonMetadata {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        install: InstallMetadata {
+            executable: path_or_unavailable(std::env::current_exe()),
+            working_directory: path_or_unavailable(std::env::current_dir()),
+        },
+        bind: BindMetadata {
+            host: options.host.clone(),
+            port: options.port,
+        },
+        storage: StorageMetadata {
+            sqlite_url: options.sqlite_url.clone(),
+            sqlite_path: sqlite_path_label(&options.sqlite_url),
+        },
+    }
+}
+
+fn path_or_unavailable(path: Result<PathBuf, std::io::Error>) -> String {
+    path.map(|path| path.display().to_string())
+        .unwrap_or_else(|error| format!("unavailable: {error}"))
+}
+
+fn sqlite_path_label(sqlite_url: &str) -> String {
+    if sqlite_url == "sqlite::memory:" || sqlite_url == ":memory:" {
+        return "memory".to_string();
+    }
+
+    if let Some(path) = sqlite_url.strip_prefix("sqlite://") {
+        return if path == ":memory:" {
+            "memory".to_string()
+        } else {
+            path.to_string()
+        };
+    }
+
+    if let Some(path) = sqlite_url.strip_prefix("sqlite:") {
+        return if path == ":memory:" {
+            "memory".to_string()
+        } else {
+            path.to_string()
+        };
+    }
+
+    sqlite_url.to_string()
 }
 
 fn no_store<T: IntoResponse>(response: T) -> Response {

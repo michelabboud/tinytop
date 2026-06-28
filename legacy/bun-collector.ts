@@ -23,6 +23,11 @@ type CollectorHandlerOptions = {
   store: HistoryStore;
   collect?: (previousProcStatText?: string) => Promise<SnapshotResult>;
   now?: () => number;
+  dbPath?: string;
+  bind?: {
+    host: string;
+    port: number;
+  };
 };
 
 function jsonError(message: string, status: number): Response {
@@ -46,6 +51,24 @@ function parseHistoryQuery(searchParams: URLSearchParams, now: () => number): Hi
     sinceMs,
     untilMs: Number.isFinite(untilMs) ? untilMs : undefined,
     limit,
+  };
+}
+
+function legacyCollectorMetadata(options: CollectorHandlerOptions, url: URL) {
+  return {
+    os: process.platform,
+    arch: process.arch,
+    install: {
+      executable: process.execPath,
+      workingDirectory: process.cwd(),
+    },
+    bind: options.bind ?? {
+      host: url.hostname,
+      port: Number(url.port || DEFAULT_WRITER_PORT),
+    },
+    storage: {
+      sqlitePath: options.dbPath ?? defaultHistoryDbPath(),
+    },
   };
 }
 
@@ -78,8 +101,15 @@ export function createCollectorFetchHandler(options: CollectorHandlerOptions): (
     }
 
     if (url.pathname === "/health") {
-      return new Response("ok", {
-        headers: { "content-type": "text/plain; charset=utf-8" },
+      return Response.json(await versionMetadata({
+        runtime: "legacy-bun",
+        component: "collector",
+        dashboard: "none",
+        daemon: legacyCollectorMetadata(options, url),
+      }), {
+        headers: {
+          "cache-control": "no-store",
+        },
       });
     }
 
@@ -88,6 +118,7 @@ export function createCollectorFetchHandler(options: CollectorHandlerOptions): (
         runtime: "legacy-bun",
         component: "collector",
         dashboard: "none",
+        daemon: legacyCollectorMetadata(options, url),
       }), {
         headers: {
           "cache-control": "no-store",
@@ -145,8 +176,9 @@ export function startLegacyBunCollector(): { url: string; stop(force?: boolean):
   const hostname = process.env.HISTORY_WRITER_HOST ?? DEFAULT_WRITER_HOST;
   const port = Number(process.env.HISTORY_WRITER_PORT ?? DEFAULT_WRITER_PORT);
   const pollMs = Number(process.env.HISTORY_POLL_MS ?? DEFAULT_POLL_MS);
-  const store = openHistoryStore(defaultHistoryDbPath());
-  const fetch = createCollectorFetchHandler({ store });
+  const dbPath = defaultHistoryDbPath();
+  const store = openHistoryStore(dbPath);
+  const fetch = createCollectorFetchHandler({ store, dbPath, bind: { host: hostname, port } });
 
   const server = Bun.serve({
     hostname,
@@ -167,7 +199,7 @@ export function startLegacyBunCollector(): { url: string; stop(force?: boolean):
   });
 
   console.log(`TinyTop legacy Bun collector listening on ${server.url}`);
-  console.log(`History database: ${defaultHistoryDbPath()}`);
+  console.log(`History database: ${dbPath}`);
 
   return {
     url: String(server.url),

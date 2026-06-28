@@ -21,7 +21,7 @@ The workflow file is:
 | Input | Required | Values | Purpose |
 | --- | --- | --- | --- |
 | `platform` | Yes | `all`, `linux`, `windows`, `macos` | Selects which platform family to build. |
-| `release_tag` | No | Existing tag, for example `v0.1.34` | Release tag to attach assets to when release upload is enabled. |
+| `release_tag` | No | Existing tag, for example `v0.1.35` | Release tag to attach assets to when release upload is enabled. |
 | `upload_to_release` | Yes | `true` or `false` | When true, uploads built assets to `release_tag` with overwrite behavior. |
 
 If `upload_to_release` is true, `release_tag` must be set and the release must already exist.
@@ -62,7 +62,7 @@ To attach assets to an existing release:
 1. Create or push the tag first.
 2. Create the GitHub release for that tag.
 3. Run `Build release binaries`.
-4. Set `release_tag` to the tag, for example `v0.1.34`.
+4. Set `release_tag` to the tag, for example `v0.1.35`.
 5. Set `upload_to_release` to `true`.
 
 The workflow uses:
