@@ -6,10 +6,11 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.1.35`
+- Version: `0.2.0`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Windows entrypoint: `.\tinytop.cmd` or process-scoped `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` before `.\tinytop.ps1`
 - Dashboard UI: Linux/WSL `http://127.0.0.1:4274`; native Windows defaults to `http://127.0.0.1:4275` to avoid loopback collisions with WSL
+- Embeddable dashboard: `http://127.0.0.1:4274/embed?theme=dark` for iframe host panels, gated by `TINYTOP_EMBED_FRAME_ANCESTORS`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite`
 - SQLite retention: Rust daemon prunes raw samples by the saved retention window and keeps one-minute rollups by the saved rollup window
@@ -296,6 +297,7 @@ Implementation notes:
 | [CHANGELOG.md](CHANGELOG.md) | Versioned release notes |
 | [PROGRESS.md](PROGRESS.md) | Completed milestones and next work |
 | [docs/guides/API.md](docs/guides/API.md) | Public dashboard API and internal collector API |
+| [docs/INTEGRATION.md](docs/INTEGRATION.md) | Stable TinyTop integration contract for host dashboards and iframe embeds |
 | [docs/guides/OPERATIONS.md](docs/guides/OPERATIONS.md) | Runtime checks, SQLite inspection, backup/reset, troubleshooting |
 | [docs/guides/WINDOWS.md](docs/guides/WINDOWS.md) | Native Windows PowerShell command center, service commands, and packaging roadmap |
 | [docs/guides/RELEASE_BUILDS.md](docs/guides/RELEASE_BUILDS.md) | Manual GitHub Actions workflow for Linux, Windows, and macOS release binaries |
@@ -318,6 +320,7 @@ Implementation notes:
 | [docs/reports/2026-06-27-windows-service-elevation-guard.md](docs/reports/2026-06-27-windows-service-elevation-guard.md) | Windows service elevation confirmation guard and v0.1.33 checkpoint verification |
 | [docs/reports/2026-06-27-on-demand-binary-workflow.md](docs/reports/2026-06-27-on-demand-binary-workflow.md) | On-demand Linux, Windows, and macOS binary workflow and v0.1.34 verification |
 | [docs/reports/2026-06-29-windows-native-runtime-fixes.md](docs/reports/2026-06-29-windows-native-runtime-fixes.md) | Windows execution-policy, service dispatch, default port, SQLite path, and runtime-origin metadata fixes |
+| [docs/reports/2026-06-30-nginx-subpath-integration.md](docs/reports/2026-06-30-nginx-subpath-integration.md) | Nginx reverse-proxy subpath integration notes for the embedded Rust dashboard |
 | [docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md](docs/superpowers/plans/2026-06-26-dashboard-timeline-settings.md) | Plan for timeline repair, SQLite daemon settings, settings UI, retention, and rollups |
 | [docs/superpowers/plans/2026-06-26-dashboard-operator-console.md](docs/superpowers/plans/2026-06-26-dashboard-operator-console.md) | Executed plan for operator status, Timeline V2, settings application, process/filesystem controls, and history backend follow-through |
 | [docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md](docs/superpowers/plans/2026-06-26-windows-command-center-and-critical-status.md) | Executed plan for Windows command-center support and Critical status visibility |
@@ -342,6 +345,7 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | `TINYTOP_HISTORY_DB` | Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite` | SQLite database path |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
 | `TINYTOP_PUBLIC_DIR` | unset | Optional development override for Rust dashboard assets; unset uses embedded assets |
+| `TINYTOP_EMBED_FRAME_ANCESTORS` | `'self'` | CSP `frame-ancestors` value for `/embed` only, for example `'self' http://127.0.0.1:9323` |
 
 ## Ports
 

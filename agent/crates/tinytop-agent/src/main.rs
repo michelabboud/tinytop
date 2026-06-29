@@ -235,6 +235,7 @@ fn parse_serve_options(
         sqlite_url,
         poll_ms,
         dashboard_assets,
+        embed_frame_ancestors: embed_frame_ancestors_from_env(),
     })
 }
 
@@ -331,6 +332,10 @@ fn dashboard_assets_from_env() -> writer::DashboardAssets {
     std::env::var("TINYTOP_PUBLIC_DIR")
         .map(|path| writer::DashboardAssets::Directory(PathBuf::from(path)))
         .unwrap_or(writer::DashboardAssets::Embedded)
+}
+
+fn embed_frame_ancestors_from_env() -> String {
+    std::env::var("TINYTOP_EMBED_FRAME_ANCESTORS").unwrap_or_else(|_| "'self'".to_string())
 }
 
 fn now_ms() -> Result<i64, Box<dyn std::error::Error>> {

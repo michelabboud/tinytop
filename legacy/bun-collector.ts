@@ -7,7 +7,7 @@ import {
   type HistorySample,
   type HistoryStore,
 } from "../src/history-store";
-import { versionMetadata } from "../src/version";
+import { TINYTOP_COLLECTOR_CAPABILITIES, versionMetadata } from "../src/version";
 
 const DEFAULT_WRITER_HOST = "127.0.0.1";
 const DEFAULT_WRITER_PORT = 4276;
@@ -105,6 +105,7 @@ export function createCollectorFetchHandler(options: CollectorHandlerOptions): (
         runtime: "legacy-bun",
         component: "collector",
         dashboard: "none",
+        capabilities: TINYTOP_COLLECTOR_CAPABILITIES,
         daemon: legacyCollectorMetadata(options, url),
       }), {
         headers: {
@@ -118,6 +119,7 @@ export function createCollectorFetchHandler(options: CollectorHandlerOptions): (
         runtime: "legacy-bun",
         component: "collector",
         dashboard: "none",
+        capabilities: TINYTOP_COLLECTOR_CAPABILITIES,
         daemon: legacyCollectorMetadata(options, url),
       }), {
         headers: {

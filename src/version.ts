@@ -21,9 +21,13 @@ export type TinyTopVersionMetadata = {
   runtime: "legacy-bun";
   component: "dashboard" | "collector";
   dashboard: "legacy" | "none";
+  capabilities: string[];
   daemon?: TinyTopDaemonMetadata;
   collector?: unknown;
 };
+
+export const TINYTOP_DASHBOARD_CAPABILITIES = ["snapshot", "history", "embed"];
+export const TINYTOP_COLLECTOR_CAPABILITIES = ["snapshot", "history"];
 
 let productVersionPromise: Promise<string> | null = null;
 
@@ -33,12 +37,15 @@ export async function productVersion(): Promise<string> {
 }
 
 export async function versionMetadata(
-  options: Omit<TinyTopVersionMetadata, "status" | "app" | "version">,
+  options: Omit<TinyTopVersionMetadata, "status" | "app" | "version" | "capabilities"> & {
+    capabilities?: string[];
+  },
 ): Promise<TinyTopVersionMetadata> {
   return {
     status: "ok",
     app: "tinytop",
     version: await productVersion(),
     ...options,
+    capabilities: [...(options.capabilities ?? TINYTOP_DASHBOARD_CAPABILITIES)],
   };
 }

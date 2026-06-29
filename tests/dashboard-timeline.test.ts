@@ -61,15 +61,15 @@ describe("dashboard timestamp timeline", () => {
     expect(app).toContain("function fetchHistoryMarkers");
     expect(app).toContain("function renderHistoryCoverage");
     expect(app).toContain("function renderHistoryMarkers");
-    expect(app).toContain('fetch("/api/history/coverage"');
-    expect(app).toContain('fetch(`/api/history/points?${params}`');
-    expect(app).toContain('fetch(`/api/history/markers?${params}`');
+    expect(app).toContain('fetch(apiPath("/api/history/coverage")');
+    expect(app).toContain('fetch(apiPath(`/api/history/points?${params}`)');
+    expect(app).toContain('fetch(apiPath(`/api/history/markers?${params}`)');
     expect(app).toContain("tinytop.visibleSeries");
   });
 
   test("shows collector/dashboard version metadata", () => {
     expect(html).toContain('id="daemon-version"');
-    expect(app).toContain('fetch("/api/version"');
+    expect(app).toContain('fetch(apiPath("/api/version")');
     expect(app).toContain("renderVersion");
   });
 
@@ -91,5 +91,16 @@ describe("dashboard timestamp timeline", () => {
     expect(app).toContain("metadata.daemon?.os");
     expect(app).toContain("snapshot.identity.runtime.kind");
     expect(styles).toContain(".runtime-origin-notice");
+  });
+
+  test("supports iframe embed mode and theme query parameters", () => {
+    expect(app).toContain("IS_EMBED_VIEW");
+    expect(app).toContain("REQUESTED_THEME");
+    expect(app).toContain('["dark", "midnight"]');
+    expect(app).toContain('apiPath("/api/version")');
+    expect(app).toContain('apiPath(`/api/history/points?${params}`)');
+    expect(styles).toContain('body[data-embed="true"]');
+    expect(styles).toContain('body[data-embed="true"] .rail');
+    expect(styles).toContain('body[data-embed="true"] .control-deck');
   });
 });

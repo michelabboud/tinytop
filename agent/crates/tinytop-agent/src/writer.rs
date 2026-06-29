@@ -31,6 +31,7 @@ pub struct ServeOptions {
     pub sqlite_url: String,
     pub poll_ms: u64,
     pub dashboard_assets: DashboardAssets,
+    pub embed_frame_ancestors: String,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ struct AppState {
     store: SqliteHistoryStore,
     dashboard_assets: DashboardAssets,
     daemon: DaemonMetadata,
+    embed_frame_ancestors: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -97,6 +99,7 @@ struct VersionResponse {
     runtime: &'static str,
     component: &'static str,
     dashboard: &'static str,
+    capabilities: Vec<&'static str>,
     daemon: DaemonMetadata,
 }
 
@@ -106,6 +109,7 @@ struct HealthResponse {
     status: &'static str,
     app: &'static str,
     version: String,
+    capabilities: Vec<&'static str>,
     daemon: DaemonMetadata,
 }
 
@@ -152,6 +156,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
         store,
         dashboard_assets: options.dashboard_assets.clone(),
         daemon: daemon_metadata(&options),
+        embed_frame_ancestors: options.embed_frame_ancestors.clone(),
     };
 
     collect_and_store(&state).await?;
@@ -200,6 +205,7 @@ fn router(state: AppState) -> Router {
         .route("/api/history/markers", get(history_markers))
         .route("/api/history", get(history))
         .route("/", get(static_file))
+        .route("/embed", get(embed_file))
         .route("/index.html", get(static_file))
         .route("/favicon.svg", get(static_file))
         .route("/styles.css", get(static_file))
@@ -213,6 +219,7 @@ async fn health(State(state): State<AppState>) -> Response {
         status: "ok",
         app: "tinytop",
         version: product_version(),
+        capabilities: capabilities_for_dashboard(&state.dashboard_assets),
         daemon: state.daemon,
     }))
 }
@@ -225,6 +232,7 @@ async fn version(State(state): State<AppState>) -> Response {
         runtime: "rust",
         component: "collector-dashboard-daemon",
         dashboard: dashboard_asset_label(&state.dashboard_assets),
+        capabilities: capabilities_for_dashboard(&state.dashboard_assets),
         daemon: state.daemon,
     }))
 }
@@ -313,7 +321,23 @@ async fn static_file(
         return Err(ServeError::not_found("asset not found"));
     };
 
-    match &state.dashboard_assets {
+    dashboard_asset_response(&state.dashboard_assets, relative_path)
+}
+
+async fn embed_file(
+    State(state): State<AppState>,
+    axum::extract::OriginalUri(_uri): axum::extract::OriginalUri,
+) -> Result<Response, ServeError> {
+    let mut response = dashboard_asset_response(&state.dashboard_assets, Path::new("index.html"))?;
+    insert_embed_frame_ancestors(&mut response, &state.embed_frame_ancestors);
+    Ok(response)
+}
+
+fn dashboard_asset_response(
+    dashboard_assets: &DashboardAssets,
+    relative_path: &Path,
+) -> Result<Response, ServeError> {
+    match dashboard_assets {
         DashboardAssets::Disabled => Err(ServeError::not_found("dashboard assets are disabled")),
         DashboardAssets::Embedded => embedded_response(relative_path),
         DashboardAssets::Directory(public_dir) => {
@@ -342,6 +366,25 @@ fn embedded_response(path: &Path) -> Result<Response, ServeError> {
     };
 
     Ok(bytes_response(bytes, content_type(path)))
+}
+
+fn insert_embed_frame_ancestors(response: &mut Response, configured_ancestors: &str) {
+    let ancestors = normalized_frame_ancestors(configured_ancestors);
+    let policy = format!("frame-ancestors {ancestors}");
+    if let Ok(value) = HeaderValue::from_str(&policy) {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, value);
+    }
+}
+
+fn normalized_frame_ancestors(configured_ancestors: &str) -> &str {
+    let trimmed = configured_ancestors.trim();
+    if trimmed.is_empty() || trimmed.contains('\n') || trimmed.contains('\r') {
+        "'self'"
+    } else {
+        trimmed
+    }
 }
 
 fn bytes_response(bytes: impl Into<axum::body::Body>, content_type: &'static str) -> Response {
@@ -549,6 +592,14 @@ fn dashboard_asset_label(assets: &DashboardAssets) -> &'static str {
         DashboardAssets::Directory(_) => "directory",
         DashboardAssets::Disabled => "disabled",
     }
+}
+
+fn capabilities_for_dashboard(assets: &DashboardAssets) -> Vec<&'static str> {
+    let mut capabilities = vec!["snapshot", "history"];
+    if !matches!(assets, DashboardAssets::Disabled) {
+        capabilities.push("embed");
+    }
+    capabilities
 }
 
 fn daemon_metadata(options: &ServeOptions) -> DaemonMetadata {

@@ -139,6 +139,35 @@ body[data-theme="ember"] {
   --chart-load: #fbbf24;
 }
 
+html[data-embed="true"],
+html[data-embed="true"] body {
+  min-height: 100%;
+}
+
+body[data-embed="true"] {
+  min-height: 100vh;
+}
+
+body[data-embed="true"] .app-shell {
+  grid-template-columns: 1fr;
+  min-height: 100vh;
+  padding: 0;
+}
+
+body[data-embed="true"] .rail,
+body[data-embed="true"] .topbar,
+body[data-embed="true"] .control-deck,
+body[data-embed="true"] .runtime-origin-notice {
+  display: none !important;
+}
+
+body[data-embed="true"] .dashboard {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0.75rem;
+}
+
 * {
   box-sizing: border-box;
 }

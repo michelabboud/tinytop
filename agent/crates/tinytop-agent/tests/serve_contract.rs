@@ -76,6 +76,8 @@ fn serve_exposes_embedded_dashboard_without_public_dir() {
     let result = wait_for_server(port)
         .and_then(|_| http_get(port, "/"))
         .map(|response| assert!(response.contains("<title>TinyTop</title>")))
+        .and_then(|_| http_get(port, "/embed?theme=dark"))
+        .map(|response| assert!(response.contains("<title>TinyTop</title>")))
         .and_then(|_| http_get(port, "/styles.css"))
         .map(|response| assert!(response.contains("status-message")))
         .and_then(|_| http_get(port, "/app.js"))
@@ -92,6 +94,52 @@ fn serve_exposes_embedded_dashboard_without_public_dir() {
     fs::remove_dir_all(cwd).ok();
 
     result.expect("server should expose embedded dashboard assets without --public-dir");
+}
+
+#[test]
+fn serve_exposes_embed_dashboard_with_configurable_frame_ancestors() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .env(
+            "TINYTOP_EMBED_FRAME_ANCESTORS",
+            "'self' http://127.0.0.1:9323",
+        )
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let result =
+        wait_for_server(port)
+            .and_then(|_| http_get_raw(port, "/embed?theme=dark"))
+            .map(|response| {
+                assert!(response.contains("http/1.1 200 ok"));
+                assert!(response.contains(
+                    "content-security-policy: frame-ancestors 'self' http://127.0.0.1:9323"
+                ));
+                assert!(response.contains("<title>tinytop</title>"));
+                assert!(response.contains(r#"id="main""#));
+            })
+            .and_then(|_| http_get(port, "/api/version"))
+            .map(|response| {
+                assert!(response.contains(r#""dashboard":"embedded""#));
+                assert!(response.contains(r#""capabilities":["snapshot","history","embed"]"#));
+            });
+
+    stop_child(&mut child);
+
+    result.expect("server should expose framed embed dashboard");
 }
 
 #[test]
@@ -424,6 +472,20 @@ fn wait_for_server(port: u16) -> Result<(), String> {
 
 fn http_get(port: u16, path: &str) -> Result<String, String> {
     http_request(port, "GET", path, None)
+}
+
+fn http_get_raw(port: u16, path: &str) -> Result<String, String> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).map_err(|error| error.to_string())?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .map_err(|error| error.to_string())?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|error| error.to_string())?;
+    Ok(response.to_ascii_lowercase())
 }
 
 fn http_request(port: u16, method: &str, path: &str, body: Option<&str>) -> Result<String, String> {

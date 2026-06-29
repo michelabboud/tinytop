@@ -38,7 +38,7 @@ describe("dashboard settings", () => {
     expect(app).toContain("saveDaemonSettings");
     expect(app).toContain("openSettingsDialog");
     expect(app).toContain("closeSettingsDialog");
-    expect(app).toContain('fetch("/api/settings"');
+    expect(app).toContain('fetch(apiPath("/api/settings")');
     expect(app).toContain('method: "PUT"');
     expect(app).toContain("restartPollingTimer");
   });

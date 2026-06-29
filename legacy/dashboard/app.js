@@ -1,4 +1,5 @@
 const DEFAULT_POLL_MS = 1500;
+const DASHBOARD_URL = new URL(window.location.href);
 const MAX_HISTORY_PAGE_SIZE = 10_000;
 const MAX_HISTORY_PAGE_COUNT = 8;
 const MAX_HISTORY_RENDER_SAMPLES = 1_200;
@@ -18,6 +19,12 @@ const STORAGE_KEYS = {
   lastSection: "tinytop.lastSection",
 };
 const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
+const THEME_ALIASES = new Map([
+  ["dark", "midnight"],
+  ["light", "solar"],
+]);
+const IS_EMBED_VIEW = DASHBOARD_URL.pathname.endsWith("/embed") || DASHBOARD_URL.searchParams.get("embed") === "1";
+const REQUESTED_THEME = normalizeThemeRequest(DASHBOARD_URL.searchParams.get("theme"));
 const GRAPH_MODES = {
   line: "Line graph",
   area: "Area graph",
@@ -64,6 +71,32 @@ const SYSTEM_FILESYSTEM_TYPES = new Set([
   "tmpfs",
   "tracefs",
 ]);
+
+function normalizeThemeRequest(value) {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  const mapped = THEME_ALIASES.get(normalized) ?? normalized;
+  return THEMES.has(mapped) ? mapped : null;
+}
+
+function apiPath(path) {
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  const embedSuffix = "/embed";
+  const embedIndex = DASHBOARD_URL.pathname.endsWith(embedSuffix)
+    ? DASHBOARD_URL.pathname.length - embedSuffix.length
+    : -1;
+  const basePath = embedIndex > 0 ? DASHBOARD_URL.pathname.slice(0, embedIndex) : "";
+  return `${basePath}${normalized}`;
+}
+
+function applyEmbedShellMode() {
+  if (!IS_EMBED_VIEW) return;
+  document.documentElement.dataset.embed = "true";
+  document.body.dataset.embed = "true";
+}
+
+applyEmbedShellMode();
+
 const DEFAULT_DAEMON_SETTINGS = {
   defaultTheme: "midnight",
   defaultGraphMode: "line",
@@ -2236,7 +2269,7 @@ function renderVersion(metadata) {
 
 async function fetchVersion() {
   try {
-    const response = await fetch("/api/version", { cache: "no-store" });
+    const response = await fetch(apiPath("/api/version"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Version failed with HTTP ${response.status}`);
     renderVersion(await response.json());
   } catch {
@@ -2501,7 +2534,7 @@ function syncProcessControls() {
 
 function applyInitialBrowserSettings(settings) {
   const graphModes = new Set(Object.keys(GRAPH_MODES));
-  applyTheme(readStoredValue(STORAGE_KEYS.theme, settings.defaultTheme, THEMES), { persist: false });
+  applyTheme(REQUESTED_THEME ?? readStoredValue(STORAGE_KEYS.theme, settings.defaultTheme, THEMES), { persist: false });
   setGraphMode(readStoredValue(STORAGE_KEYS.graphMode, settings.defaultGraphMode, graphModes), { persist: false });
   setHistoryWindow(readStoredValue(STORAGE_KEYS.historyWindow, settings.defaultHistoryWindow, HISTORY_WINDOW_KEYS), {
     fetch: false,
@@ -2525,7 +2558,7 @@ function applyInitialBrowserSettings(settings) {
 
 async function fetchSettings() {
   try {
-    const response = await fetch("/api/settings", { cache: "no-store" });
+    const response = await fetch(apiPath("/api/settings"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Settings failed with HTTP ${response.status}`);
     const settings = normalizeSettings(await response.json());
     populateDaemonSettings(settings);
@@ -2554,7 +2587,7 @@ async function saveDaemonSettings() {
   if (elements.saveSettingsButton) elements.saveSettingsButton.disabled = true;
   renderSettingsStatus("Saving daemon defaults.");
   try {
-    const response = await fetch("/api/settings", {
+    const response = await fetch(apiPath("/api/settings"), {
       method: "PUT",
       headers: {
         "content-type": "application/json",
@@ -2580,7 +2613,7 @@ async function fetchSnapshot() {
   if (state.loading || state.paused) return;
   state.loading = true;
   try {
-    const response = await fetch("/api/snapshot", { cache: "no-store" });
+    const response = await fetch(apiPath("/api/snapshot"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Snapshot failed with HTTP ${response.status}`);
     const snapshot = await response.json();
     state.lastSnapshot = snapshot;
@@ -2648,7 +2681,7 @@ function renderHistoryMarkers(markers) {
 
 async function fetchHistoryCoverage() {
   try {
-    const response = await fetch("/api/history/coverage", { cache: "no-store" });
+    const response = await fetch(apiPath("/api/history/coverage"), { cache: "no-store" });
     if (!response.ok) throw new Error(`History coverage failed with HTTP ${response.status}`);
     const coverage = await response.json();
     renderHistoryCoverage(coverage);
@@ -2665,7 +2698,7 @@ async function fetchHistoryPage({ sinceMs, untilMs, limit }) {
     since_ms: String(Math.floor(sinceMs)),
     until_ms: String(Math.floor(untilMs)),
   });
-  const response = await fetch(`/api/history?${params}`, {
+  const response = await fetch(apiPath(`/api/history?${params}`), {
     cache: "no-store",
   });
   if (!response.ok) return [];
@@ -2680,7 +2713,7 @@ async function fetchHistoryPoints({ sinceMs, untilMs, limit, source }) {
     until_ms: String(Math.floor(untilMs)),
     source: source ?? "auto",
   });
-  const response = await fetch(`/api/history/points?${params}`, {
+  const response = await fetch(apiPath(`/api/history/points?${params}`), {
     cache: "no-store",
   });
   if (!response.ok) return [];
@@ -2695,7 +2728,7 @@ async function fetchHistoryMarkers({ sinceMs, untilMs }) {
     until_ms: String(Math.floor(untilMs)),
     expected_gap_ms: String(Math.max(60_000, state.pollMs * 4)),
   });
-  const response = await fetch(`/api/history/markers?${params}`, {
+  const response = await fetch(apiPath(`/api/history/markers?${params}`), {
     cache: "no-store",
   });
   if (!response.ok) {

@@ -109,9 +109,38 @@ describe("createFetchHandler", () => {
     expect(body.runtime).toBe("legacy-bun");
     expect(body.component).toBe("dashboard");
     expect(body.dashboard).toBe("legacy");
+    expect(body.capabilities).toEqual(["snapshot", "history", "embed"]);
     expect(body.collector.component).toBe("collector");
     expect(body.daemon.os).toBe(process.platform);
     expect(body.daemon.storage.sqlitePath).toContain("history.sqlite");
+  });
+
+  test("serves embeddable dashboard with configurable frame ancestors", async () => {
+    const previous = process.env.TINYTOP_EMBED_FRAME_ANCESTORS;
+    process.env.TINYTOP_EMBED_FRAME_ANCESTORS = "'self' http://127.0.0.1:9323";
+
+    try {
+      const handler = createFetchHandler({
+        publicDir: "legacy/dashboard",
+        collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+      });
+
+      const response = await handler(new Request("http://127.0.0.1:4274/embed?theme=dark"));
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-security-policy")).toBe(
+        "frame-ancestors 'self' http://127.0.0.1:9323",
+      );
+      expect(body).toContain("<title>TinyTop</title>");
+      expect(body).toContain('id="main"');
+    } finally {
+      if (previous === undefined) {
+        delete process.env.TINYTOP_EMBED_FRAME_ANCESTORS;
+      } else {
+        process.env.TINYTOP_EMBED_FRAME_ANCESTORS = previous;
+      }
+    }
   });
 
   test("serves legacy dashboard settings metadata", async () => {

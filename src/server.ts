@@ -1,7 +1,7 @@
 import { collectSnapshot, type SystemSnapshot } from "./collector";
 import { defaultHistoryDbPath, type HistoryQuery, type HistorySample } from "./history-store";
 import { cloneDashboardSettings, normalizeDashboardSettings } from "./settings";
-import { versionMetadata } from "./version";
+import { TINYTOP_DASHBOARD_CAPABILITIES, versionMetadata } from "./version";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4274;
@@ -41,6 +41,7 @@ function contentTypeFor(pathname: string): string {
 
 function staticFileName(pathname: string): string | null {
   if (pathname === "/") return "index.html";
+  if (pathname === "/embed") return "index.html";
   if (pathname === "/index.html") return "index.html";
   if (pathname === "/styles.css") return "styles.css";
   if (pathname === "/app.js") return "app.js";
@@ -89,6 +90,25 @@ function legacyDaemonMetadata(url: URL) {
       sqlitePath: defaultHistoryDbPath(),
     },
   };
+}
+
+function embedFrameAncestors(): string {
+  const configured = process.env.TINYTOP_EMBED_FRAME_ANCESTORS?.trim();
+  if (!configured || configured.includes("\n") || configured.includes("\r")) return "'self'";
+  return configured;
+}
+
+function staticResponseHeaders(pathname: string, filePath: string): HeadersInit {
+  const headers: Record<string, string> = {
+    "content-type": contentTypeFor(filePath),
+    "cache-control": "no-store",
+  };
+
+  if (pathname === "/embed") {
+    headers["content-security-policy"] = `frame-ancestors ${embedFrameAncestors()}`;
+  }
+
+  return headers;
 }
 
 async function copyJsonResponse(response: Response): Promise<Response> {
@@ -176,6 +196,7 @@ export function createFetchHandler(options: FetchHandlerOptions): (request: Requ
         runtime: "legacy-bun",
         component: "dashboard",
         dashboard: "legacy",
+        capabilities: TINYTOP_DASHBOARD_CAPABILITIES,
         collector: await collectorVersion(options.writerFetch),
         daemon: legacyDaemonMetadata(url),
       }), {
@@ -190,6 +211,7 @@ export function createFetchHandler(options: FetchHandlerOptions): (request: Requ
         runtime: "legacy-bun",
         component: "dashboard",
         dashboard: "legacy",
+        capabilities: TINYTOP_DASHBOARD_CAPABILITIES,
         collector: await collectorVersion(options.writerFetch),
         daemon: legacyDaemonMetadata(url),
       }), {
@@ -251,10 +273,7 @@ export function createFetchHandler(options: FetchHandlerOptions): (request: Requ
     }
 
     return new Response(Bun.file(filePath), {
-      headers: {
-        "content-type": contentTypeFor(filePath),
-        "cache-control": "no-store",
-      },
+      headers: staticResponseHeaders(url.pathname, filePath),
     });
   };
 }

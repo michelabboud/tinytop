@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0 - 2026-06-30
+
+- Added `/embed`, an iframe-friendly dashboard view for host panels such as tutus-remotus.
+- Added `?theme=dark` and `?theme=light` handling for the embedded dashboard view.
+- Added `TINYTOP_EMBED_FRAME_ANCESTORS` to configure `/embed` frame permissions while leaving the standalone dashboard unchanged.
+- Added `capabilities` to version/health metadata so integrators can detect `snapshot`, `history`, and `embed` support.
+- Added `docs/INTEGRATION.md` with the stable TinyTop integration contract for `/api/version`, `/health`, `/api/snapshot`, and `/api/history/points`.
+- Bumped product, command-center, PowerShell, and Rust crate versions to 0.2.0.
+
 ## 0.1.35 - 2026-06-29
 
 - Fixed native Windows direct `tinytop-agent.exe serve` startup when `HOME` is not set by resolving the default SQLite database to `%LOCALAPPDATA%\TinyTop\state\history.sqlite`, with a `USERPROFILE\AppData\Local` fallback.

@@ -24,7 +24,7 @@ Response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.35",
+  "version": "0.2.0",
   "daemon": {
     "os": "windows",
     "arch": "x86_64",
@@ -60,7 +60,7 @@ Rust response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.35",
+  "version": "0.2.0",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded",
@@ -89,14 +89,14 @@ Legacy Bun response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.35",
+  "version": "0.2.0",
   "runtime": "legacy-bun",
   "component": "dashboard",
   "dashboard": "legacy",
   "collector": {
     "status": "ok",
     "app": "tinytop",
-    "version": "0.1.35",
+    "version": "0.2.0",
     "runtime": "legacy-bun",
     "component": "collector",
     "dashboard": "none",
@@ -411,7 +411,7 @@ Response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.35",
+  "version": "0.2.0",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded",
@@ -444,7 +444,7 @@ Response:
 {
   "status": "ok",
   "app": "tinytop",
-  "version": "0.1.35",
+  "version": "0.2.0",
   "runtime": "rust",
   "component": "collector-dashboard-daemon",
   "dashboard": "embedded",
