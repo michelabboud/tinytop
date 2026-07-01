@@ -11,6 +11,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 - Windows entrypoint: `.\tinytop.cmd` or process-scoped `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` before `.\tinytop.ps1`
 - Dashboard UI: Linux/WSL `http://127.0.0.1:4274`; native Windows defaults to `http://127.0.0.1:4275` to avoid loopback collisions with WSL
 - Embeddable dashboard: `http://127.0.0.1:4274/embed?theme=dark` for iframe host panels, gated by `TINYTOP_EMBED_FRAME_ANCESTORS`
+- Reverse-proxy subpath: mount behind nginx at `/mon/` with `--base-path /mon` or `TINYTOP_BASE_PATH=/mon` (dashboard is base-path relative, no HTML rewriting needed)
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite`
 - SQLite retention: Rust daemon prunes raw samples by the saved retention window and keeps one-minute rollups by the saved rollup window
@@ -346,6 +347,7 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
 | `TINYTOP_PUBLIC_DIR` | unset | Optional development override for Rust dashboard assets; unset uses embedded assets |
 | `TINYTOP_EMBED_FRAME_ANCESTORS` | `'self'` | CSP `frame-ancestors` value for `/embed` only, for example `'self' http://127.0.0.1:9323` |
+| `TINYTOP_BASE_PATH` | unset (root-mounted) | Reverse-proxy mount prefix, for example `/mon`; serves the dashboard, assets, and APIs under `{base}/...` and redirects the bare mount to `{base}/`. Equivalent to `tinytop-agent serve --base-path` |
 
 ## Ports
 

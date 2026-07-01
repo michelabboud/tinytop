@@ -416,6 +416,58 @@ fn serve_exposes_rollup_history_points_and_markers_api() {
     result.expect("server should expose history points and markers");
 }
 
+#[test]
+fn serve_mounts_dashboard_and_api_under_base_path() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+            "--base-path",
+            "/mon",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start with a base path");
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get_raw(port, "/mon"))
+        .map(|response| {
+            assert!(
+                response.contains("http/1.1 308"),
+                "bare mount should redirect, got {response}"
+            );
+            assert!(
+                response.contains("location: /mon/"),
+                "redirect should target the trailing-slash mount, got {response}"
+            );
+        })
+        .and_then(|_| http_get(port, "/mon/"))
+        .map(|response| assert!(response.contains("<title>TinyTop</title>")))
+        .and_then(|_| http_get(port, "/mon/app.js"))
+        .map(|response| assert!(response.contains("requestConfirmation")))
+        .and_then(|_| http_get(port, "/mon/api/version"))
+        .map(|response| {
+            assert!(response.starts_with("HTTP/1.1 200"));
+            assert!(response.contains(r#""runtime":"rust""#));
+        })
+        // Root routes stay live for backwards-compatible deployments.
+        .and_then(|_| http_get(port, "/api/version"))
+        .map(|response| assert!(response.starts_with("HTTP/1.1 200")));
+
+    stop_child(&mut child);
+
+    result.expect("server should mount the dashboard and API under the base path");
+}
+
 fn reserve_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("should reserve a local port");
     listener

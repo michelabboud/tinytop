@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 - 2026-07-01
+
+- Fixed the dashboard breaking behind a reverse-proxy subpath (e.g. `https://<domain>/mon/`) by referencing assets with document-relative URLs and deriving the API base path from the current document location, so the shell loads correctly at any mount point without nginx `sub_filter` rewriting.
+- Added first-class base-path support: `tinytop-agent serve --base-path /mon` and `TINYTOP_BASE_PATH=/mon` (honored by both the Rust daemon and the Bun server) serve the dashboard, assets, and APIs under `{base}/...`, redirect the bare mount to `{base}/`, and keep root routes live for backwards compatibility.
+- Added ADR 0012 recording the reverse-proxy base-path decision and updated `docs/reports/2026-06-30-nginx-subpath-integration.md` with the shipped resolution.
+- Bumped product, command-center, PowerShell, and Rust crate versions to 0.2.1.
+
 ## 0.2.0 - 2026-06-30
 
 - Added `/embed`, an iframe-friendly dashboard view for host panels such as tutus-remotus.

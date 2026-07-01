@@ -20,6 +20,7 @@ type FetchHandlerOptions = {
   collect?: (previousProcStatText?: string) => Promise<SnapshotResult>;
   readHistory?: (query: HistoryQuery) => Promise<HistorySample[]> | HistorySample[];
   writerFetch?: (pathnameWithSearch: string) => Promise<Response>;
+  basePath?: string;
 };
 
 const contentTypes = new Map<string, string>([
@@ -32,6 +33,17 @@ const contentTypes = new Map<string, string>([
 
 function jsonError(message: string, status: number): Response {
   return Response.json({ error: message }, { status });
+}
+
+// Normalize a reverse-proxy mount prefix into a leading-slash, no-trailing-slash
+// form ("/mon"). An empty/root value means the dashboard is root-mounted.
+export function normalizeBasePath(raw: string | undefined | null): string {
+  if (!raw) return "";
+  let value = raw.trim();
+  if (value === "" || value === "/") return "";
+  if (!value.startsWith("/")) value = `/${value}`;
+  while (value.endsWith("/")) value = value.slice(0, -1);
+  return value;
 }
 
 function contentTypeFor(pathname: string): string {
@@ -157,9 +169,24 @@ async function fetchWriterWithRetry(writerBaseUrl: string, pathnameWithSearch: s
 export function createFetchHandler(options: FetchHandlerOptions): (request: Request) => Promise<Response> {
   let previousProcStatText: string | undefined;
   let dashboardSettings = cloneDashboardSettings();
+  const basePath = normalizeBasePath(options.basePath);
 
   return async function handleRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    if (basePath) {
+      if (url.pathname === basePath) {
+        // Redirect the bare mount to its trailing-slash form so the browser
+        // resolves the dashboard's relative asset URLs against "{base}/".
+        return new Response(null, {
+          status: 308,
+          headers: { location: `${basePath}/${url.search}` },
+        });
+      }
+      if (url.pathname.startsWith(`${basePath}/`)) {
+        url.pathname = url.pathname.slice(basePath.length);
+      }
+    }
 
     if (url.pathname === "/api/settings") {
       if (request.method === "GET") {
@@ -297,6 +324,7 @@ export function startServer(): { url: string; stop(force?: boolean): void } {
         });
   const fetchHandler = createFetchHandler({
     publicDir: PUBLIC_DIR,
+    basePath: process.env.TINYTOP_BASE_PATH,
     writerFetch: (pathnameWithSearch) => fetchWriterWithRetry(writerBaseUrl, pathnameWithSearch),
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { createFetchHandler } from "../src/server";
+import { createFetchHandler, normalizeBasePath } from "../src/server";
 import type { SystemSnapshot } from "../src/collector";
 import { createCollectorFetchHandler } from "../legacy/bun-collector";
 import { makeSnapshot } from "./fixtures";
@@ -244,6 +244,72 @@ describe("createFetchHandler", () => {
     const response = await handler(new Request("http://127.0.0.1:4274/api/nope"));
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe("reverse-proxy base path", () => {
+  test("normalizeBasePath canonicalizes mount prefixes", () => {
+    expect(normalizeBasePath(undefined)).toBe("");
+    expect(normalizeBasePath("")).toBe("");
+    expect(normalizeBasePath("/")).toBe("");
+    expect(normalizeBasePath("mon")).toBe("/mon");
+    expect(normalizeBasePath("/mon")).toBe("/mon");
+    expect(normalizeBasePath("/mon/")).toBe("/mon");
+  });
+
+  test("redirects the bare mount to its trailing-slash form", async () => {
+    const handler = createFetchHandler({
+      publicDir: "legacy/dashboard",
+      basePath: "/mon",
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+    });
+
+    const response = await handler(new Request("http://127.0.0.1:4274/mon?theme=dark"));
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/mon/?theme=dark");
+  });
+
+  test("serves the dashboard shell and assets under the mount prefix", async () => {
+    const handler = createFetchHandler({
+      publicDir: "legacy/dashboard",
+      basePath: "/mon",
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+    });
+
+    const shell = await handler(new Request("http://127.0.0.1:4274/mon/"));
+    expect(shell.status).toBe(200);
+    expect(await shell.text()).toContain("<title>TinyTop</title>");
+
+    const script = await handler(new Request("http://127.0.0.1:4274/mon/app.js"));
+    expect(script.status).toBe(200);
+    expect(script.headers.get("content-type")).toContain("javascript");
+  });
+
+  test("serves API routes under the mount prefix", async () => {
+    const handler = createFetchHandler({
+      publicDir: "/missing",
+      basePath: "/mon",
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+    });
+
+    const response = await handler(new Request("http://127.0.0.1:4274/mon/api/snapshot"));
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.cpu.usagePercent).toBe(42);
+  });
+
+  test("keeps root routes live for backwards-compatible deployments", async () => {
+    const handler = createFetchHandler({
+      publicDir: "/missing",
+      basePath: "/mon",
+      collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
+    });
+
+    const response = await handler(new Request("http://127.0.0.1:4274/api/snapshot"));
+
+    expect(response.status).toBe(200);
   });
 });
 

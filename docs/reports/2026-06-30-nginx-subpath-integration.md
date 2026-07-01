@@ -2,7 +2,14 @@
 
 Date: 2026-06-30
 Version: 0.1.35
-Status: integration guidance
+Status: resolved in 0.2.1 (see "Resolution" below)
+
+> **Resolution (0.2.1).** The recommended long-term fix below has shipped. The
+> dashboard now uses document-relative asset URLs and derives its API base path
+> from the document location, and both runtimes accept `--base-path` /
+> `TINYTOP_BASE_PATH`. See ADR 0012 and the "Resolution" section at the end of
+> this report. The nginx options below remain valid; Option 3's `sub_filter`
+> rewriting is no longer necessary.
 
 ## Context
 
@@ -253,3 +260,49 @@ subpath integration failed because TinyTop is currently root-mounted and the
 dashboard uses root-absolute asset and API URLs. The best immediate fix is a
 dedicated hostname or root-route proxying. The best durable fix is explicit
 TinyTop base-path support.
+
+## Resolution (shipped in 0.2.1)
+
+Both durable fixes recommended above are now implemented (ADR 0012):
+
+- The dashboard shell references assets with **document-relative** URLs
+  (`styles.css`, `app.js`, `vendor/echarts.min.js`, `favicon.svg`) and derives
+  its API prefix from the current document location. It loads correctly at `/`,
+  at `/embed`, and under any subpath served with a trailing slash — no nginx
+  response rewriting required.
+- The daemon accepts an explicit mount prefix:
+
+  ```bash
+  tinytop-agent serve --base-path /mon
+  # or
+  TINYTOP_BASE_PATH=/mon tinytop-agent serve
+  ```
+
+  The Bun runtime honors `TINYTOP_BASE_PATH` as well. With a base path set the
+  daemon serves the dashboard, assets, and APIs under `/mon/...`, redirects the
+  bare `/mon` to `/mon/`, and keeps the root routes live for backwards-compatible
+  deployments.
+
+### Recommended nginx for a subpath now
+
+Because the dashboard is base-path relative, a prefix-stripping proxy is enough
+and no `sub_filter` is needed:
+
+```nginx
+location = /mon {
+    return 301 /mon/;
+}
+
+location /mon/ {
+    proxy_pass http://127.0.0.1:4274/;   # trailing slash strips /mon/
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+If you prefer to forward the prefix unchanged (no trailing slash on
+`proxy_pass`), run the daemon with `--base-path /mon` so it strips the prefix
+itself.
