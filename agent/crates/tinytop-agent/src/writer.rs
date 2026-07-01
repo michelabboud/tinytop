@@ -7,9 +7,10 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
-    http::{HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    extract::{Query, Request, State},
+    http::{HeaderValue, StatusCode, Uri, header},
+    middleware::{self, Next},
+    response::{IntoResponse, Redirect, Response},
     routing::get,
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +33,8 @@ pub struct ServeOptions {
     pub poll_ms: u64,
     pub dashboard_assets: DashboardAssets,
     pub embed_frame_ancestors: String,
+    /// Reverse-proxy mount prefix (e.g. "/mon"); empty means root-mounted.
+    pub base_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -175,7 +178,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
         .await?;
     let _collection_task = spawn_collection_loop(state.clone(), options.poll_ms);
 
-    let app = router(state);
+    let app = router(state, normalize_base_path(&options.base_path));
     let address: SocketAddr = format!("{}:{}", options.host, options.port).parse()?;
     let listener = TcpListener::bind(address).await?;
     let local_address = listener.local_addr()?;
@@ -190,8 +193,8 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
     Ok(())
 }
 
-fn router(state: AppState) -> Router {
-    Router::new()
+fn router(state: AppState, base_path: String) -> Router {
+    let app = Router::new()
         .route("/health", get(health))
         .route("/snapshot/latest", get(latest_snapshot))
         .route("/snapshot/collect", get(collect_snapshot))
@@ -211,7 +214,89 @@ fn router(state: AppState) -> Router {
         .route("/styles.css", get(static_file))
         .route("/app.js", get(static_file))
         .route("/vendor/echarts.min.js", get(static_file))
-        .with_state(state)
+        .with_state(state);
+
+    if base_path.is_empty() {
+        return app;
+    }
+
+    // Strip the reverse-proxy prefix *before* routing so a proxy that forwards
+    // "/mon/..." unchanged reaches the same handlers as a root-mounted daemon.
+    // `Router::layer` runs after route matching, so the rewrite has to happen in
+    // an outer router that delegates to `app` as its fallback: the middleware
+    // rewrites the URI, then `app` re-routes on the stripped path. Root routes
+    // stay live for backwards-compatible deployments.
+    Router::new()
+        .fallback_service(app)
+        .layer(middleware::from_fn_with_state(
+            Arc::new(base_path),
+            strip_base_path,
+        ))
+}
+
+/// Normalize a mount prefix into a leading-slash, no-trailing-slash form
+/// ("/mon"). An empty or "/" value means the dashboard is root-mounted.
+pub fn normalize_base_path(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "/" {
+        return String::new();
+    }
+    let with_leading = if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    };
+    with_leading.trim_end_matches('/').to_string()
+}
+
+enum BasePathAction {
+    /// Redirect the bare mount to its trailing-slash form.
+    Redirect(String),
+    /// Rewrite the request path (prefix stripped) before routing.
+    Rewrite(String),
+    /// Leave the request untouched (root routes / unrelated paths).
+    PassThrough,
+}
+
+fn base_path_action(base: &str, path: &str, query: Option<&str>) -> BasePathAction {
+    if base.is_empty() {
+        return BasePathAction::PassThrough;
+    }
+    if path == base {
+        let mut location = format!("{base}/");
+        if let Some(query) = query {
+            location.push('?');
+            location.push_str(query);
+        }
+        return BasePathAction::Redirect(location);
+    }
+    let prefix = format!("{base}/");
+    if let Some(rest) = path.strip_prefix(prefix.as_str()) {
+        let mut new_path = format!("/{rest}");
+        if let Some(query) = query {
+            new_path.push('?');
+            new_path.push_str(query);
+        }
+        return BasePathAction::Rewrite(new_path);
+    }
+    BasePathAction::PassThrough
+}
+
+async fn strip_base_path(
+    State(base): State<Arc<String>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    match base_path_action(base.as_str(), request.uri().path(), request.uri().query()) {
+        BasePathAction::Redirect(location) => Redirect::permanent(&location).into_response(),
+        BasePathAction::Rewrite(new_path) => {
+            if let Ok(new_uri) = new_path.parse::<Uri>() {
+                *request.uri_mut() = new_uri;
+            }
+            next.run(request).await
+        }
+        BasePathAction::PassThrough => next.run(request).await,
+    }
 }
 
 async fn health(State(state): State<AppState>) -> Response {
@@ -313,10 +398,9 @@ async fn history_markers(
     Ok(no_store(Json(HistoryMarkersResponse { markers })).into_response())
 }
 
-async fn static_file(
-    State(state): State<AppState>,
-    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
-) -> Result<Response, ServeError> {
+async fn static_file(State(state): State<AppState>, uri: Uri) -> Result<Response, ServeError> {
+    // Use the (possibly base-path-stripped) request URI rather than OriginalUri
+    // so assets resolve correctly when the daemon is mounted under a subpath.
     let Some(relative_path) = static_relative_path(uri.path()) else {
         return Err(ServeError::not_found("asset not found"));
     };
@@ -324,10 +408,7 @@ async fn static_file(
     dashboard_asset_response(&state.dashboard_assets, relative_path)
 }
 
-async fn embed_file(
-    State(state): State<AppState>,
-    axum::extract::OriginalUri(_uri): axum::extract::OriginalUri,
-) -> Result<Response, ServeError> {
+async fn embed_file(State(state): State<AppState>) -> Result<Response, ServeError> {
     let mut response = dashboard_asset_response(&state.dashboard_assets, Path::new("index.html"))?;
     insert_embed_frame_ancestors(&mut response, &state.embed_frame_ancestors);
     Ok(response)
@@ -769,5 +850,70 @@ impl From<std::net::AddrParseError> for ServeError {
 impl From<std::time::SystemTimeError> for ServeError {
     fn from(error: std::time::SystemTimeError) -> Self {
         Self::Time(error)
+    }
+}
+
+#[cfg(test)]
+mod base_path_tests {
+    use super::{BasePathAction, base_path_action, normalize_base_path};
+
+    #[test]
+    fn normalizes_mount_prefix_variants() {
+        assert_eq!(normalize_base_path(""), "");
+        assert_eq!(normalize_base_path("/"), "");
+        assert_eq!(normalize_base_path("  "), "");
+        assert_eq!(normalize_base_path("mon"), "/mon");
+        assert_eq!(normalize_base_path("/mon"), "/mon");
+        assert_eq!(normalize_base_path("/mon/"), "/mon");
+        assert_eq!(normalize_base_path("/mon/status/"), "/mon/status");
+    }
+
+    #[test]
+    fn passes_through_when_root_mounted() {
+        assert!(matches!(
+            base_path_action("", "/api/version", None),
+            BasePathAction::PassThrough
+        ));
+    }
+
+    #[test]
+    fn redirects_bare_mount_to_trailing_slash() {
+        match base_path_action("/mon", "/mon", None) {
+            BasePathAction::Redirect(location) => assert_eq!(location, "/mon/"),
+            _ => panic!("expected redirect"),
+        }
+        match base_path_action("/mon", "/mon", Some("theme=dark")) {
+            BasePathAction::Redirect(location) => assert_eq!(location, "/mon/?theme=dark"),
+            _ => panic!("expected redirect with query"),
+        }
+    }
+
+    #[test]
+    fn rewrites_prefixed_paths() {
+        match base_path_action("/mon", "/mon/", None) {
+            BasePathAction::Rewrite(path) => assert_eq!(path, "/"),
+            _ => panic!("expected rewrite of mount root"),
+        }
+        match base_path_action("/mon", "/mon/app.js", None) {
+            BasePathAction::Rewrite(path) => assert_eq!(path, "/app.js"),
+            _ => panic!("expected asset rewrite"),
+        }
+        match base_path_action("/mon", "/mon/api/history", Some("limit=20")) {
+            BasePathAction::Rewrite(path) => assert_eq!(path, "/api/history?limit=20"),
+            _ => panic!("expected api rewrite with query"),
+        }
+    }
+
+    #[test]
+    fn leaves_unrelated_and_root_paths_untouched() {
+        assert!(matches!(
+            base_path_action("/mon", "/api/version", None),
+            BasePathAction::PassThrough
+        ));
+        // A sibling path that merely shares the prefix string is not stripped.
+        assert!(matches!(
+            base_path_action("/mon", "/monitoring", None),
+            BasePathAction::PassThrough
+        ));
     }
 }

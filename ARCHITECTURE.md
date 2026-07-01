@@ -118,6 +118,13 @@ The Rust daemon and legacy Bun dashboard expose:
 - `GET /vendor/echarts.min.js`
 - static frontend assets: `/`, `/index.html`, `/styles.css`, `/app.js`
 
+The dashboard shell references assets with document-relative URLs and derives its
+API prefix from the document location, so it works root-mounted or behind a
+reverse-proxy subpath. Setting `--base-path /mon` (or `TINYTOP_BASE_PATH=/mon`)
+additionally serves every route above under `/mon/...`, redirects the bare
+`/mon` to `/mon/`, and keeps the root routes live for backwards compatibility
+(ADR 0012).
+
 See [docs/guides/API.md](docs/guides/API.md) for request and response details.
 
 ## Legacy Collector API

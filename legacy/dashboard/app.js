@@ -79,14 +79,29 @@ function normalizeThemeRequest(value) {
   return THEMES.has(mapped) ? mapped : null;
 }
 
+function dashboardBasePath() {
+  // Derive the mount prefix from the current document location so the dashboard
+  // works whether it is served at the root ("/") or under a reverse-proxy
+  // subpath ("/mon/"). The daemon serves the shell at "{base}/", "{base}/embed",
+  // and "{base}/index.html"; strip those to recover "{base}" (empty at root).
+  let path = DASHBOARD_URL.pathname;
+  for (const suffix of ["/embed", "/index.html"]) {
+    if (path.endsWith(suffix)) {
+      path = path.slice(0, path.length - suffix.length);
+      break;
+    }
+  }
+  if (path.endsWith("/")) {
+    path = path.slice(0, -1);
+  }
+  return path;
+}
+
+const DASHBOARD_BASE_PATH = dashboardBasePath();
+
 function apiPath(path) {
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  const embedSuffix = "/embed";
-  const embedIndex = DASHBOARD_URL.pathname.endsWith(embedSuffix)
-    ? DASHBOARD_URL.pathname.length - embedSuffix.length
-    : -1;
-  const basePath = embedIndex > 0 ? DASHBOARD_URL.pathname.slice(0, embedIndex) : "";
-  return `${basePath}${normalized}`;
+  return `${DASHBOARD_BASE_PATH}${normalized}`;
 }
 
 function applyEmbedShellMode() {

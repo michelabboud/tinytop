@@ -38,8 +38,30 @@ describe("dashboard asset ownership", () => {
     const html = read("legacy/dashboard/index.html").toString("utf8");
     const favicon = read("legacy/dashboard/favicon.svg").toString("utf8");
 
-    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg" />');
+    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="favicon.svg" />');
     expect(favicon).toContain("<svg");
     expect(favicon).toContain("TinyTop");
+  });
+
+  test("dashboard references assets with base-path-relative URLs", () => {
+    const html = read("legacy/dashboard/index.html").toString("utf8");
+
+    // Relative URLs let the shell load correctly under a reverse-proxy subpath
+    // (e.g. "/mon/") without server-side HTML rewriting.
+    expect(html).toContain('href="styles.css"');
+    expect(html).toContain('src="app.js" type="module"');
+    expect(html).toContain('src="vendor/echarts.min.js"');
+    expect(html).not.toContain('href="/styles.css"');
+    expect(html).not.toContain('src="/app.js"');
+    expect(html).not.toContain('src="/vendor/echarts.min.js"');
+    expect(html).not.toContain('href="/favicon.svg"');
+  });
+
+  test("dashboard derives its API base path from the document location", () => {
+    const app = read("legacy/dashboard/app.js").toString("utf8");
+
+    expect(app).toContain("function dashboardBasePath()");
+    expect(app).toContain("const DASHBOARD_BASE_PATH = dashboardBasePath();");
+    expect(app).toContain("return `${DASHBOARD_BASE_PATH}${normalized}`;");
   });
 });

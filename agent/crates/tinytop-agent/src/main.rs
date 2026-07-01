@@ -195,6 +195,7 @@ fn parse_serve_options(
     } else {
         writer::DashboardAssets::Disabled
     };
+    let mut base_path = std::env::var("TINYTOP_BASE_PATH").unwrap_or_default();
 
     let mut index = 0;
     while index < args.len() {
@@ -225,6 +226,10 @@ fn parse_serve_options(
                 dashboard_assets = writer::DashboardAssets::Disabled;
                 index += 1;
             }
+            "--base-path" => {
+                base_path = require_value(args, index, "--base-path")?;
+                index += 2;
+            }
             other => return Err(format!("unknown serve option: {other}").into()),
         }
     }
@@ -236,6 +241,7 @@ fn parse_serve_options(
         poll_ms,
         dashboard_assets,
         embed_frame_ancestors: embed_frame_ancestors_from_env(),
+        base_path,
     })
 }
 
@@ -350,7 +356,7 @@ fn print_help() {
 Usage:
   tinytop-agent collect [--json] [--sqlite <database-url>]
   tinytop-agent db stats|check|vacuum [--sqlite <database-url>]
-  tinytop-agent serve [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>] [--public-dir <path>]
+  tinytop-agent serve [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>] [--public-dir <path>] [--base-path <prefix>]
   tinytop-agent serve-writer [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>]
   tinytop-agent help
 
@@ -359,6 +365,7 @@ Examples:
   tinytop-agent collect --sqlite sqlite::memory:
   tinytop-agent db stats
   tinytop-agent serve --host 127.0.0.1 --port 4274
+  tinytop-agent serve --base-path /mon
   tinytop-agent serve-writer --host 127.0.0.1 --port 4276
 "#
     );
