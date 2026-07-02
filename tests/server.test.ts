@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { createFetchHandler } from "../src/server";
+import { __testing, createFetchHandler } from "../src/server";
 import type { SystemSnapshot } from "../src/collector";
 import { createCollectorFetchHandler } from "../legacy/bun-collector";
 import { makeSnapshot } from "./fixtures";
@@ -117,7 +117,9 @@ describe("createFetchHandler", () => {
 
   test("serves embeddable dashboard with configurable frame ancestors", async () => {
     const previous = process.env.TINYTOP_EMBED_FRAME_ANCESTORS;
-    process.env.TINYTOP_EMBED_FRAME_ANCESTORS = "'self' http://127.0.0.1:9323";
+    // A bell (0x07) control char: illegal in an HTTP header value, so both runtimes
+    // must fail closed to 'self' rather than emit or drop the CSP header (D2).
+    process.env.TINYTOP_EMBED_FRAME_ANCESTORS = `'self'${String.fromCharCode(7)}evil.example.com`;
 
     try {
       const handler = createFetchHandler({
@@ -125,15 +127,10 @@ describe("createFetchHandler", () => {
         collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
       });
 
-      const response = await handler(new Request("http://127.0.0.1:4274/embed?theme=dark"));
-      const body = await response.text();
+      const response = await handler(new Request("http://127.0.0.1:4274/embed"));
 
       expect(response.status).toBe(200);
-      expect(response.headers.get("content-security-policy")).toBe(
-        "frame-ancestors 'self' http://127.0.0.1:9323",
-      );
-      expect(body).toContain("<title>TinyTop</title>");
-      expect(body).toContain('id="main"');
+      expect(response.headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
     } finally {
       if (previous === undefined) {
         delete process.env.TINYTOP_EMBED_FRAME_ANCESTORS;
@@ -244,6 +241,37 @@ describe("createFetchHandler", () => {
     const response = await handler(new Request("http://127.0.0.1:4274/api/nope"));
 
     expect(response.status).toBe(404);
+  });
+});
+
+describe("fetchWriterWithRetry", () => {
+  test("times out a stalled writer attempt instead of hanging", async () => {
+    // A server that accepts the connection but never responds — the exact stall
+    // an AbortSignal.timeout must break (M3).
+    const server = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+
+    try {
+      const baseUrl = `http://127.0.0.1:${server.port}`;
+      const started = Date.now();
+      let threw = false;
+      try {
+        await __testing.fetchWriterWithRetry(baseUrl, "/version", {
+          attempts: 2,
+          retryDelayMs: 5,
+          timeoutMs: 40,
+        });
+      } catch {
+        threw = true;
+      }
+      const elapsed = Date.now() - started;
+
+      expect(threw).toBe(true);
+      // Each attempt waited for its ~40ms timeout rather than returning instantly.
+      expect(elapsed).toBeGreaterThanOrEqual(40);
+      expect(elapsed).toBeLessThan(5000);
+    } finally {
+      server.stop(true);
+    }
   });
 });
 

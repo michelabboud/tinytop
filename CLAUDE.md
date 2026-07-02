@@ -76,7 +76,7 @@ bun run check         # both of the above — the full gate
 | `src/server.ts` | Bun dashboard HTTP server |
 | `legacy/bun-collector.ts` | Legacy Bun collector daemon |
 
-The Rust Linux collector uses `procfs` (CPU ticks, memory, load, uptime, PSI) and `sysinfo` (disks, processes, identity) — it does **not** shell out to `df`/`ps`/`uname`. It reuses one `sysinfo::System` across samples for CPU/process deltas. Native macOS/Windows collectors are feature-gated and only a first slice; Linux is the reference implementation.
+The Rust Linux collector uses `procfs` (CPU ticks, memory, load, uptime, PSI), `sysinfo` (disks, processes, identity), and `rustix`'s `statvfs(2)` for per-filesystem inode counts (ADR 0012) — it does **not** shell out to `df`/`ps`/`uname`. It reuses one `sysinfo::System` across samples for CPU/process deltas. Native macOS/Windows collectors are feature-gated and only a first slice; Linux is the reference implementation.
 
 ## Conventions specific to this repo
 

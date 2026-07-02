@@ -8,7 +8,7 @@ repository.workspace = true
 
 [features]
 default = ["linux-collector"]
-linux-collector = ["dep:procfs"]
+linux-collector = ["dep:procfs", "dep:rustix"]
 macos-collector = []
 windows-collector = []
 
@@ -20,3 +20,9 @@ tinytop-types = { path = "../tinytop-types" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = { workspace = true, optional = true }
+# Safe statvfs(2) wrapper: reads per-mount inode counts (f_files/f_ffree) without
+# shelling out to `df -i`, preserving the collector's no-subprocess invariant (ADR 0012).
+rustix = { workspace = true, optional = true }
+
+[dev-dependencies]
+sysinfo.workspace = true

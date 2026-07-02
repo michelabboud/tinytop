@@ -189,7 +189,7 @@ pub fn collect_sources(
         memory_pressure_text: memory_pressure_text(),
         io_pressure_text: io_pressure_text(),
         df_blocks_text: sysinfo_df_blocks_text(&disks),
-        df_inodes_text: String::new(),
+        df_inodes_text: statvfs_inodes_text(&disks),
         ps_text: sysinfo_process_text(system, meminfo.mem_total),
     })
 }
@@ -667,6 +667,44 @@ fn sysinfo_df_blocks_text(disks: &Disks) -> String {
             available,
             used_percent,
             path_to_string(disk.mount_point()),
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Build `df -Pi -T`-compatible inode text from a `statvfs(2)` call per mount.
+///
+/// The Bun collector shells out to `df -Pi -T` for inode usage; the Rust
+/// collector deliberately avoids subprocesses (ADR 0005/0012 and the
+/// `linux_collector_does_not_shell_out_for_host_metrics` guard test), so it reads
+/// the same numbers directly via `statvfs`: `f_files` is the total inode count and
+/// `f_ffree` the free count. We iterate the *same* `Disks` list already used for
+/// the block-usage text so the mount strings match exactly and
+/// [`merge_filesystems`] can join blocks to inodes by mount. The output is fed
+/// through the existing [`parse_inodes`] path unchanged.
+///
+/// A mount we cannot stat (permission denied, disappeared, or an unresponsive
+/// network filesystem) is simply omitted, leaving its inode fields null — the
+/// same result the previous `String::new()` placeholder produced.
+fn statvfs_inodes_text(disks: &Disks) -> String {
+    let mut lines = vec!["Filesystem Type Inodes IUsed IFree IUse% Mounted on".to_string()];
+    for disk in disks.list() {
+        let mount = disk.mount_point();
+        let Ok(stat) = rustix::fs::statvfs(mount) else {
+            continue;
+        };
+        let total = stat.f_files;
+        let free = stat.f_ffree;
+        let used = total.saturating_sub(free);
+        lines.push(format!(
+            "{} {} {} {} {} {}% {}",
+            os_str_to_string(disk.name()),
+            os_str_to_string(disk.file_system()),
+            total,
+            used,
+            free,
+            percent(used, total),
+            path_to_string(mount),
         ));
     }
     lines.join("\n")

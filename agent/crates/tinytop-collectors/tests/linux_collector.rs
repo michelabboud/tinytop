@@ -148,6 +148,52 @@ fn live_linux_collector_returns_a_real_snapshot_on_linux_hosts() {
 }
 
 #[test]
+fn merges_statvfs_inode_text_into_filesystem_snapshots() {
+    // The df_inodes_text produced by statvfs collection must flow through the
+    // existing parse/merge path and populate inode fields keyed by mount (M1).
+    let mut sources = linux_fixture();
+    sources.df_inodes_text = "Filesystem Type Inodes IUsed IFree IUse% Mounted on\n\
+        /dev/sdd ext4 262144 52428 209716 20% /\n\
+        tmpfs tmpfs 2048000 12 2047988 1% /run"
+        .to_string();
+
+    let snapshot = build_linux_snapshot_from_sources(sources).expect("snapshot");
+    let root = snapshot
+        .filesystems
+        .iter()
+        .find(|fs| fs.mount == "/")
+        .expect("root filesystem");
+    assert_eq!(root.inode_total, Some(262_144));
+    assert_eq!(root.inode_used, Some(52_428));
+    assert_eq!(root.inode_used_percent, Some(20.0));
+}
+
+#[test]
+fn collect_sources_populates_inode_data_from_statvfs_on_linux() {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+
+    let mut system = sysinfo::System::new();
+    let sources = tinytop_collectors::linux::collect_sources(&mut system, None)
+        .expect("collect_sources should succeed on linux");
+
+    assert!(
+        !sources.df_inodes_text.trim().is_empty(),
+        "statvfs inode collection should populate df_inodes_text on a linux host"
+    );
+
+    let snapshot = build_linux_snapshot_from_sources(sources).expect("snapshot builds");
+    assert!(
+        snapshot
+            .filesystems
+            .iter()
+            .any(|filesystem| filesystem.inode_total.is_some()),
+        "at least one filesystem should carry inode totals collected via statvfs"
+    );
+}
+
+#[test]
 fn linux_collector_does_not_shell_out_for_host_metrics() {
     let source = include_str!("../src/linux.rs");
     for forbidden in [

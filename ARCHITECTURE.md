@@ -86,7 +86,7 @@ cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve
 cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve-writer
 ```
 
-The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun collector while using Rust crates for host access. It uses `procfs` for Linux kernel metrics such as CPU ticks, memory, load, uptime, and pressure stall information, and `sysinfo` for disk, process, hostname, OS, and kernel metadata. It does not shell out to `df`, `ps`, or `uname`. The live collector keeps a reusable `sysinfo::System` across samples so process and CPU refreshes have previous state and avoid rebuilding all collector state on every interval. The Rust store uses SQLx with SQLite today, with SQL isolated in `tinytop-store` so future PostgreSQL/MySQL support does not leak into collector code.
+The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun collector while using Rust crates for host access. It uses `procfs` for Linux kernel metrics such as CPU ticks, memory, load, uptime, and pressure stall information, and `sysinfo` for disk, process, hostname, OS, and kernel metadata. Per-filesystem inode counts, which `sysinfo` does not expose, are read directly with the `statvfs(2)` syscall via `rustix` (ADR 0012). It does not shell out to `df`, `ps`, or `uname`. The live collector keeps a reusable `sysinfo::System` across samples so process and CPU refreshes have previous state and avoid rebuilding all collector state on every interval. The Rust store uses SQLx with SQLite today, with SQL isolated in `tinytop-store` so future PostgreSQL/MySQL support does not leak into collector code.
 
 The collector crate exposes `NativeCollector` behind target and Cargo feature gates:
 

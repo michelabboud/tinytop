@@ -321,7 +321,25 @@ async fn static_file(
         return Err(ServeError::not_found("asset not found"));
     };
 
-    dashboard_asset_response(&state.dashboard_assets, relative_path)
+    let mut response = dashboard_asset_response(&state.dashboard_assets, relative_path)?;
+    if is_dashboard_html_path(uri.path()) {
+        insert_static_frame_ancestors(&mut response);
+    }
+    Ok(response)
+}
+
+/// The top-level dashboard HTML routes. These get a fixed `frame-ancestors 'self'`
+/// CSP so the dashboard cannot be framed by another origin (D1). `/embed` is the
+/// deliberate exception: it keeps its operator-configurable ancestors.
+fn is_dashboard_html_path(path: &str) -> bool {
+    matches!(path, "/" | "/index.html")
+}
+
+fn insert_static_frame_ancestors(response: &mut Response) {
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'self'"),
+    );
 }
 
 async fn embed_file(
@@ -371,11 +389,16 @@ fn embedded_response(path: &Path) -> Result<Response, ServeError> {
 fn insert_embed_frame_ancestors(response: &mut Response, configured_ancestors: &str) {
     let ancestors = normalized_frame_ancestors(configured_ancestors);
     let policy = format!("frame-ancestors {ancestors}");
-    if let Ok(value) = HeaderValue::from_str(&policy) {
-        response
-            .headers_mut()
-            .insert(header::CONTENT_SECURITY_POLICY, value);
-    }
+    // Fail closed (D2): if the configured value contains bytes that are illegal in
+    // an HTTP header (control chars that slipped past the newline/CR check), fall
+    // back to a static `'self'` policy rather than omitting the header entirely.
+    // `'self'` is always a valid header value, so the CSP is never dropped. This
+    // mirrors the Bun runtime, which rejects the same characters up front.
+    let value = HeaderValue::from_str(&policy)
+        .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"));
+    response
+        .headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, value);
 }
 
 fn normalized_frame_ancestors(configured_ancestors: &str) -> &str {
@@ -769,5 +792,43 @@ impl From<std::net::AddrParseError> for ServeError {
 impl From<std::time::SystemTimeError> for ServeError {
     fn from(error: std::time::SystemTimeError) -> Self {
         Self::Time(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+
+    fn csp(response: &Response) -> &str {
+        response
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .expect("CSP header should be present")
+            .to_str()
+            .expect("CSP header should be valid ASCII")
+    }
+
+    #[test]
+    fn embed_frame_ancestors_preserves_a_valid_configuration() {
+        let mut response = Response::new(Body::empty());
+        insert_embed_frame_ancestors(&mut response, "'self' https://example.com");
+        assert_eq!(csp(&response), "frame-ancestors 'self' https://example.com");
+    }
+
+    #[test]
+    fn embed_frame_ancestors_falls_back_to_self_on_invalid_header_bytes() {
+        // A bell control char passes the newline/CR check but is rejected by
+        // HeaderValue::from_str — the header must still be set, to `'self'` (D2).
+        let mut response = Response::new(Body::empty());
+        insert_embed_frame_ancestors(&mut response, "'self'\u{7}evil.example.com");
+        assert_eq!(csp(&response), "frame-ancestors 'self'");
+    }
+
+    #[test]
+    fn embed_frame_ancestors_falls_back_to_self_when_empty() {
+        let mut response = Response::new(Body::empty());
+        insert_embed_frame_ancestors(&mut response, "   ");
+        assert_eq!(csp(&response), "frame-ancestors 'self'");
     }
 }

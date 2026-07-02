@@ -143,6 +143,55 @@ fn serve_exposes_embed_dashboard_with_configurable_frame_ancestors() {
 }
 
 #[test]
+fn serve_sets_frame_ancestors_on_dashboard_html_routes() {
+    let port = reserve_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--sqlite",
+            "sqlite::memory:",
+            "--poll-ms",
+            "100000",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("tinytop-agent serve should start");
+
+    let result = wait_for_server(port)
+        .and_then(|_| http_get_raw(port, "/"))
+        .map(|response| {
+            assert!(response.contains("http/1.1 200 ok"));
+            assert!(
+                response.contains("content-security-policy: frame-ancestors 'self'"),
+                "root dashboard HTML must carry a frame-ancestors CSP, got {response}"
+            );
+        })
+        .and_then(|_| http_get_raw(port, "/index.html"))
+        .map(|response| {
+            assert!(
+                response.contains("content-security-policy: frame-ancestors 'self'"),
+                "/index.html must carry a frame-ancestors CSP, got {response}"
+            );
+        })
+        .and_then(|_| http_get_raw(port, "/styles.css"))
+        .map(|response| {
+            assert!(
+                !response.contains("content-security-policy"),
+                "non-HTML assets must not carry a frame-ancestors CSP, got {response}"
+            );
+        });
+
+    stop_child(&mut child);
+
+    result.expect("server should set frame-ancestors on dashboard HTML routes");
+}
+
+#[test]
 fn serve_respects_empty_explicit_history_bounds() {
     let port = reserve_port();
     let mut child = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))

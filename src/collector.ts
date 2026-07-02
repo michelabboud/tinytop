@@ -193,26 +193,94 @@ export function buildSnapshotFromSources(sources: SnapshotSources): SystemSnapsh
   };
 }
 
+// A hung external command (e.g. `df` on a stale NFS/9p mount) must never wedge a
+// collection cycle. Kill it after this budget and fall back to the empty parser
+// input, so the memoized poll loop keeps producing snapshots (C1).
+const RUN_TEXT_TIMEOUT_MS = 10_000;
+
+// Every source failure funnels through logSourceFailure, which logs each distinct
+// source at most once per this interval so a persistently missing source (e.g. no
+// PSI support, a permission-denied /proc file) is visible without flooding the log
+// on every poll (M2).
+const SOURCE_FAILURE_LOG_INTERVAL_MS = 5 * 60 * 1000;
+const lastSourceFailureLogMs = new Map<string, number>();
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Log that a telemetry `source` fell back to its default value, rate-limited per
+ * distinct source. This keeps the parser fallback contract intact (callers still
+ * receive `""`) while making genuine failures — missing files, permission errors,
+ * timeouts, non-zero exits — distinguishable from a legitimately idle metric.
+ */
+function logSourceFailure(source: string, reason: string): void {
+  const now = Date.now();
+  const last = lastSourceFailureLogMs.get(source);
+  if (last !== undefined && now - last < SOURCE_FAILURE_LOG_INTERVAL_MS) {
+    return;
+  }
+  lastSourceFailureLogMs.set(source, now);
+  console.error(`[tinytop] source "${source}" unavailable, using fallback: ${reason}`);
+}
+
+/** Test-only hook to reset the rate limiter between cases. */
+export function resetSourceFailureLog(): void {
+  lastSourceFailureLogMs.clear();
+}
+
 async function readText(path: string, fallback = DEFAULT_TEXT): Promise<string> {
   try {
     return await Bun.file(path).text();
-  } catch {
+  } catch (error) {
+    logSourceFailure(path, errorMessage(error));
     return fallback;
   }
 }
 
-async function runText(command: string[], fallback = DEFAULT_TEXT): Promise<string> {
+export async function runText(
+  command: string[],
+  fallback = DEFAULT_TEXT,
+  timeoutMs = RUN_TEXT_TIMEOUT_MS,
+): Promise<string> {
+  const source = command.join(" ");
   try {
     const process = Bun.spawn(command, {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stdout, exitCode] = await Promise.all([
-      new Response(process.stdout).text(),
-      process.exited,
+    // Read stdout concurrently with awaiting exit so a large output never fills the
+    // pipe buffer and deadlocks the child before it can exit.
+    const stdoutPromise = new Response(process.stdout).text();
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      Promise.all([stdoutPromise, process.exited]).then(
+        ([stdout, exitCode]) => ({ kind: "done" as const, stdout, exitCode }),
+      ),
+      new Promise<{ kind: "timeout" }>((resolve) => {
+        timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+      }),
     ]);
-    return exitCode === 0 ? stdout : fallback;
-  } catch {
+    if (timer !== undefined) clearTimeout(timer);
+
+    if (outcome.kind === "timeout") {
+      process.kill(9);
+      // Reap the killed child and drain the reader so no handles leak.
+      await process.exited.catch(() => {});
+      await stdoutPromise.catch(() => {});
+      logSourceFailure(source, `timed out after ${timeoutMs}ms`);
+      return fallback;
+    }
+
+    if (outcome.exitCode !== 0) {
+      logSourceFailure(source, `exited with code ${outcome.exitCode}`);
+      return fallback;
+    }
+    return outcome.stdout;
+  } catch (error) {
+    logSourceFailure(source, errorMessage(error));
     return fallback;
   }
 }

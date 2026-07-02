@@ -481,3 +481,121 @@ async fn sqlite_store_reads_event_and_gap_history_markers() {
             && marker.details["gapMs"] == serde_json::json!(180_000)
     }));
 }
+
+fn snapshot_with_runtime(timestamp: &str, kind: RuntimeKind) -> SystemSnapshot {
+    let mut snapshot = snapshot(timestamp, 10.0);
+    snapshot.identity.runtime.kind = kind;
+    snapshot
+}
+
+#[tokio::test]
+async fn insert_snapshot_persists_canonical_runtime_kind() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+    store
+        .insert_snapshot(
+            1_000,
+            &snapshot_with_runtime("2026-06-24T12:00:01Z", RuntimeKind::Wsl),
+        )
+        .await
+        .expect("insert wsl");
+    store
+        .insert_snapshot(
+            2_000,
+            &snapshot_with_runtime("2026-06-24T12:00:02Z", RuntimeKind::MacOs),
+        )
+        .await
+        .expect("insert macos");
+
+    // The store must persist the serde/JSON contract spelling, not the Rust
+    // Debug spelling (M4): "WSL"/"macOS", never "Wsl"/"MacOs".
+    let latest = store.latest_snapshot().await.expect("latest").expect("row");
+    assert_eq!(latest.snapshot.identity.runtime.kind, RuntimeKind::MacOs);
+}
+
+#[tokio::test]
+async fn reconnect_migrates_legacy_debug_runtime_kind_to_canonical() {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("time should be after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("tinytop-store-migrate-{stamp}"));
+    std::fs::create_dir_all(&dir).expect("temp dir should be created");
+    let db_path = dir.join("history.sqlite");
+    let database_url = format!("sqlite://{}", db_path.display());
+
+    // 1. Seed rows through the store (writes canonical values today).
+    {
+        let store = SqliteHistoryStore::connect(&database_url)
+            .await
+            .expect("store connects");
+        store
+            .insert_snapshot(
+                1_000,
+                &snapshot_with_runtime("2026-06-24T12:00:01Z", RuntimeKind::Wsl),
+            )
+            .await
+            .expect("insert wsl");
+        store
+            .insert_snapshot(
+                2_000,
+                &snapshot_with_runtime("2026-06-24T12:00:02Z", RuntimeKind::MacOs),
+            )
+            .await
+            .expect("insert macos");
+        store
+            .insert_snapshot(
+                3_000,
+                &snapshot_with_runtime("2026-06-24T12:00:03Z", RuntimeKind::Linux),
+            )
+            .await
+            .expect("insert linux");
+    }
+
+    // 2. Rewrite the two divergent rows to their pre-M4 Debug spellings.
+    {
+        let pool = sqlx::SqlitePool::connect(&database_url)
+            .await
+            .expect("verification pool connects");
+        sqlx::query("UPDATE metric_samples SET runtime_kind = 'Wsl' WHERE captured_at_ms = 1000")
+            .execute(&pool)
+            .await
+            .expect("downgrade wsl to legacy spelling");
+        sqlx::query("UPDATE metric_samples SET runtime_kind = 'MacOs' WHERE captured_at_ms = 2000")
+            .execute(&pool)
+            .await
+            .expect("downgrade macos to legacy spelling");
+        pool.close().await;
+    }
+
+    // 3. Reconnecting runs the idempotent canonicalization migration.
+    {
+        SqliteHistoryStore::connect(&database_url)
+            .await
+            .expect("reconnect runs migration");
+        // Idempotent: a second reconnect must not change anything.
+        SqliteHistoryStore::connect(&database_url)
+            .await
+            .expect("second reconnect is a no-op");
+    }
+
+    // 4. Divergent rows are canonical; the already-canonical Linux row is untouched.
+    {
+        let pool = sqlx::SqlitePool::connect(&database_url)
+            .await
+            .expect("verification pool reconnects");
+        let kinds: Vec<String> =
+            sqlx::query_scalar("SELECT runtime_kind FROM metric_samples ORDER BY captured_at_ms")
+                .fetch_all(&pool)
+                .await
+                .expect("select runtime kinds");
+        pool.close().await;
+        assert_eq!(
+            kinds,
+            vec!["WSL".to_string(), "macOS".to_string(), "Linux".to_string()]
+        );
+    }
+
+    std::fs::remove_dir_all(dir).ok();
+}

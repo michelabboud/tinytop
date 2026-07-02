@@ -15,3 +15,4 @@ This directory tracks architectural decisions that are expensive to reverse or l
 | [0009](0009-additive-history-points-and-markers-api.md) | Accepted | Keep raw history backward compatible and add chart-point plus timeline-marker APIs for rollup-backed ranges. |
 | [0010](0010-feature-gated-native-platform-collectors.md) | Accepted | Keep Linux as the default collector while adding opt-in macOS and Windows native collector modules. |
 | [0011](0011-powershell-first-windows-command-center.md) | Accepted | Add a PowerShell-first Windows command center before Scoop, winget, or MSI packaging. |
+| [0012](0012-rust-inode-collection-via-statvfs.md) | Accepted | Collect Rust inode data via `statvfs(2)` (rustix) instead of a `df -i` subprocess, preserving the no-shell-out invariant. |

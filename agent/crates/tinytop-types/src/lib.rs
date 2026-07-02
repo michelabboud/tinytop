@@ -11,6 +11,26 @@ pub enum RuntimeKind {
     Unknown,
 }
 
+impl RuntimeKind {
+    /// Canonical string form of the runtime kind.
+    ///
+    /// This is the single source of truth shared with anything that persists or
+    /// compares runtime kinds as text (e.g. the SQLite store's `runtime_kind`
+    /// column). It intentionally mirrors the serde `rename` values above — not
+    /// the `Debug` variant names — so a stored value always matches the JSON
+    /// contract (`"WSL"`, not `"Wsl"`). The `runtime_kind_as_str_matches_serde`
+    /// test in this crate asserts that parity for every variant.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wsl => "WSL",
+            Self::Linux => "Linux",
+            Self::Windows => "Windows",
+            Self::MacOs => "macOS",
+            Self::Unknown => "Unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeConfidence {
@@ -161,4 +181,30 @@ pub struct SystemSnapshot {
     pub pressure: PressureGroup,
     pub filesystems: Vec<FilesystemSnapshot>,
     pub processes: Vec<ProcessSnapshot>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeKind;
+
+    /// Every `RuntimeKind` variant's canonical `as_str()` must equal its serde
+    /// JSON serialization, so persisted text and the JSON contract never diverge
+    /// (the M4 bug: `format!("{:?}", ..)` stored `"Wsl"` where JSON says `"WSL"`).
+    #[test]
+    fn runtime_kind_as_str_matches_serde() {
+        for kind in [
+            RuntimeKind::Wsl,
+            RuntimeKind::Linux,
+            RuntimeKind::Windows,
+            RuntimeKind::MacOs,
+            RuntimeKind::Unknown,
+        ] {
+            let serialized = serde_json::to_string(&kind).expect("serialize runtime kind");
+            let expected = format!("\"{}\"", kind.as_str());
+            assert_eq!(
+                serialized, expected,
+                "as_str() must match serde serialization for {kind:?}"
+            );
+        }
+    }
 }

@@ -461,7 +461,7 @@ impl SqliteHistoryStore {
         .bind(captured_at_ms)
         .bind(&snapshot.timestamp)
         .bind(&snapshot.identity.hostname)
-        .bind(format!("{:?}", snapshot.identity.runtime.kind))
+        .bind(snapshot.identity.runtime.kind.as_str())
         .bind(snapshot.cpu.usage_percent)
         .bind(to_i64(snapshot.cpu.cores, "cpu cores")?)
         .bind(snapshot.memory.used_percent)
@@ -980,6 +980,29 @@ impl SqliteHistoryStore {
         Ok(())
     }
 
+    /// Canonicalize any legacy `runtime_kind` values written before the store
+    /// switched from `format!("{:?}", kind)` to `RuntimeKind::as_str()` (M4).
+    ///
+    /// Older rows persisted the `Debug` names (`"Wsl"`, `"MacOs"`) which diverge
+    /// from the serde/JSON contract (`"WSL"`, `"macOS"`). The remaining variants
+    /// (`Linux`, `Windows`, `Unknown`) are identical in both forms, so only the
+    /// two divergent values need rewriting. Both statements are idempotent: after
+    /// the first run there are no matching rows, so re-running on every connect is
+    /// a no-op.
+    async fn migrate_runtime_kind_to_canonical(&self) -> Result<(), StoreError> {
+        sqlx::query("UPDATE metric_samples SET runtime_kind = ? WHERE runtime_kind = ?")
+            .bind("WSL")
+            .bind("Wsl")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("UPDATE metric_samples SET runtime_kind = ? WHERE runtime_kind = ?")
+            .bind("macOS")
+            .bind("MacOs")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn apply_schema(&self) -> Result<(), StoreError> {
         sqlx::query("PRAGMA journal_mode = WAL")
             .execute(&self.pool)
@@ -1041,6 +1064,8 @@ impl SqliteHistoryStore {
         )
         .execute(&self.pool)
         .await?;
+
+        self.migrate_runtime_kind_to_canonical().await?;
 
         sqlx::query(
             r#"

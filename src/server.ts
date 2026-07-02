@@ -92,9 +92,15 @@ function legacyDaemonMetadata(url: URL) {
   };
 }
 
+// Reject any byte that is illegal inside an HTTP header value (control chars,
+// including CR/LF). Mirrors the Rust HeaderValue::from_str validation so both
+// runtimes fail closed to `'self'` on the same inputs (D2).
+// eslint-disable-next-line no-control-regex
+const INVALID_HEADER_VALUE = /[\u0000-\u001f\u007f]/;
+
 function embedFrameAncestors(): string {
   const configured = process.env.TINYTOP_EMBED_FRAME_ANCESTORS?.trim();
-  if (!configured || configured.includes("\n") || configured.includes("\r")) return "'self'";
+  if (!configured || INVALID_HEADER_VALUE.test(configured)) return "'self'";
   return configured;
 }
 
@@ -106,6 +112,10 @@ function staticResponseHeaders(pathname: string, filePath: string): HeadersInit 
 
   if (pathname === "/embed") {
     headers["content-security-policy"] = `frame-ancestors ${embedFrameAncestors()}`;
+  } else if (pathname === "/" || pathname === "/index.html") {
+    // The top-level dashboard HTML cannot be framed by another origin (D1).
+    // `/embed` above keeps its operator-configurable ancestors.
+    headers["content-security-policy"] = "frame-ancestors 'self'";
   }
 
   return headers;
@@ -138,21 +148,44 @@ async function collectorVersion(writerFetch: FetchHandlerOptions["writerFetch"])
   }
 }
 
-async function fetchWriterWithRetry(writerBaseUrl: string, pathnameWithSearch: string): Promise<Response> {
+const DEFAULT_WRITER_FETCH_ATTEMPTS = 10;
+const DEFAULT_WRITER_RETRY_DELAY_MS = 100;
+// Per-attempt ceiling: a stalled writer connection (accepted socket, no response)
+// must fail this attempt instead of hanging the dashboard route forever (M3).
+const DEFAULT_WRITER_FETCH_TIMEOUT_MS = 3000;
+
+type WriterFetchOptions = {
+  attempts?: number;
+  retryDelayMs?: number;
+  timeoutMs?: number;
+};
+
+async function fetchWriterWithRetry(
+  writerBaseUrl: string,
+  pathnameWithSearch: string,
+  options: WriterFetchOptions = {},
+): Promise<Response> {
   const url = new URL(pathnameWithSearch, writerBaseUrl);
+  const attempts = options.attempts ?? DEFAULT_WRITER_FETCH_ATTEMPTS;
+  const retryDelayMs = options.retryDelayMs ?? DEFAULT_WRITER_RETRY_DELAY_MS;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_WRITER_FETCH_TIMEOUT_MS;
   let lastError: unknown;
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await globalThis.fetch(url);
+      // AbortSignal.timeout rejects the fetch with a TimeoutError once the budget
+      // elapses, so a hung attempt is retried (or surfaced) instead of blocking.
+      return await globalThis.fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
     } catch (error) {
       lastError = error;
-      await Bun.sleep(100);
+      await Bun.sleep(retryDelayMs);
     }
   }
 
   throw lastError instanceof Error ? lastError : new Error("collector process is unavailable");
 }
+
+export const __testing = { fetchWriterWithRetry };
 
 export function createFetchHandler(options: FetchHandlerOptions): (request: Request) => Promise<Response> {
   let previousProcStatText: string | undefined;

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1 - 2026-07-03
+
+- Fixed a hang risk in the Bun collector: `runText` now enforces a 10s timeout and kills the child, so a stuck `df`/`ps`/`uname` (e.g. a stale mount) can no longer wedge a collection cycle (C1).
+- Added rate-limited logging to the Bun collector: `readText`/`runText` failures are now logged at most once per 5 minutes per source, making permission errors and missing PSI distinguishable from idle metrics, while parsers still receive the empty-string fallback (M2).
+- Fixed the Bun dashboard's writer proxy to time out each attempt with a 3s `AbortSignal.timeout`, so a stalled collector connection fails and retries instead of hanging every dashboard route (M3).
+- Fixed a two-runtime contract drift: the Rust collector now populates per-filesystem inode fields via the `statvfs(2)` syscall (rustix) instead of leaving them permanently `null`, matching the Bun `df -i` output without shelling out (M1, ADR 0012).
+- Fixed the Rust store to persist canonical `runtime_kind` values (`"WSL"`, `"macOS"`) that match the serde/JSON contract instead of Rust `Debug` spellings (`"Wsl"`, `"MacOs"`), added `RuntimeKind::as_str()` as the single source of truth, and added an idempotent migration that canonicalizes existing rows (M4).
+- Added a `frame-ancestors 'self'` Content-Security-Policy to the top-level dashboard HTML routes (`/` and `/index.html`) in both runtimes, so the standalone dashboard cannot be framed by another origin; `/embed` keeps its configurable ancestors (D1).
+- Hardened `/embed` frame-ancestors handling to fail closed: an invalid configured value now falls back to `'self'` instead of dropping the CSP header (Rust), rejected identically in both runtimes (D2).
+- Added `rustix` (`=1.1.4`, `fs` feature, linux-collector only) as a vetted dependency for `statvfs(2)` inode collection.
+
 ## 0.2.0 - 2026-06-30
 
 - Added `/embed`, an iframe-friendly dashboard view for host panels such as tutus-remotus.
