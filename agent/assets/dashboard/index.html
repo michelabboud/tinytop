@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TinyTop</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body data-theme="midnight">
     <a class="skip-link" href="#main">Skip to dashboard</a>
@@ -618,7 +618,11 @@
       </div>
     </dialog>
 
-    <script src="/vendor/echarts.min.js"></script>
-    <script src="/app.js" type="module"></script>
+    <!-- Relative (not root-absolute) so the dashboard also loads correctly when
+         served behind a reverse-proxy sub-path, e.g. tutus-remotus embedding
+         /embed at /proxy/{id}/embed. Standalone is unaffected: relative to "/"
+         (or "/embed") these still resolve to /app.js, /styles.css, etc. -->
+    <script src="vendor/echarts.min.js"></script>
+    <script src="app.js" type="module"></script>
   </body>
 </html>

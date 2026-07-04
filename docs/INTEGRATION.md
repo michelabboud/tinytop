@@ -47,6 +47,16 @@ Known capabilities:
 the TinyTop navigation/sidebar, top toolbar, and display controls while keeping
 the telemetry panels, charts, filesystems, pressure, history, and process views.
 
+The embeddable dashboard uses **base-relative** same-origin URLs for its assets
+and API calls, so it also loads correctly when an integrator serves `/embed`
+behind a reverse-proxy **sub-path** (for example tutus-remotus exposing it at
+`/proxy/{id}/embed`, stripping the prefix before forwarding to TinyTop's
+loopback listener). No prefix configuration is required on the TinyTop side, and
+the standalone dashboard is unaffected. When embedded this way the framed
+document's origin is the integrator's own origin, so TinyTop's default
+`frame-ancestors 'self'` already permits the embed and no
+`TINYTOP_EMBED_FRAME_ANCESTORS` change is needed.
+
 Theme query parameters:
 
 | Query | Result |

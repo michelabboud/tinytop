@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2 - 2026-07-04
+
+- Made the dashboard's static asset references (`app.js`, `styles.css`, `vendor/echarts.min.js`, `favicon.svg`) **base-relative** instead of root-absolute, so `/embed` loads correctly when served behind a reverse-proxy sub-path (e.g. tutus-remotus embedding it at `/proxy/{id}/embed`). The standalone dashboard is unaffected — relative to `/` (or `/embed`) these resolve to `/app.js`, `/styles.css`, etc. exactly as before. API calls already resolved the sub-path via `apiPath()`; this closes the asset-loading gap so no root-absolute same-origin URLs remain in the embeddable view.
+- Applied the change identically to both the legacy dashboard and the Rust-embedded dashboard copy, and added a `dashboard-assets` regression test that fails if any root-absolute same-origin asset ref is reintroduced.
+- Documented the base-relative embed contract (and that a same-origin reverse-proxy embed needs no `TINYTOP_EMBED_FRAME_ANCESTORS` change) in `docs/INTEGRATION.md`.
+
 ## 0.2.1 - 2026-07-03
 
 - Fixed a hang risk in the Bun collector: `runText` now enforces a 10s timeout and kills the child, so a stuck `df`/`ps`/`uname` (e.g. a stale mount) can no longer wedge a collection cycle (C1).

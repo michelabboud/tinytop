@@ -38,8 +38,26 @@ describe("dashboard asset ownership", () => {
     const html = read("legacy/dashboard/index.html").toString("utf8");
     const favicon = read("legacy/dashboard/favicon.svg").toString("utf8");
 
-    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="/favicon.svg" />');
+    expect(html).toContain('<link rel="icon" type="image/svg+xml" href="favicon.svg" />');
     expect(favicon).toContain("<svg");
     expect(favicon).toContain("TinyTop");
+  });
+
+  test("dashboard asset refs are reverse-proxy-embeddable (base-relative, not root-absolute)", () => {
+    // The embeddable /embed view is served by tutus-remotus at a sub-path
+    // (/proxy/{id}/embed). Root-absolute asset URLs (href="/styles.css") would
+    // resolve against the proxy ORIGIN root and miss the tunnel; base-relative
+    // URLs resolve under the sub-path and are stripped back correctly. Standalone
+    // is unaffected. Lock this so a future edit can't silently re-break the embed.
+    const html = read("legacy/dashboard/index.html").toString("utf8");
+    expect(html).toContain('href="favicon.svg"');
+    expect(html).toContain('href="styles.css"');
+    expect(html).toContain('src="app.js"');
+    expect(html).toContain('src="vendor/echarts.min.js"');
+    // No root-absolute same-origin asset references.
+    expect(html).not.toContain('href="/styles.css"');
+    expect(html).not.toContain('href="/favicon.svg"');
+    expect(html).not.toContain('src="/app.js"');
+    expect(html).not.toContain('src="/vendor/echarts.min.js"');
   });
 });
