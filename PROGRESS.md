@@ -2,12 +2,17 @@
 
 ## Current Version
 
-- Version: `0.2.2`
-- Date: 2026-07-04
-- Status: Embed asset URLs made base-relative in both dashboard trees (with a
-  regression test against root-absolute refs) so `/embed` loads correctly behind a
-  reverse-proxy sub-path (tutus-remotus at `/proxy/{id}/embed`); the base-relative
-  embed contract is documented in `docs/INTEGRATION.md`. Prior 0.2.1 status:
+- Version: `0.2.3`
+- Date: 2026-07-05
+- Status: Standalone dashboards work behind reverse-proxy sub-paths (nginx
+  `location /mon/`): `dashboardBasePath()` derives the API mount prefix from the
+  document location for any mount, not only the `/embed` leaf — verified in-browser
+  behind a prefix-stripping proxy. Requires trailing-slash serving; first-class
+  `--base-path` remains backlog. Prior 0.2.2 status: embed asset URLs made
+  base-relative in both dashboard trees (with a regression test against
+  root-absolute refs) so `/embed` loads correctly behind a reverse-proxy sub-path
+  (tutus-remotus at `/proxy/{id}/embed`); the base-relative embed contract is
+  documented in `docs/INTEGRATION.md`. Prior 0.2.1 status:
   Code-review hardening batch (C1/M1-M4/D1-D2): Bun collector `runText` now enforces a 10s kill-timeout with rate-limited failure logging so a stale-mount `df` cannot wedge a poll; the Bun dashboard writer proxy times out each attempt (3s) instead of hanging routes; the Rust collector populates inode fields via `statvfs(2)` (rustix) to match the Bun `df -i` contract without shelling out (ADR 0012); the Rust store persists canonical `runtime_kind` matching the JSON contract with an idempotent migration for legacy rows; and the standalone dashboard HTML routes send `frame-ancestors 'self'` in both runtimes while `/embed` CSP fails closed to `'self'` on invalid config. Prior 0.2.0 status: tutus-remotus integration added: `/embed` serves an iframe-friendly chrome-trimmed dashboard view, `?theme=dark|light` maps to TinyTop palettes, `/embed` frame permissions are configurable with `TINYTOP_EMBED_FRAME_ANCESTORS`, `/health` and `/api/version` advertise capabilities, and `docs/INTEGRATION.md` freezes the host-dashboard data contract; Native Windows runtime fixes added: Windows defaults to dashboard port `4275`, direct Rust `serve` resolves SQLite under `%LOCALAPPDATA%\TinyTop\state\history.sqlite`, `tinytop.ps1 service install` preserves strict-mode rest arguments, `tinytop.cmd` provides a policy-safe wrapper, and `/health` plus `/api/version` expose daemon OS/install/bind/SQLite metadata; On-demand GitHub Actions release-binary workflow exists for Linux x86_64, Windows x86_64, macOS x86_64, and macOS aarch64 with artifact/checksum upload plus optional release attachment; Windows PowerShell service commands check elevation before mutating Windows Service Control Manager and require explicit confirmation for interactive non-elevated attempts; README screenshot remains a live connected dashboard capture; Settings dialog effective readout chips fixed, daemon boolean options presented as compact responsive toggles, and embedded Rust collector/dashboard agent rebuilt; Local dashboard with SQLite-backed raw and rollup-backed history browsing, CPU/RAM/swap/load overview gauges, stronger Critical/Warning/Stale operator strip styling plus alert detail drawer, timeline rail with markers and DB budget coverage, process/filesystem controls, process detail drawer V2, a polished dialog-based settings surface with validation/presets/dirty guard/readable dropdowns, compact sidebar runtime identity, SQLite-backed daemon dashboard defaults, browser-local display preferences, Rust collector/dashboard single-daemon persistent runtime with embedded dashboard assets and SVG favicon, feature-gated native macOS/Windows collector modules, Windows PowerShell command center with Windows service commands, runtime/version identity in the API and sidebar, Rust raw-history pruning and one-minute rollups, auto-detecting command-center startup, legacy Bun collector and dashboard fallback under `legacy/`, current docs/guides/reports aligned to the embedded asset layout, runtime-specific setup verification, in-app confirmation dialogs for browser-local destructive actions, Telecode-style install wizard, Bash command center, systemd user services, SQLite operations, Apache-2.0 licensing, public GitHub release assets, Bun development/fallback runtime, and a current handoff restart point.
 
 ## Backlog

@@ -253,3 +253,21 @@ subpath integration failed because TinyTop is currently root-mounted and the
 dashboard uses root-absolute asset and API URLs. The best immediate fix is a
 dedicated hostname or root-route proxying. The best durable fix is explicit
 TinyTop base-path support.
+
+## Resolution (2026-07-05, v0.2.3)
+
+Fixed in two releases without server-side base-path support:
+
+- **v0.2.2** made all dashboard asset references base-relative (both dashboard
+  copies, regression-tested), closing the CSS/JS half of the failure.
+- **v0.2.3** fixed the API half: `apiPath()` previously derived a mount prefix
+  only for `/embed` URLs, so a standalone dashboard at `/mon/` sent API calls to
+  the domain root. `dashboardBasePath(pathname)` now derives the prefix from the
+  document location for any mount. Verified in-browser behind a prefix-stripping
+  subpath proxy: all API calls resolve under `/mon/api/...` and return 200.
+
+**Deployment contract:** serve the sub-path *with a trailing slash* —
+`location /mon/ { proxy_pass http://127.0.0.1:<port>/; }` plus a `/mon` → `/mon/`
+redirect. No `sub_filter` rewriting needed. First-class `--base-path` (removing
+the trailing-slash requirement) stays a backlog item (closed PR #1 is the
+reference implementation).

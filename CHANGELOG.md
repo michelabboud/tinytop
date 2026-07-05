@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.3 - 2026-07-05
+
+- Fixed standalone dashboards behind a reverse-proxy sub-path (e.g. nginx `location /mon/`):
+  `apiPath()` only derived a mount prefix for URLs ending in `/embed`, so a standalone
+  dashboard at `/mon/` loaded its assets (base-relative since 0.2.2) but sent every API
+  call to the domain root — shell rendered, all data 404'd. `dashboardBasePath(pathname)`
+  now derives the prefix from the document location for **any** mount (`/` and `/embed` →
+  ``, `/mon/` and `/mon/embed` → `/mon`, `/proxy/{id}/embed` → `/proxy/{id}`), applied
+  identically in both dashboard copies.
+- Added shipped-code unit tests: the tests extract `dashboardBasePath` from the actual
+  `app.js` both runtimes serve and exercise 9 mount shapes, plus a guard that `apiPath`
+  consumes it (no `/embed`-only derivation can silently return).
+- Verified end-to-end in a browser behind a prefix-stripping subpath proxy at `/mon/`:
+  `settings`/`version`/`snapshot`/`history` all resolve under `/mon/api/...` and return
+  200; remaining 404s (favicon, `history/markers`, `history/coverage` on the legacy Bun
+  runtime) reproduce identically root-mounted — pre-existing legacy-runtime gaps, not
+  sub-path related.
+- A standalone sub-path mount must be served **with a trailing slash** (nginx:
+  `location /mon/ { ... }` plus a `/mon` → `/mon/` redirect) — same rule the relative
+  asset URLs already require. First-class `--base-path` serving (no trailing-slash
+  requirement) remains a backlog item (see PROGRESS, closed PR #1).
+
 ## 0.2.2 - 2026-07-04
 
 - Made the dashboard's static asset references (`app.js`, `styles.css`, `vendor/echarts.min.js`, `favicon.svg`) **base-relative** instead of root-absolute, so `/embed` loads correctly when served behind a reverse-proxy sub-path (e.g. tutus-remotus embedding it at `/proxy/{id}/embed`). The standalone dashboard is unaffected — relative to `/` (or `/embed`) these resolve to `/app.js`, `/styles.css`, etc. exactly as before. API calls already resolved the sub-path via `apiPath()`; this closes the asset-loading gap so no root-absolute same-origin URLs remain in the embeddable view.

@@ -79,14 +79,24 @@ function normalizeThemeRequest(value) {
   return THEMES.has(mapped) ? mapped : null;
 }
 
+// Derive the dashboard's mount prefix from the document location, so API calls
+// resolve under ANY reverse-proxy sub-path (nginx /mon/, tutus /proxy/{id}/embed),
+// not only the /embed leaf. Pure function of the pathname for testability:
+// "/" and "/embed" → "", "/mon/" and "/mon/embed" → "/mon". A standalone
+// sub-path mount must be served WITH a trailing slash (same rule the relative
+// asset URLs already require) — nginx: `location /mon/ { ... }` + a /mon → /mon/
+// redirect.
+function dashboardBasePath(pathname) {
+  let base = pathname
+    .replace(/\/index\.html$/, "/") // a direct document URL mounts at its directory
+    .replace(/\/embed$/, "/"); // the embed leaf mounts at its parent
+  base = base.replace(/\/+$/, ""); // root and trailing slashes → bare prefix
+  return base;
+}
+
 function apiPath(path) {
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  const embedSuffix = "/embed";
-  const embedIndex = DASHBOARD_URL.pathname.endsWith(embedSuffix)
-    ? DASHBOARD_URL.pathname.length - embedSuffix.length
-    : -1;
-  const basePath = embedIndex > 0 ? DASHBOARD_URL.pathname.slice(0, embedIndex) : "";
-  return `${basePath}${normalized}`;
+  return `${dashboardBasePath(DASHBOARD_URL.pathname)}${normalized}`;
 }
 
 function applyEmbedShellMode() {
