@@ -7,8 +7,8 @@ const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4274;
 const DEFAULT_WRITER_HOST = "127.0.0.1";
 const DEFAULT_WRITER_PORT = 4276;
-const PUBLIC_DIR = new URL("../legacy/dashboard", import.meta.url).pathname;
-const ECHARTS_VENDOR = new URL("../legacy/dashboard/vendor/echarts.min.js", import.meta.url).pathname;
+const PUBLIC_DIR = new URL("../agent/assets/dashboard", import.meta.url).pathname;
+const ECHARTS_VENDOR = new URL("../agent/assets/dashboard/vendor/echarts.min.js", import.meta.url).pathname;
 
 type SnapshotResult = {
   snapshot: SystemSnapshot;

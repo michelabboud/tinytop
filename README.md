@@ -257,7 +257,7 @@ bun run check:rust
 bun run check
 bun run rust:test
 bun run rust:serve
-bun build legacy/dashboard/app.js --target=browser --outdir=/tmp/tinytop-build-check
+bun build agent/assets/dashboard/app.js --target=browser --outdir=/tmp/tinytop-build-check
 ```
 
 ## Rust Collector/Dashboard Daemon

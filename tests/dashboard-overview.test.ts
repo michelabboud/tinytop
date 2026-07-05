@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const html = readFileSync("legacy/dashboard/index.html", "utf8");
-const app = readFileSync("legacy/dashboard/app.js", "utf8");
+const html = readFileSync("agent/assets/dashboard/index.html", "utf8");
+const app = readFileSync("agent/assets/dashboard/app.js", "utf8");
 
 describe("dashboard overview gauges", () => {
   test("renders load as a fourth overview gauge", () => {

@@ -131,7 +131,7 @@ See [docs/guides/RELEASE_BUILDS.md](docs/guides/RELEASE_BUILDS.md) for asset nam
 ./tinytop deps
 ```
 
-This is only required for Bun/TypeScript development. Apache ECharts is vendored under both `legacy/dashboard/vendor/` and `agent/assets/dashboard/vendor/`; the Rust no-Bun runtime embeds its dashboard assets into the collector binary.
+This is only required for Bun/TypeScript development. Apache ECharts is vendored under `agent/assets/dashboard/vendor/` (the single dashboard tree); the Rust no-Bun runtime embeds the dashboard assets into the collector binary.
 
 The Rust daemon has its own Cargo workspace under `agent/`.
 

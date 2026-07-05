@@ -2,9 +2,12 @@
 
 ## Current Version
 
-- Version: `0.2.3`
+- Version: `0.2.4`
 - Date: 2026-07-05
-- Status: Standalone dashboards work behind reverse-proxy sub-paths (nginx
+- Status: Dashboard deduplicated — `agent/assets/dashboard/` is the single source
+  (Rust embeds at compile time, Bun serves from disk); `legacy/dashboard/` removed
+  with a stays-gone test. Prior 0.2.3: standalone dashboards work behind
+  reverse-proxy sub-paths (nginx
   `location /mon/`): `dashboardBasePath()` derives the API mount prefix from the
   document location for any mount, not only the `/embed` leaf — verified in-browser
   behind a prefix-stripping proxy. Requires trailing-slash serving; first-class

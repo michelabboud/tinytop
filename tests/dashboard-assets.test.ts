@@ -20,23 +20,24 @@ function read(path: string): Buffer {
 }
 
 describe("dashboard asset ownership", () => {
-  test("legacy dashboard and Rust embedded dashboard assets stay identical", () => {
+  test("agent/assets/dashboard is the single dashboard source (no duplicate trees)", () => {
+    // Both runtimes consume ONE dashboard: the Rust agent embeds
+    // agent/assets/dashboard/* at compile time (include_bytes!) and the Bun
+    // server serves the same directory from disk. The former legacy/dashboard
+    // duplicate (kept byte-identical by a test) is gone — a byte-identity test
+    // is a workaround for shared code, not shared code.
     for (const file of dashboardFiles) {
-      expect(read(`agent/assets/dashboard/${file}`)).toEqual(read(`legacy/dashboard/${file}`));
+      expect(existsSync(join(repoRoot, `agent/assets/dashboard/${file}`))).toBe(true);
     }
-  });
-
-  test("root public dashboard files moved to legacy ownership", () => {
-    expect(existsSync(join(repoRoot, "legacy/dashboard/index.html"))).toBe(true);
-    expect(existsSync(join(repoRoot, "agent/assets/dashboard/index.html"))).toBe(true);
+    expect(existsSync(join(repoRoot, "legacy/dashboard"))).toBe(false);
     expect(existsSync(join(repoRoot, "public/index.html"))).toBe(false);
     expect(existsSync(join(repoRoot, "public/app.js"))).toBe(false);
     expect(existsSync(join(repoRoot, "public/styles.css"))).toBe(false);
   });
 
   test("dashboard declares a served SVG favicon", () => {
-    const html = read("legacy/dashboard/index.html").toString("utf8");
-    const favicon = read("legacy/dashboard/favicon.svg").toString("utf8");
+    const html = read("agent/assets/dashboard/index.html").toString("utf8");
+    const favicon = read("agent/assets/dashboard/favicon.svg").toString("utf8");
 
     expect(html).toContain('<link rel="icon" type="image/svg+xml" href="favicon.svg" />');
     expect(favicon).toContain("<svg");
@@ -49,7 +50,7 @@ describe("dashboard asset ownership", () => {
     // resolve against the proxy ORIGIN root and miss the tunnel; base-relative
     // URLs resolve under the sub-path and are stripped back correctly. Standalone
     // is unaffected. Lock this so a future edit can't silently re-break the embed.
-    const html = read("legacy/dashboard/index.html").toString("utf8");
+    const html = read("agent/assets/dashboard/index.html").toString("utf8");
     expect(html).toContain('href="favicon.svg"');
     expect(html).toContain('href="styles.css"');
     expect(html).toContain('src="app.js"');

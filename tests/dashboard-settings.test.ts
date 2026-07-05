@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const html = readFileSync("legacy/dashboard/index.html", "utf8");
-const app = readFileSync("legacy/dashboard/app.js", "utf8");
-const styles = readFileSync("legacy/dashboard/styles.css", "utf8");
+const html = readFileSync("agent/assets/dashboard/index.html", "utf8");
+const app = readFileSync("agent/assets/dashboard/app.js", "utf8");
+const styles = readFileSync("agent/assets/dashboard/styles.css", "utf8");
 
 describe("dashboard settings", () => {
   test("renders settings as a dialog instead of an inline dashboard section", () => {

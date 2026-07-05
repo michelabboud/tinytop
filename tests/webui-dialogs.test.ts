@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 
 const WEB_UI_EXTENSIONS = new Set([".css", ".html", ".js"]);
-const DASHBOARD_DIR = "legacy/dashboard";
+const DASHBOARD_DIR = "agent/assets/dashboard";
 
 function collectWebUiFiles(root: string): string[] {
   return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {

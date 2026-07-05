@@ -65,8 +65,7 @@ The supported Linux/WSL operator entrypoint is the root `./tinytop` Bash command
 | `src/wizard/index.ts` | Bun setup wizard launched by `./tinytop setup`, including runtime-specific Rust versus Bun verification |
 | `tinytop` | Bash command center for setup, Bun bootstrap, systemd services, logs, status, and DB operations |
 | `tinytop.ps1` | Windows PowerShell command center for Rust binary install/build, lifecycle, logs, status, and Windows service commands |
-| `legacy/dashboard/` | Legacy Bun dashboard asset tree |
-| `agent/assets/dashboard/` | Rust-embedded dashboard asset tree; kept byte-identical to `legacy/dashboard/` |
+| `agent/assets/dashboard/` | The single dashboard asset tree: embedded by the Rust agent at compile time (`include_bytes!`), served from disk by the Bun server |
 | `tests/` | Bun tests for parsers, snapshot building, server routes, and history storage |
 | `agent/crates/tinytop-types` | Rust snapshot structs serialized to the existing dashboard JSON contract |
 | `agent/crates/tinytop-collectors` | Rust platform collector crate; Linux/WSL default plus feature-gated macOS/Windows native collector modules |

@@ -17,7 +17,7 @@ Both produce the same `SystemSnapshot` JSON and serve the same dashboard API. Wh
 
 ### Byte-identical dashboard assets — a hard invariant
 
-`legacy/dashboard/` and `agent/assets/dashboard/` (which Rust embeds) **must stay byte-identical**, including `favicon.svg`. `tests/dashboard-assets.test.ts` enforces this. When editing the dashboard UI (`app.js`, `styles.css`, `index.html`), edit **both trees identically** or the asset-parity test fails.
+`agent/assets/dashboard/` is the **single dashboard source**: the Rust agent embeds it at compile time (`include_bytes!`) and the Bun server serves it from disk. Editing the dashboard UI (`app.js`, `styles.css`, `index.html`) means editing this one tree — and rebuilding the Rust agent afterwards, or the deployed binary keeps serving the old embedded copy (stale-binary trap). The former `legacy/dashboard/` duplicate is gone; `tests/dashboard-assets.test.ts` asserts it stays gone.
 
 ## Commands
 

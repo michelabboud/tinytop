@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.4 - 2026-07-05
+
+- Deduplicated the dashboard: `agent/assets/dashboard/` is now the **single source** —
+  embedded by the Rust agent at compile time (`include_bytes!`) and served from disk by
+  the Bun server (`PUBLIC_DIR`). The `legacy/dashboard/` duplicate (previously kept
+  byte-identical by a parity test) is removed; the test now asserts the duplicate stays
+  gone instead of welding two copies together. No behavior change in either runtime —
+  same files, one home. README/ARCHITECTURE/INSTALL/CLAUDE.md updated, including the
+  rebuild-after-edit note (the Rust binary embeds the assets, so dashboard edits need a
+  rebuild to reach the no-Bun runtime).
+
 ## 0.2.3 - 2026-07-05
 
 - Fixed standalone dashboards behind a reverse-proxy sub-path (e.g. nginx `location /mon/`):

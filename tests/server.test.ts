@@ -123,7 +123,7 @@ describe("createFetchHandler", () => {
 
     try {
       const handler = createFetchHandler({
-        publicDir: "legacy/dashboard",
+        publicDir: "agent/assets/dashboard",
         collect: async () => ({ snapshot, currentProcStatText: "cpu 1 0 1 8" }),
       });
 
