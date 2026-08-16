@@ -85,6 +85,25 @@ empty AND `/api/sensors` reports no chips; no errors, no placeholder noise.
    (dim/samples split vs wide columns; chosen for per-host variability).
 8. **Gate + ship** — `bun run check` green, bump VERSION, commit, tag, push.
 
+## GitHub release builds (Michel's addition, 2026-08-16)
+
+Add a GitHub Actions release workflow (`.github/workflows/release.yml`),
+triggered on tag push, building **two release artifacts** of `tinytop-agent`:
+
+- `tinytop-agent-x86_64-unknown-linux-gnu.tar.gz` (ubuntu runner) — serves the
+  whole x86_64 room (workstation/WSL, trashcan, goat, sheep — all measured x86_64).
+- `tinytop-agent-x86_64-pc-windows-msvc.zip` (windows runner) — TinyTop's native
+  Windows runtime (`tinytop.ps1` install path).
+
+*Assumption to confirm with Michel:* "two releases" = Linux + Windows (the
+product's two supported platforms). If he meant Linux x86_64 + **aarch64**
+instead, swap the second target for `aarch64-unknown-linux-gnu` (cross or ARM
+runner) — the workflow shape is identical, and a third target is one matrix
+line either way. Release notes via `gh release create` from CHANGELOG; binaries
+checksummed (`sha256sum` asset). `./tinytop rust install-binary` and
+`tinytop.ps1` then install from the release instead of a local build — which is
+exactly how the no-toolchain trashcan stays honest.
+
 ## Deployment phase (separate task, after the above ships)
 
 - Build release binary on the workstation; **ship binary to trashcan**
