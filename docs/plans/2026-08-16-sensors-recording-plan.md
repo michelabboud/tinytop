@@ -100,7 +100,10 @@ product's two supported platforms). If he meant Linux x86_64 + **aarch64**
 instead, swap the second target for `aarch64-unknown-linux-gnu` (cross or ARM
 runner) — the workflow shape is identical, and a third target is one matrix
 line either way. Release notes via `gh release create` from CHANGELOG; binaries
-checksummed (`sha256sum` asset). `./tinytop rust install-binary` and
+checksummed (`sha256sum` asset). **CPU-feature rule (Michel's catch): build at
+the default x86-64 baseline — NEVER `-C target-cpu=native`/`v3`+ — the trashcan's
+2013 Ivy Bridge Xeon has no AVX2/AVX-512 and a flavored binary dies SIGILL there.
+Verify on release: run `tinytop-agent --version` ON the trashcan before install.** `./tinytop rust install-binary` and
 `tinytop.ps1` then install from the release instead of a local build — which is
 exactly how the no-toolchain trashcan stays honest.
 
