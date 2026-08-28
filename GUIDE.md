@@ -89,9 +89,10 @@ Themes affect the browser only. They do not change collection, SQLite, or system
 The Settings dialog opens from the left rail and is split by scope:
 
 - `This Browser` controls the active theme, graph mode, and history window for the current browser profile. Additional browser-local state includes visible chart series, process table filter/sort/density, filesystem system-mount toggle, and last-used section.
-- `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, target DB budget, top process count, redaction default, warning/critical thresholds, and enabled dashboard sections.
+- `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, target DB budget, top process count, redaction default, warning/critical thresholds, and enabled dashboard sections.
+- `History ladder` controls L1 raw and L2 one-minute retention, optional L3 five-minute and L4 hourly tiers, the recent snapshot-JSON window, typed detail cadence, archive options, and disk-check thresholds. L4 can be kept forever. `History hours` and `Rollup days` remain visible as read-only compatibility mirrors derived from L1/L2.
 
-The dialog validates ranges before saving, warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Boolean daemon options, including redaction and enabled dashboard sections, render as compact responsive toggle controls so several options can fit per row on desktop while remaining touch-friendly on narrow screens. Saving daemon defaults uses `PUT /api/settings`. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
+The dialog validates ranges before saving, including the ladder's monotonic tier rules, with the same field-specific messages as the Rust server. It warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Boolean daemon options, including redaction and enabled dashboard sections, render as compact responsive toggle controls so several options can fit per row on desktop while remaining touch-friendly on narrow screens. Saving daemon defaults uses `PUT /api/settings`. If a save shrinks a horizon or disables a tier/archive, the dialog first lists approximate affected counts calculated from current coverage; these are labelled `approx.` until the server dry-run lands. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
 
 ## History
 
@@ -99,7 +100,7 @@ History renders CPU, RAM, swap, and load-derived percent values from SQLite-back
 
 The browser hydrates recent samples from SQLite on page load, so refreshing the page should not reset the chart to a single sample.
 
-The default page-load request uses the `Live` range preset. You can switch the browser's loaded range to `15m`, `1h`, `6h`, `24h`, `7d`, or `30d`. Live, 15m, and 1h use raw snapshots. The 6h and longer ranges use one-minute rollup points through `/api/history/points`, then downsample only when the browser needs fewer points to render smoothly. These ranges are read windows, not the database retention period.
+The default page-load request uses the `Live` range preset. You can switch the browser's loaded range to `15m`, `1h`, `6h`, `24h`, `7d`, `30d`, `90d`, `1y`, or `all`. Live, 15m, and 1h use raw snapshots; 6h through 30d use one-minute rollups; 90d uses five-minute rollups; 1y uses hourly rollups; All asks the server to choose automatically from the oldest retained tier or queryable archive bucket. A preset is disabled when its tier is disabled or has no retained data, and its tooltip names the controlling `retentionLadder` setting. The browser down-samples only when it needs fewer points to render smoothly. These ranges are read windows, not the database retention period.
 
 The sample count badge shows:
 
@@ -136,7 +137,7 @@ The timeline row sits below the chart.
 - Drag the timeline rail to inspect the nearest loaded sample by timestamp.
 - The main gauges and detail panels update to the selected raw sample. Rollup points update the History readout without replacing live filesystem/process detail with aggregate placeholders.
 - The position label shows the selected local datetime.
-- The coverage row shows oldest sample, newest sample, database size, target DB budget, budget usage, and rollup bucket count when the Rust daemon serves `/api/history/coverage`.
+- The coverage card shows oldest/newest samples, database size and budget, each available ladder tier's horizon/count/range, disk pressure, and archive status when the Rust daemon serves those `/api/history/coverage` fields. Older runtimes omit the newer portions without breaking the card.
 - Timeline markers show daemon starts, settings changes, and coverage gaps from `/api/history/markers`.
 - Click `Now` beside the rail to return to the newest sample in the loaded range.
 - Click `Clear` to empty the current tab's session buffer after confirming.
@@ -162,8 +163,7 @@ Persisted in SQLite:
 
 SQLite retention:
 
-- The Rust daemon prunes raw samples by `retentionHours`.
-- The Rust daemon prunes one-minute rollups by `rollupRetentionDays`.
+- The Rust daemon prunes and promotes history according to `retentionLadder`; L1/L2 also derive the saved `retentionHours` and `rollupRetentionDays` compatibility mirrors.
 - The Rust daemon reports target DB budget usage from `targetDatabaseBytes`.
 - Legacy Bun split mode keeps raw samples until you archive or reset local history.
 - `/api/history` query windows limit what is returned to the browser; retention settings control pruning.

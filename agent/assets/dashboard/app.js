@@ -1,3 +1,5 @@
+import { HISTORY_WINDOWS, historyWindowFor, validateRetentionLadder } from "./ladder-rules.js";
+
 const DEFAULT_POLL_MS = 1500;
 const DASHBOARD_URL = new URL(window.location.href);
 const MAX_HISTORY_PAGE_SIZE = 10_000;
@@ -38,15 +40,6 @@ const HISTORY_METRICS = [
   { key: "swap", label: "SWAP" },
   { key: "load", label: "LOAD" },
 ];
-const HISTORY_WINDOWS = {
-  live: { label: "Live", durationMs: 5 * 60 * 1000, pageSize: 240, source: "raw" },
-  "15m": { label: "15m", durationMs: 15 * 60 * 1000, pageSize: 900, source: "raw" },
-  "1h": { label: "1h", durationMs: 60 * 60 * 1000, pageSize: 2_400, source: "raw" },
-  "6h": { label: "6h", durationMs: 6 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-  "24h": { label: "24h", durationMs: 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-  "7d": { label: "7d", durationMs: 7 * 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-  "30d": { label: "30d", durationMs: 30 * 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-};
 const HISTORY_WINDOW_KEYS = new Set(Object.keys(HISTORY_WINDOWS));
 const HISTORY_SERIES_KEYS = new Set(HISTORY_METRICS.map((metric) => metric.key));
 const PROCESS_SORT_KEYS = new Set(["pid", "cpu", "memory", "rss"]);
@@ -114,6 +107,24 @@ const DEFAULT_DAEMON_SETTINGS = {
   defaultHistoryWindow: "live",
   retentionHours: 72,
   rollupRetentionDays: 30,
+  retentionLadder: {
+    l1: { keepDays: 3 },
+    l2: { keepDays: 30 },
+    l3: { enabled: true, keepDays: 90 },
+    l4: { enabled: true, keepDays: 730 },
+    snapshotJsonKeepMinutes: 60,
+    detailIntervalSec: 60,
+    archive: {
+      queryable: false,
+      cold: false,
+      coldAfterMonths: 12,
+      directory: "",
+    },
+    diskCheck: {
+      intervalMinutes: 60,
+      minFreeBytes: 5 * 1024 * 1024 * 1024,
+    },
+  },
   targetDatabaseBytes: 128 * 1024 * 1024,
   topProcessCount: 8,
   redactionDefault: false,
@@ -286,6 +297,9 @@ const elements = {
   historyDbBudget: document.querySelector("#history-db-budget"),
   historyBudgetStatus: document.querySelector("#history-budget-status"),
   historyRollups: document.querySelector("#history-rollups"),
+  historyLadderCoverage: document.querySelector("#history-ladder-coverage"),
+  historyDiskPressure: document.querySelector("#history-disk-pressure"),
+  historyArchiveStatus: document.querySelector("#history-archive-status"),
   historyMarkerList: document.querySelector("#history-marker-list"),
   historySeriesInputs: Array.from(document.querySelectorAll("[data-history-series]")),
   sampleCount: document.querySelector("#sample-count"),
@@ -328,6 +342,21 @@ const elements = {
   daemonPollInterval: document.querySelector("#daemon-poll-interval"),
   daemonRetentionHours: document.querySelector("#daemon-retention-hours"),
   daemonRollupRetentionDays: document.querySelector("#daemon-rollup-retention-days"),
+  daemonL1KeepDays: document.querySelector("#daemon-l1-keep-days"),
+  daemonL2KeepDays: document.querySelector("#daemon-l2-keep-days"),
+  daemonL3Enabled: document.querySelector("#daemon-l3-enabled"),
+  daemonL3KeepDays: document.querySelector("#daemon-l3-keep-days"),
+  daemonL4Enabled: document.querySelector("#daemon-l4-enabled"),
+  daemonL4KeepDays: document.querySelector("#daemon-l4-keep-days"),
+  daemonL4Forever: document.querySelector("#daemon-l4-forever"),
+  daemonSnapshotJsonKeepMinutes: document.querySelector("#daemon-snapshot-json-keep-minutes"),
+  daemonDetailIntervalSec: document.querySelector("#daemon-detail-interval-sec"),
+  daemonArchiveQueryable: document.querySelector("#daemon-archive-queryable"),
+  daemonArchiveCold: document.querySelector("#daemon-archive-cold"),
+  daemonArchiveColdAfterMonths: document.querySelector("#daemon-archive-cold-after-months"),
+  daemonArchiveDirectory: document.querySelector("#daemon-archive-directory"),
+  daemonDiskCheckIntervalMinutes: document.querySelector("#daemon-disk-check-interval-minutes"),
+  daemonDiskCheckMinFreeGib: document.querySelector("#daemon-disk-check-min-free-gib"),
   daemonDbBudgetMib: document.querySelector("#daemon-db-budget-mib"),
   daemonTopProcessCount: document.querySelector("#daemon-top-process-count"),
   daemonCpuWarn: document.querySelector("#daemon-cpu-warn"),
@@ -441,6 +470,15 @@ function cloneSettings(settings = DEFAULT_DAEMON_SETTINGS) {
     ...settings,
     thresholds: { ...settings.thresholds },
     enabledSections: { ...settings.enabledSections },
+    retentionLadder: {
+      ...settings.retentionLadder,
+      l1: { ...settings.retentionLadder.l1 },
+      l2: { ...settings.retentionLadder.l2 },
+      l3: { ...settings.retentionLadder.l3 },
+      l4: { ...settings.retentionLadder.l4 },
+      archive: { ...settings.retentionLadder.archive },
+      diskCheck: { ...settings.retentionLadder.diskCheck },
+    },
   };
 }
 
@@ -455,10 +493,36 @@ function normalizeSettings(settings) {
   const fallback = cloneSettings(DEFAULT_DAEMON_SETTINGS);
   if (!settings || typeof settings !== "object") return fallback;
 
+  const hasProvidedLadder = settings.retentionLadder != null;
+  const providedLadder = settings.retentionLadder ?? {
+    l1: { keepDays: Math.max(3, Math.ceil(Number(settings.retentionHours ?? fallback.retentionHours) / 24)) },
+    l2: { keepDays: Math.max(7, Number(settings.rollupRetentionDays ?? fallback.rollupRetentionDays)) },
+  };
+  const defaultLadder = fallback.retentionLadder;
+  const retentionLadder = {
+    ...defaultLadder,
+    ...providedLadder,
+    l1: { ...defaultLadder.l1, ...(providedLadder.l1 ?? {}) },
+    l2: { ...defaultLadder.l2, ...(providedLadder.l2 ?? {}) },
+    l3: { ...defaultLadder.l3, ...(providedLadder.l3 ?? {}) },
+    l4: { ...defaultLadder.l4, ...(providedLadder.l4 ?? {}) },
+    archive: { ...defaultLadder.archive, ...(providedLadder.archive ?? {}) },
+    diskCheck: { ...defaultLadder.diskCheck, ...(providedLadder.diskCheck ?? {}) },
+  };
+  if (!hasProvidedLadder) {
+    retentionLadder.l3.keepDays = Math.max(retentionLadder.l3.keepDays, retentionLadder.l2.keepDays);
+    if (retentionLadder.l4.keepDays !== 0) {
+      retentionLadder.l4.keepDays = Math.max(retentionLadder.l4.keepDays, retentionLadder.l3.keepDays);
+    }
+  }
+
   return {
     ...fallback,
     ...settings,
     targetDatabaseBytes: Number(settings.targetDatabaseBytes ?? fallback.targetDatabaseBytes),
+    retentionHours: retentionLadder.l1.keepDays * 24,
+    rollupRetentionDays: retentionLadder.l2.keepDays,
+    retentionLadder,
     thresholds: normalizeThresholds(settings.thresholds),
     enabledSections: {
       ...fallback.enabledSections,
@@ -476,6 +540,21 @@ function settingsFormControls() {
     elements.daemonPollInterval,
     elements.daemonRetentionHours,
     elements.daemonRollupRetentionDays,
+    elements.daemonL1KeepDays,
+    elements.daemonL2KeepDays,
+    elements.daemonL3Enabled,
+    elements.daemonL3KeepDays,
+    elements.daemonL4Enabled,
+    elements.daemonL4KeepDays,
+    elements.daemonL4Forever,
+    elements.daemonSnapshotJsonKeepMinutes,
+    elements.daemonDetailIntervalSec,
+    elements.daemonArchiveQueryable,
+    elements.daemonArchiveCold,
+    elements.daemonArchiveColdAfterMonths,
+    elements.daemonArchiveDirectory,
+    elements.daemonDiskCheckIntervalMinutes,
+    elements.daemonDiskCheckMinFreeGib,
     elements.daemonDbBudgetMib,
     elements.daemonTopProcessCount,
     elements.daemonCpuWarn,
@@ -2326,10 +2405,15 @@ function validateThresholdPair(errors, label, warn, critical) {
 function validateDaemonSettings(settings = collectDaemonSettingsFromForm()) {
   const errors = [];
   validateRange(errors, "Refresh ms", settings.pollIntervalMs, 250, 60_000);
-  validateRange(errors, "History hours", settings.retentionHours, 1, 8_760);
-  validateRange(errors, "Rollup days", settings.rollupRetentionDays, 1, 366);
   validateRange(errors, "DB budget MiB", Math.round(settings.targetDatabaseBytes / 1024 / 1024), 1, 10_240);
   validateRange(errors, "Processes", settings.topProcessCount, 1, 50);
+  errors.push(
+    ...validateRetentionLadder(
+      settings.retentionLadder,
+      state.settingsBaseline?.retentionLadder ?? null,
+      state.historyCoverage?.disk ?? null,
+    ),
+  );
   for (const [label, warnKey, criticalKey] of [
     ["CPU", "cpuWarn", "cpuCritical"],
     ["RAM", "memoryWarn", "memoryCritical"],
@@ -2354,8 +2438,17 @@ function renderEffectiveSettings(settings = collectDaemonSettingsFromForm()) {
       ["Graph", state.graphMode],
       ["Window", state.historyWindowKey],
       ["Refresh", `${settings.pollIntervalMs} ms`],
-      ["Raw", `${settings.retentionHours} h`],
-      ["Rollups", `${settings.rollupRetentionDays} d`],
+      ["L1", `${settings.retentionLadder.l1.keepDays} d`],
+      ["L2", `${settings.retentionLadder.l2.keepDays} d`],
+      ["L3", settings.retentionLadder.l3.enabled ? `${settings.retentionLadder.l3.keepDays} d` : "off"],
+      [
+        "L4",
+        settings.retentionLadder.l4.enabled
+          ? settings.retentionLadder.l4.keepDays === 0
+            ? "forever"
+            : `${settings.retentionLadder.l4.keepDays} d`
+          : "off",
+      ],
       ["Budget", formatBytes(settings.targetDatabaseBytes)],
     ].map(([labelText, valueText]) => {
       const item = document.createElement("span");
@@ -2369,6 +2462,8 @@ function markSettingsDirty() {
   state.settingsDirty = true;
   renderSettingsDirtyIndicator();
   const settings = collectDaemonSettingsFromForm();
+  syncDerivedLegacyMirrors(settings);
+  syncLadderControlStates();
   if (elements.thresholdPreset) elements.thresholdPreset.value = settingsThresholdPreset(settings);
   validateDaemonSettings(settings);
   renderEffectiveSettings(settings);
@@ -2454,6 +2549,24 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
   setControlValue(elements.daemonPollInterval, nextSettings.pollIntervalMs);
   setControlValue(elements.daemonRetentionHours, nextSettings.retentionHours);
   setControlValue(elements.daemonRollupRetentionDays, nextSettings.rollupRetentionDays);
+  setControlValue(elements.daemonL1KeepDays, nextSettings.retentionLadder.l1.keepDays);
+  setControlValue(elements.daemonL2KeepDays, nextSettings.retentionLadder.l2.keepDays);
+  setCheckboxValue(elements.daemonL3Enabled, nextSettings.retentionLadder.l3.enabled);
+  setControlValue(elements.daemonL3KeepDays, nextSettings.retentionLadder.l3.keepDays);
+  setCheckboxValue(elements.daemonL4Enabled, nextSettings.retentionLadder.l4.enabled);
+  setControlValue(elements.daemonL4KeepDays, nextSettings.retentionLadder.l4.keepDays);
+  setCheckboxValue(elements.daemonL4Forever, nextSettings.retentionLadder.l4.keepDays === 0);
+  setControlValue(elements.daemonSnapshotJsonKeepMinutes, nextSettings.retentionLadder.snapshotJsonKeepMinutes);
+  setControlValue(elements.daemonDetailIntervalSec, nextSettings.retentionLadder.detailIntervalSec);
+  setCheckboxValue(elements.daemonArchiveQueryable, nextSettings.retentionLadder.archive.queryable);
+  setCheckboxValue(elements.daemonArchiveCold, nextSettings.retentionLadder.archive.cold);
+  setControlValue(elements.daemonArchiveColdAfterMonths, nextSettings.retentionLadder.archive.coldAfterMonths);
+  setControlValue(elements.daemonArchiveDirectory, nextSettings.retentionLadder.archive.directory);
+  setControlValue(elements.daemonDiskCheckIntervalMinutes, nextSettings.retentionLadder.diskCheck.intervalMinutes);
+  setControlValue(
+    elements.daemonDiskCheckMinFreeGib,
+    nextSettings.retentionLadder.diskCheck.minFreeBytes / 1024 / 1024 / 1024,
+  );
   setControlValue(elements.daemonDbBudgetMib, Math.round(nextSettings.targetDatabaseBytes / 1024 / 1024));
   setControlValue(elements.daemonTopProcessCount, nextSettings.topProcessCount);
   setControlValue(elements.daemonCpuWarn, nextSettings.thresholds.cpuWarn);
@@ -2472,6 +2585,8 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
   setCheckboxValue(elements.daemonSectionFilesystem, nextSettings.enabledSections.filesystem);
   setCheckboxValue(elements.daemonSectionPressure, nextSettings.enabledSections.pressure);
   setCheckboxValue(elements.daemonSectionProcesses, nextSettings.enabledSections.processes);
+  syncDerivedLegacyMirrors(nextSettings);
+  syncLadderControlStates();
   validateDaemonSettings(nextSettings);
   renderEffectiveSettings(nextSettings);
   renderSettingsDirtyIndicator();
@@ -2484,15 +2599,58 @@ function numberControlValue(control, fallback) {
   return Number.isFinite(value) ? Math.round(value) : fallback;
 }
 
+function numericControlValue(control, fallback) {
+  const value = Number(control?.value);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function syncDerivedLegacyMirrors(settings) {
+  setControlValue(elements.daemonRetentionHours, settings.retentionLadder.l1.keepDays * 24);
+  setControlValue(elements.daemonRollupRetentionDays, settings.retentionLadder.l2.keepDays);
+}
+
+function syncLadderControlStates() {
+  if (elements.daemonL3KeepDays) elements.daemonL3KeepDays.disabled = !elements.daemonL3Enabled?.checked;
+  if (elements.daemonL4Forever) elements.daemonL4Forever.disabled = !elements.daemonL4Enabled?.checked;
+  if (elements.daemonL4KeepDays) {
+    elements.daemonL4KeepDays.disabled = !elements.daemonL4Enabled?.checked || Boolean(elements.daemonL4Forever?.checked);
+  }
+}
+
 function collectDaemonSettingsFromForm() {
+  const retentionLadder = {
+    l1: { keepDays: numberControlValue(elements.daemonL1KeepDays, 3) },
+    l2: { keepDays: numberControlValue(elements.daemonL2KeepDays, 30) },
+    l3: {
+      enabled: Boolean(elements.daemonL3Enabled?.checked),
+      keepDays: numberControlValue(elements.daemonL3KeepDays, 90),
+    },
+    l4: {
+      enabled: Boolean(elements.daemonL4Enabled?.checked),
+      keepDays: elements.daemonL4Forever?.checked ? 0 : numberControlValue(elements.daemonL4KeepDays, 730),
+    },
+    snapshotJsonKeepMinutes: numberControlValue(elements.daemonSnapshotJsonKeepMinutes, 60),
+    detailIntervalSec: numberControlValue(elements.daemonDetailIntervalSec, 60),
+    archive: {
+      queryable: Boolean(elements.daemonArchiveQueryable?.checked),
+      cold: Boolean(elements.daemonArchiveCold?.checked),
+      coldAfterMonths: numberControlValue(elements.daemonArchiveColdAfterMonths, 12),
+      directory: elements.daemonArchiveDirectory?.value ?? "",
+    },
+    diskCheck: {
+      intervalMinutes: numberControlValue(elements.daemonDiskCheckIntervalMinutes, 60),
+      minFreeBytes: Math.round(numericControlValue(elements.daemonDiskCheckMinFreeGib, 5) * 1024 * 1024 * 1024),
+    },
+  };
   return {
     ...cloneSettings(state.daemonSettings),
     defaultTheme: elements.daemonDefaultTheme?.value ?? "midnight",
     defaultGraphMode: elements.daemonDefaultGraph?.value ?? "line",
     defaultHistoryWindow: elements.daemonDefaultWindow?.value ?? "live",
     pollIntervalMs: numberControlValue(elements.daemonPollInterval, DEFAULT_POLL_MS),
-    retentionHours: numberControlValue(elements.daemonRetentionHours, 72),
-    rollupRetentionDays: numberControlValue(elements.daemonRollupRetentionDays, 30),
+    retentionHours: retentionLadder.l1.keepDays * 24,
+    rollupRetentionDays: retentionLadder.l2.keepDays,
+    retentionLadder,
     targetDatabaseBytes: numberControlValue(elements.daemonDbBudgetMib, 128) * 1024 * 1024,
     topProcessCount: numberControlValue(elements.daemonTopProcessCount, 8),
     redactionDefault: Boolean(elements.daemonRedactionDefault?.checked),
@@ -2588,11 +2746,87 @@ function restartPollingTimer() {
   state.timer = window.setInterval(fetchSnapshot, state.pollMs);
 }
 
+function tierCoverage(tierName) {
+  return Array.isArray(state.historyCoverage?.tiers)
+    ? state.historyCoverage.tiers.find((tier) => tier?.tier === tierName)
+    : null;
+}
+
+function approximateShrunkCount(tierName, previousDays, nextDays) {
+  const bucketCount = Math.max(0, Number(tierCoverage(tierName)?.bucketCount ?? 0));
+  if (previousDays === 0 || nextDays === 0) return Math.round(bucketCount);
+  return Math.round(Math.max(0, bucketCount * (1 - nextDays / previousDays)));
+}
+
+function approximateDeletionSummary(candidate, previous) {
+  if (!previous?.retentionLadder) return [];
+  const next = candidate.retentionLadder;
+  const prior = previous.retentionLadder;
+  const deletions = [];
+  for (const [tierName, label] of [
+    ["l1", "L1 rows"],
+    ["l2", "L2 buckets"],
+  ]) {
+    if (next[tierName].keepDays < prior[tierName].keepDays) {
+      deletions.push(
+        `~${approximateShrunkCount(tierName, prior[tierName].keepDays, next[tierName].keepDays)} ${label} (approx.)`,
+      );
+    }
+  }
+  for (const [tierName, label] of [
+    ["l3", "L3 buckets"],
+    ["l4", "L4 buckets"],
+  ]) {
+    const wasEnabled = prior[tierName].enabled;
+    const isEnabled = next[tierName].enabled;
+    const shrankForever = tierName === "l4" && prior[tierName].keepDays === 0 && next[tierName].keepDays > 0;
+    const shrankDays =
+      prior[tierName].keepDays !== 0 &&
+      next[tierName].keepDays !== 0 &&
+      next[tierName].keepDays < prior[tierName].keepDays;
+    if (wasEnabled && (!isEnabled || shrankForever || shrankDays)) {
+      const count = !isEnabled
+        ? Math.max(0, Number(tierCoverage(tierName)?.bucketCount ?? 0))
+        : approximateShrunkCount(tierName, prior[tierName].keepDays, next[tierName].keepDays);
+      deletions.push(`~${Math.round(count)} ${label} (approx.)`);
+    }
+  }
+  if (next.snapshotJsonKeepMinutes < prior.snapshotJsonKeepMinutes) {
+    deletions.push(
+      `~${approximateShrunkCount("l1", prior.snapshotJsonKeepMinutes, next.snapshotJsonKeepMinutes)} snapshot JSON rows (approx.)`,
+    );
+  }
+  if (prior.archive.queryable && !next.archive.queryable) {
+    deletions.push(
+      `~${Math.max(0, Number(state.historyCoverage?.archive?.queryable?.bucketCount ?? 0))} queryable archive buckets (approx.)`,
+    );
+  }
+  if (prior.archive.cold && !next.archive.cold) {
+    deletions.push(
+      `~${Math.max(0, Number(state.historyCoverage?.archive?.cold?.fileCount ?? 0))} cold archive files (approx.)`,
+    );
+  }
+  return deletions;
+}
+
 async function saveDaemonSettings() {
   const settings = collectDaemonSettingsFromForm();
   if (validateDaemonSettings(settings).length > 0) {
     renderSettingsStatus("Fix validation errors before saving.");
     return;
+  }
+  const wouldDelete = approximateDeletionSummary(settings, state.settingsBaseline);
+  if (wouldDelete.length > 0) {
+    const accepted = await requestConfirmation({
+      title: "Shrink history retention?",
+      message: `Saving these settings may delete: ${wouldDelete.join("; ")}`,
+      confirmLabel: "Save and shrink",
+      tone: "danger",
+    });
+    if (!accepted) {
+      renderSettingsStatus("History retention change cancelled.");
+      return;
+    }
   }
   if (elements.saveSettingsButton) elements.saveSettingsButton.disabled = true;
   renderSettingsStatus("Saving daemon defaults.");
@@ -2658,6 +2892,86 @@ function formatCoverageTime(timestampMs) {
   return Number.isFinite(numeric) && numeric > 0 ? formatSampleDateTime(numeric) : "-";
 }
 
+function syncHistoryWindowAvailability(coverage) {
+  for (const button of elements.historyWindowButtons) {
+    const window = historyWindowFor(button.dataset.historyWindow, coverage);
+    button.disabled = window.disabled;
+    button.title = window.disabled ? `Unavailable: ${window.reason}` : "";
+  }
+  for (const select of [elements.browserHistoryWindowSetting, elements.daemonDefaultWindow]) {
+    if (!select) continue;
+    for (const option of select.options) {
+      const window = historyWindowFor(option.value, coverage);
+      option.disabled = window.disabled;
+      option.title = window.disabled ? `Unavailable: ${window.reason}` : "";
+    }
+  }
+}
+
+function renderTierCoverage(tiers) {
+  if (!elements.historyLadderCoverage) return;
+  if (!Array.isArray(tiers)) {
+    elements.historyLadderCoverage.replaceChildren();
+    setHidden(elements.historyLadderCoverage, true);
+    return;
+  }
+  const cards = tiers.map((tier) => {
+    const card = document.createElement("span");
+    const name = String(tier?.tier ?? "tier").toUpperCase();
+    const count = Math.max(0, Number(tier?.bucketCount ?? 0));
+    const keep = tier?.keepDays === 0 ? "forever" : `${Number(tier?.keepDays ?? 0)}d`;
+    const value = document.createElement("strong");
+    const range = document.createElement("small");
+    card.append(document.createTextNode(name), value, range);
+    value.textContent = tier?.enabled === false ? "off" : `${keep} · ${count} ${name === "L1" ? "rows" : "buckets"}`;
+    range.textContent = `${formatCoverageTime(tier?.oldestMs)} → ${formatCoverageTime(tier?.newestMs)}`;
+    return card;
+  });
+  elements.historyLadderCoverage.replaceChildren(...cards);
+  setHidden(elements.historyLadderCoverage, false);
+}
+
+function renderDiskCoverage(disk) {
+  if (!elements.historyDiskPressure) return;
+  if (!disk || typeof disk !== "object") {
+    setHidden(elements.historyDiskPressure, true);
+    return;
+  }
+  const pressure = Boolean(disk.pressure ?? disk.active);
+  elements.historyDiskPressure.dataset.status = pressure ? "critical" : "healthy";
+  elements.historyDiskPressure.textContent = pressure
+    ? `Disk pressure: ${formatBytes(Number(disk.freeBytes ?? 0))} free is below ${formatBytes(Number(disk.minFreeBytes ?? 0))}. Shrink history or free disk before extending retention.`
+    : `History disk check: ${formatBytes(Number(disk.freeBytes ?? 0))} free; minimum ${formatBytes(Number(disk.minFreeBytes ?? 0))}.`;
+  setHidden(elements.historyDiskPressure, false);
+}
+
+function renderArchiveCoverage(archive) {
+  if (!elements.historyArchiveStatus) return;
+  if (!archive || typeof archive !== "object") {
+    setHidden(elements.historyArchiveStatus, true);
+    return;
+  }
+  const queryable = archive.queryable;
+  const cold = archive.cold;
+  const parts = [];
+  if (queryable) {
+    parts.push(
+      queryable.enabled
+        ? `Queryable: ${Number(queryable.bucketCount ?? 0)} buckets · ${formatCoverageTime(queryable.oldestMs)} → ${formatCoverageTime(queryable.newestMs)}`
+        : "Queryable: off",
+    );
+  }
+  if (cold) {
+    parts.push(
+      cold.enabled
+        ? `Cold: ${Number(cold.fileCount ?? 0)} files · ${formatBytes(Number(cold.bytes ?? 0))}${cold.exportedUntilMonth ? ` · through ${cold.exportedUntilMonth}` : ""}`
+        : "Cold: off",
+    );
+  }
+  elements.historyArchiveStatus.textContent = parts.length > 0 ? `Archive — ${parts.join("; ")}` : "Archive status unavailable";
+  setHidden(elements.historyArchiveStatus, false);
+}
+
 function renderHistoryCoverage(coverage) {
   state.historyCoverage = coverage;
   setText(elements.historyOldest, formatCoverageTime(coverage?.oldestCapturedAtMs));
@@ -2669,6 +2983,10 @@ function renderHistoryCoverage(coverage) {
     Number.isFinite(Number(coverage?.databaseBudgetPercent)) ? `${Number(coverage.databaseBudgetPercent).toFixed(1)}%` : "-",
   );
   setText(elements.historyRollups, `${Number(coverage?.rollupBucketCount ?? 0)} buckets`);
+  renderTierCoverage(coverage?.tiers);
+  renderDiskCoverage(coverage?.disk);
+  renderArchiveCoverage(coverage?.archive);
+  syncHistoryWindowAvailability(coverage);
 }
 
 function renderHistoryMarkers(markers) {
@@ -2754,17 +3072,17 @@ async function fetchHistoryMarkers({ sinceMs, untilMs }) {
 async function fetchHistoryWindow() {
   const fetchToken = state.historyFetchToken + 1;
   state.historyFetchToken = fetchToken;
-  const windowConfig = HISTORY_WINDOWS[state.historyWindowKey] ?? HISTORY_WINDOWS.live;
+  const windowConfig = historyWindowFor(state.historyWindowKey, state.historyCoverage);
   const untilMs = Date.now();
-  const sinceMs = untilMs - windowConfig.durationMs;
+  const sinceMs = windowConfig.sinceMs ?? (windowConfig.durationMs == null ? 0 : untilMs - windowConfig.durationMs);
   const limit = Math.min(MAX_HISTORY_PAGE_SIZE, windowConfig.pageSize);
   let pageUntilMs = untilMs;
   const samples = [];
 
   try {
     await fetchHistoryMarkers({ sinceMs, untilMs });
-    if (windowConfig.source === "rollup") {
-      const points = await fetchHistoryPoints({ sinceMs, untilMs, limit, source: "rollup" });
+    if (windowConfig.source !== "raw") {
+      const points = await fetchHistoryPoints({ sinceMs, untilMs, limit, source: windowConfig.source });
       if (state.historyFetchToken !== fetchToken) return;
       hydrateHistoryPoints(points, { keepSelection: state.selectedAtMs !== null });
       return;
@@ -2790,6 +3108,7 @@ async function fetchHistoryWindow() {
 
 function setHistoryWindow(key, { fetch = true, persist = true } = {}) {
   const nextWindow = Object.hasOwn(HISTORY_WINDOWS, key) ? key : "live";
+  if (historyWindowFor(nextWindow, state.historyCoverage).disabled) return;
   state.historyWindowKey = nextWindow;
   state.selectedAtMs = null;
   syncPressed(elements.historyWindowButtons, "historyWindow", nextWindow);
@@ -2904,6 +3223,15 @@ elements.resetSettingsButton?.addEventListener("click", () => {
 
 elements.restoreDefaultSettingsButton?.addEventListener("click", () => {
   restoreDefaultSettings();
+});
+
+elements.daemonL4Forever?.addEventListener("change", () => {
+  if (!elements.daemonL4Forever.checked && numberControlValue(elements.daemonL4KeepDays, 0) === 0) {
+    const minimumDays = elements.daemonL3Enabled?.checked
+      ? numberControlValue(elements.daemonL3KeepDays, 90)
+      : numberControlValue(elements.daemonL2KeepDays, 30);
+    setControlValue(elements.daemonL4KeepDays, Math.max(730, minimumDays));
+  }
 });
 
 elements.saveSettingsButton?.addEventListener("click", () => {

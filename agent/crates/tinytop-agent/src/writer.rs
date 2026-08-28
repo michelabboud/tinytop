@@ -211,6 +211,7 @@ fn router(state: AppState) -> Router {
         .route("/styles.css", get(static_file))
         .route("/app.js", get(static_file))
         .route("/vendor/echarts.min.js", get(static_file))
+        .route("/ladder-rules.js", get(static_file))
         .with_state(state)
 }
 
@@ -380,6 +381,9 @@ fn embedded_response(path: &Path) -> Result<Response, ServeError> {
         Some("app.js") => include_bytes!("../../../assets/dashboard/app.js").as_slice(),
         Some("vendor/echarts.min.js") => {
             include_bytes!("../../../assets/dashboard/vendor/echarts.min.js").as_slice()
+        }
+        Some("ladder-rules.js") => {
+            include_bytes!("../../../assets/dashboard/ladder-rules.js").as_slice()
         }
         _ => return Err(ServeError::not_found("embedded asset not found")),
     };

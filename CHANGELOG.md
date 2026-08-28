@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added `90d`, `1y`, and `all` dashboard history presets backed by five-minute, hourly, and automatic tier selection. Presets disable themselves with a setting-specific tooltip when their tier is disabled or empty.
+- Added the complete History ladder settings group, exact client-side mirrors of the Rust ladder validation messages, L4 forever mode, and read-only `retentionHours`/`rollupRetentionDays` compatibility mirrors derived from L1/L2.
+- Added a pre-save shrink confirmation that lists approximate affected rows/buckets from current coverage until the server-computed Task 10 dry-run replaces it.
+- Expanded History coverage with per-tier ranges/counts, disk-pressure status, and archive status, while remaining compatible with runtimes that omit newer coverage keys.
+- Added the shared `ladder-rules.js` browser module to both the embedded Rust agent and Bun static-asset allow-list.
+
 ## 0.2.9 - 2026-08-28
 
 - Added the validated camelCase `retentionLadder` settings block with configurable L1/L2 horizons, L3/L4 toggles and monotonic retention, L4 forever mode, snapshot JSON retention, detail cadence, archive configuration, and disk-check thresholds.

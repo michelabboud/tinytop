@@ -83,6 +83,44 @@ describe("dashboard settings", () => {
     expect(app).toContain("enabledSections");
   });
 
+  test("renders the complete history ladder settings and derived legacy mirrors", () => {
+    expect(html).toContain("History ladder");
+    for (const id of [
+      "daemon-l1-keep-days",
+      "daemon-l2-keep-days",
+      "daemon-l3-enabled",
+      "daemon-l3-keep-days",
+      "daemon-l4-enabled",
+      "daemon-l4-keep-days",
+      "daemon-l4-forever",
+      "daemon-snapshot-json-keep-minutes",
+      "daemon-detail-interval-sec",
+      "daemon-archive-queryable",
+      "daemon-archive-cold",
+      "daemon-archive-cold-after-months",
+      "daemon-archive-directory",
+      "daemon-disk-check-interval-minutes",
+      "daemon-disk-check-min-free-gib",
+    ]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    expect(html).toContain('id="daemon-retention-hours" type="number" readonly');
+    expect(html).toContain('id="daemon-rollup-retention-days" type="number" readonly');
+    expect(html).toContain("derived from L1/L2");
+  });
+
+  test("renders the new history presets and ladder coverage surfaces", () => {
+    for (const window of ["90d", "1y", "all"]) {
+      expect(html).toContain(`data-history-window="${window}"`);
+      expect(html).toContain(`<option value="${window}">`);
+    }
+    expect(html).toContain('id="history-ladder-coverage"');
+    expect(html).toContain('id="history-disk-pressure"');
+    expect(html).toContain('id="history-archive-status"');
+    expect(app).toContain("historyWindowFor");
+    expect(app).toContain("validateRetentionLadder");
+  });
+
   test("keeps native select dropdown options readable in every theme", () => {
     for (const selector of [
       ".settings-group select option",

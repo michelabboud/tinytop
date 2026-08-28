@@ -217,6 +217,9 @@
               <button type="button" data-history-window="24h" aria-pressed="false">24h</button>
               <button type="button" data-history-window="7d" aria-pressed="false">7d</button>
               <button type="button" data-history-window="30d" aria-pressed="false">30d</button>
+              <button type="button" data-history-window="90d" aria-pressed="false">90d</button>
+              <button type="button" data-history-window="1y" aria-pressed="false">1y</button>
+              <button type="button" data-history-window="all" aria-pressed="false">All</button>
             </nav>
             <fieldset class="history-series-toggles">
               <legend>Visible history series</legend>
@@ -254,6 +257,9 @@
               <span>Budget used <strong id="history-budget-status">-</strong></span>
               <span>Rollups <strong id="history-rollups">-</strong></span>
             </div>
+            <div class="history-status-banner" id="history-disk-pressure" role="status" hidden></div>
+            <section class="history-ladder-coverage" id="history-ladder-coverage" aria-label="History ladder coverage" hidden></section>
+            <div class="history-archive-status" id="history-archive-status" hidden></div>
             <div class="history-marker-list" id="history-marker-list" aria-live="polite"></div>
             <div class="history-sample-values" id="history-sample-values"></div>
           </div>
@@ -409,6 +415,9 @@
                   <option value="24h">24h</option>
                   <option value="7d">7d</option>
                   <option value="30d">30d</option>
+                  <option value="90d">90d</option>
+                  <option value="1y">1y</option>
+                  <option value="all">All</option>
                 </select>
               </label>
               <div class="effective-settings-readout" id="effective-settings-readout"></div>
@@ -455,6 +464,9 @@
                   <option value="24h">24h</option>
                   <option value="7d">7d</option>
                   <option value="30d">30d</option>
+                  <option value="90d">90d</option>
+                  <option value="1y">1y</option>
+                  <option value="all">All</option>
                 </select>
               </label>
               <label>
@@ -463,11 +475,13 @@
               </label>
               <label>
                 <span>History hours</span>
-                <input id="daemon-retention-hours" type="number" min="1" max="8760" step="1" />
+                <input id="daemon-retention-hours" type="number" readonly />
+                <small>derived from L1/L2</small>
               </label>
               <label>
                 <span>Rollup days</span>
-                <input id="daemon-rollup-retention-days" type="number" min="1" max="366" step="1" />
+                <input id="daemon-rollup-retention-days" type="number" readonly />
+                <small>derived from L1/L2</small>
               </label>
               <label>
                 <span>DB budget MiB</span>
@@ -540,6 +554,70 @@
               <label class="toggle-row">
                 <input id="daemon-section-processes" type="checkbox" />
                 <span>Show processes</span>
+              </label>
+            </fieldset>
+
+            <fieldset class="settings-group history-ladder-settings-group">
+              <legend>History ladder</legend>
+              <label>
+                <span>L1 raw days</span>
+                <input id="daemon-l1-keep-days" type="number" min="3" max="3650" step="1" />
+              </label>
+              <label>
+                <span>L2 one-minute days</span>
+                <input id="daemon-l2-keep-days" type="number" min="7" max="3650" step="1" />
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-l3-enabled" type="checkbox" />
+                <span>Enable L3 five-minute history</span>
+              </label>
+              <label>
+                <span>L3 days</span>
+                <input id="daemon-l3-keep-days" type="number" min="0" max="3650" step="1" />
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-l4-enabled" type="checkbox" />
+                <span>Enable L4 hourly history</span>
+              </label>
+              <label>
+                <span>L4 days</span>
+                <input id="daemon-l4-keep-days" type="number" min="0" max="36500" step="1" />
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-l4-forever" type="checkbox" />
+                <span>Keep L4 forever</span>
+              </label>
+              <label>
+                <span>Snapshot JSON minutes</span>
+                <input id="daemon-snapshot-json-keep-minutes" type="number" min="60" max="1440" step="1" />
+              </label>
+              <label>
+                <span>Detail interval seconds</span>
+                <input id="daemon-detail-interval-sec" type="number" min="15" max="3600" step="1" />
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-archive-queryable" type="checkbox" />
+                <span>Queryable archive</span>
+              </label>
+              <label class="toggle-row">
+                <input id="daemon-archive-cold" type="checkbox" />
+                <span>Cold CSV.gz archive</span>
+              </label>
+              <label>
+                <span>Cold after months</span>
+                <input id="daemon-archive-cold-after-months" type="number" min="1" max="120" step="1" />
+              </label>
+              <label class="settings-wide-field">
+                <span>Archive directory</span>
+                <input id="daemon-archive-directory" type="text" placeholder="Main database directory" />
+              </label>
+              <label>
+                <span>Disk check minutes</span>
+                <input id="daemon-disk-check-interval-minutes" type="number" min="5" max="1440" step="1" />
+              </label>
+              <label>
+                <span>Minimum free GiB</span>
+                <input id="daemon-disk-check-min-free-gib" type="number" min="0.25" step="0.25" />
               </label>
             </fieldset>
           </div>
