@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.6 - 2026-08-28
+
+- Planning only, no runtime change: the **tiered history ladder** is designed and at Michel's gate.
+  Spec `docs/superpowers/specs/2026-08-28-tiered-history-ladder-design.md`, plan
+  `docs/plans/2026-08-28-tiered-history-ladder-plan.md` (11 hexe lanes across four phases),
+  ADRs 0013 (ladder: raw → 1 min → 5 min → 1 h, fold-not-decimate, frozen completed buckets,
+  promote-before-prune, `snapshot_json` kept for a recent window only, pre-imaged v0→v1
+  migration), 0014 (queryable SQLite archive + cold verified `csv.gz`), 0015 (push-only OTLP
+  metrics), 0016 (versioned settings export/import).
+- Recorded defect (not yet fixed; fixed by plan Task 2): `prune_raw_history` rebuilds the boundary
+  minute's rollup from its surviving tail every tick, so every 1-minute rollup older than
+  `retentionHours` ends up with `sample_count` 1–2 — measured 4,274 of 4,289 buckets on the live
+  database. Census: Fabulous `docs/reports/2026-08-28-tinytop-history-census.md`.
+
 ## 0.2.4 - 2026-07-05
 
 - Deduplicated the dashboard: `agent/assets/dashboard/` is now the **single source** —

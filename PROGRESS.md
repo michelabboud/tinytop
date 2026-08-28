@@ -2,9 +2,9 @@
 
 ## Current Version
 
-- Version: `0.2.4`
-- Date: 2026-07-05
-- Status: Dashboard deduplicated — `agent/assets/dashboard/` is the single source
+- Version: `0.2.6`
+- Date: 2026-08-28
+- Status: Tiered history ladder DESIGNED (spec + plan + ADRs 0013–0016) and waiting at Michel's gate; nothing built yet. Previous: Dashboard deduplicated — `agent/assets/dashboard/` is the single source
   (Rust embeds at compile time, Bun serves from disk); `legacy/dashboard/` removed
   with a stays-gone test. Prior 0.2.3: standalone dashboards work behind
   reverse-proxy sub-paths (nginx
