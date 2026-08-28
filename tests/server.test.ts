@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { __testing, createFetchHandler } from "../src/server";
+import { DEFAULT_DASHBOARD_SETTINGS, normalizeDashboardSettings } from "../src/settings";
 import type { SystemSnapshot } from "../src/collector";
 import { createCollectorFetchHandler } from "../legacy/bun-collector";
 import { makeSnapshot } from "./fixtures";
@@ -70,6 +71,21 @@ const snapshot: SystemSnapshot = {
 };
 
 describe("createFetchHandler", () => {
+  test("accepts 90d and rejects unsupported default history windows", () => {
+    expect(
+      normalizeDashboardSettings({
+        ...DEFAULT_DASHBOARD_SETTINGS,
+        defaultHistoryWindow: "90d",
+      }).defaultHistoryWindow,
+    ).toBe("90d");
+    expect(() =>
+      normalizeDashboardSettings({
+        ...DEFAULT_DASHBOARD_SETTINGS,
+        defaultHistoryWindow: "2d",
+      }),
+    ).toThrow("defaultHistoryWindow is invalid");
+  });
+
   test("responds to health checks", async () => {
     const handler = createFetchHandler({
       publicDir: "/missing",

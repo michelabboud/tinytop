@@ -9,6 +9,7 @@ const dashboardFiles = [
   "favicon.svg",
   "styles.css",
   "app.js",
+  "ladder-rules.js",
   "vendor/echarts.min.js",
   "vendor/echarts.LICENSE",
   "vendor/echarts.LICENSE-d3",

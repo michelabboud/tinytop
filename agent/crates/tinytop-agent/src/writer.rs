@@ -211,6 +211,7 @@ fn router(state: AppState) -> Router {
         .route("/styles.css", get(static_file))
         .route("/app.js", get(static_file))
         .route("/vendor/echarts.min.js", get(static_file))
+        .route("/ladder-rules.js", get(static_file))
         .with_state(state)
 }
 
@@ -380,6 +381,9 @@ fn embedded_response(path: &Path) -> Result<Response, ServeError> {
         Some("app.js") => include_bytes!("../../../assets/dashboard/app.js").as_slice(),
         Some("vendor/echarts.min.js") => {
             include_bytes!("../../../assets/dashboard/vendor/echarts.min.js").as_slice()
+        }
+        Some("ladder-rules.js") => {
+            include_bytes!("../../../assets/dashboard/ladder-rules.js").as_slice()
         }
         _ => return Err(ServeError::not_found("embedded asset not found")),
     };
@@ -597,6 +601,7 @@ fn static_relative_path(path: &str) -> Option<&'static Path> {
         "/styles.css" => Some(Path::new("styles.css")),
         "/app.js" => Some(Path::new("app.js")),
         "/vendor/echarts.min.js" => Some(Path::new("vendor/echarts.min.js")),
+        "/ladder-rules.js" => Some(Path::new("ladder-rules.js")),
         _ => None,
     }
 }
@@ -805,6 +810,14 @@ impl From<std::time::SystemTimeError> for ServeError {
 mod tests {
     use super::*;
     use axum::body::Body;
+
+    #[test]
+    fn static_relative_path_serves_ladder_rules() {
+        assert_eq!(
+            static_relative_path("/ladder-rules.js"),
+            Some(Path::new("ladder-rules.js"))
+        );
+    }
 
     fn csp(response: &Response) -> &str {
         response

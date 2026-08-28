@@ -45,6 +45,7 @@ function staticFileName(pathname: string): string | null {
   if (pathname === "/index.html") return "index.html";
   if (pathname === "/styles.css") return "styles.css";
   if (pathname === "/app.js") return "app.js";
+  if (pathname === "/ladder-rules.js") return "ladder-rules.js";
   return null;
 }
 
