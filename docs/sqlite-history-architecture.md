@@ -321,7 +321,7 @@ ORDER BY captured_at_ms DESC
 LIMIT ?;
 ```
 
-The SQLite owner reverses the selected rows before returning them so the browser receives oldest-to-newest samples. Both the Rust and Bun stores apply the `snapshot_json IS NOT NULL` rule. Raw `/api/history` and legacy `/history` reads therefore expose only complete snapshots, and their horizon is the snapshot JSON keep window rather than the longer typed-row retention horizon.
+The SQLite owner reverses the selected rows before returning them so the browser receives oldest-to-newest samples. Both the Rust and Bun stores apply the `snapshot_json IS NOT NULL` rule. Raw `/api/history` and legacy `/history` reads therefore expose only complete snapshots, and their horizon is `retentionLadder.snapshotJsonKeepMinutes` rather than the longer typed-row retention horizon. Rust history endpoints accept camelCase range parameters (`sinceMs`, `untilMs`) and retain the existing snake_case aliases.
 
 ## Frontend Hydration
 
@@ -342,13 +342,26 @@ The browser then:
 
 This is why browser refresh now refills History instead of starting from one sample.
 
-Long range chart points:
+Chart-ready ladder points:
 
 ```text
-/api/history/points?source=rollup&since_ms=<range-start>&until_ms=<range-end>
+/api/history/points?source=auto&sinceMs=<range-start>&untilMs=<range-end>&limit=<page-size>
 ```
 
-The Rust daemon maps one-minute rollup rows into chart-ready points for 6h, 24h, 7d, and 30d dashboard windows. Rollup points carry aggregate metric values and sample counts; full raw snapshot detail still comes from `/api/history`.
+The Rust daemon accepts `auto`, `raw`, `rollup` (the unchanged one-minute name), `5m`, `1h`, and `archive`. The response keeps `points` and adds top-level `source`, `resolutionMs`, and `available`. Archive reads intentionally return `{source:"archive", resolutionMs:3600000, available:false, points:[]}` until the queryable archive implementation lands in Task 7.
+
+`auto` uses the HTTP-clamped limit (1–10,000, default 120), `untilMs` or the current time, and the configured L1 poll interval rather than `Tier::L1`'s zero sentinel. In finest-to-coarsest order it selects the first enabled tier that retains the range start and satisfies `rangeMs / resolutionMs <= limit` using integer division. When retaining tiers exist but none fits, it selects the coarsest retaining tier so the caller gets the newest bounded page rather than a fine-tier sliver. When no tier retains the start, it selects archive if queryable archive is enabled, otherwise the coarsest enabled tier. L4 `keepDays: 0` always retains the start.
+
+For `/api/history/points`, the effective page limit is the supplied `limit` clamped to 1–10,000; a direct store caller that passes `None` gets 10,000, and the resolver and reader use that same value, while raw `/api/history` keeps its 120-row default.
+
+Typed detail reads are Rust-only and bounded:
+
+```text
+/api/history/filesystems?sinceMs=<start>&untilMs=<end>&mount=/data&limit=<rows>
+/api/history/processes?sinceMs=<start>&untilMs=<end>&limit=<captures>
+```
+
+Filesystem results are ordered oldest-first and may be filtered by exact mount. Process results are grouped by `capturedAtMs`; the limit applies to capture timestamps, so a page never cuts a ranked process group in half. Both limits clamp to 1–10,000.
 
 Timeline markers:
 
@@ -380,6 +393,10 @@ Each insert compares the affected L2 minute's existing `sample_count` with the n
 - oldest/newest rollup timestamps
 - a `tiers` entry for each of L1 through L4 with enabled state, retention days, resolution, count, and oldest/newest bucket timestamps
 - the oldest raw timestamp that still carries `snapshot_json`
+- configured detail sampling interval
+- last persisted disk free-space/check/pressure state and configured minimum free bytes
+- queryable/cold archive configuration and state (zero counts until their implementation phases)
+- the persisted schema-migration document, or `null` on a fresh v1 database
 
 ## Retention
 

@@ -1454,11 +1454,13 @@ name = "tinytop-agent"
 version = "0.2.0"
 dependencies = [
  "axum",
+ "http-body-util",
  "serde",
  "serde_json",
  "tinytop-collectors",
  "tinytop-store",
  "tokio",
+ "tower",
 ]
 
 [[package]]

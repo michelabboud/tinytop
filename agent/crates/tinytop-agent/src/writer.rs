@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tinytop_collectors::NativeCollector;
 use tinytop_store::{
-    DashboardSettings, HistoryMarker, HistoryMarkerType, HistoryPoint, HistoryPointMode,
-    HistoryPointsQuery, HistoryQuery, HistorySample, SqliteHistoryStore,
+    DashboardSettings, HistoryFilesystemSample, HistoryMarker, HistoryMarkerType, HistoryPoint,
+    HistoryPointMode, HistoryPointsQuery, HistoryProcessCapture, HistoryQuery, HistorySample,
+    SqliteHistoryStore, resolve_history_point_source_with_poll,
 };
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
@@ -51,29 +52,63 @@ struct AppState {
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HistoryParams {
     limit: Option<i64>,
+    #[serde(alias = "window_seconds")]
     window_seconds: Option<i64>,
+    #[serde(alias = "since_ms")]
     since_ms: Option<i64>,
+    #[serde(alias = "until_ms")]
     until_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HistoryPointsParams {
     limit: Option<i64>,
+    #[serde(alias = "window_seconds")]
     window_seconds: Option<i64>,
+    #[serde(alias = "since_ms")]
     since_ms: Option<i64>,
+    #[serde(alias = "until_ms")]
     until_ms: Option<i64>,
     source: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HistoryMarkersParams {
     limit: Option<i64>,
+    #[serde(alias = "window_seconds")]
     window_seconds: Option<i64>,
+    #[serde(alias = "since_ms")]
     since_ms: Option<i64>,
+    #[serde(alias = "until_ms")]
     until_ms: Option<i64>,
+    #[serde(alias = "expected_gap_ms")]
     expected_gap_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryFilesystemsParams {
+    #[serde(alias = "since_ms")]
+    since_ms: Option<i64>,
+    #[serde(alias = "until_ms")]
+    until_ms: Option<i64>,
+    mount: Option<String>,
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryProcessesParams {
+    #[serde(alias = "since_ms")]
+    since_ms: Option<i64>,
+    #[serde(alias = "until_ms")]
+    until_ms: Option<i64>,
+    limit: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +119,20 @@ struct HistoryResponse {
 #[derive(Debug, Serialize)]
 struct HistoryPointsResponse {
     points: Vec<HistoryPoint>,
+    source: &'static str,
+    #[serde(rename = "resolutionMs")]
+    resolution_ms: i64,
+    available: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryFilesystemsResponse {
+    filesystems: Vec<HistoryFilesystemSample>,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryProcessesResponse {
+    captures: Vec<HistoryProcessCapture>,
 }
 
 #[derive(Debug, Serialize)]
@@ -203,6 +252,8 @@ fn router(state: AppState) -> Router {
         .route("/api/history/coverage", get(history_coverage))
         .route("/api/history/points", get(history_points))
         .route("/api/history/markers", get(history_markers))
+        .route("/api/history/filesystems", get(history_filesystems))
+        .route("/api/history/processes", get(history_processes))
         .route("/api/history", get(history))
         .route("/", get(static_file))
         .route("/embed", get(embed_file))
@@ -296,11 +347,25 @@ async fn history_points(
     State(state): State<AppState>,
     Query(params): Query<HistoryPointsParams>,
 ) -> Result<Response, ServeError> {
+    let query = history_points_query(params)?;
+    let settings = state.store.get_settings().await?;
+    let source = resolve_history_point_source_with_poll(
+        &settings.retention_ladder,
+        settings.poll_interval_ms,
+        now_ms()?,
+        query,
+    );
     let points = state
         .store
-        .read_history_points(history_points_query(params)?)
+        .read_history_points(HistoryPointsQuery { source, ..query })
         .await?;
-    Ok(no_store(Json(HistoryPointsResponse { points })).into_response())
+    Ok(no_store(Json(HistoryPointsResponse {
+        points,
+        source: source.as_str(),
+        resolution_ms: source.resolution_ms(settings.poll_interval_ms),
+        available: source != HistoryPointMode::Archive,
+    }))
+    .into_response())
 }
 
 async fn history_markers(
@@ -313,6 +378,27 @@ async fn history_markers(
         .read_history_markers(history_query(params.into()), expected_gap_ms)
         .await?;
     Ok(no_store(Json(HistoryMarkersResponse { markers })).into_response())
+}
+
+async fn history_filesystems(
+    State(state): State<AppState>,
+    Query(params): Query<HistoryFilesystemsParams>,
+) -> Result<Response, ServeError> {
+    let query = detail_history_query(params.since_ms, params.until_ms, params.limit);
+    let filesystems = state
+        .store
+        .read_history_filesystems(query, params.mount.as_deref())
+        .await?;
+    Ok(no_store(Json(HistoryFilesystemsResponse { filesystems })).into_response())
+}
+
+async fn history_processes(
+    State(state): State<AppState>,
+    Query(params): Query<HistoryProcessesParams>,
+) -> Result<Response, ServeError> {
+    let query = detail_history_query(params.since_ms, params.until_ms, params.limit);
+    let captures = state.store.read_history_processes(query).await?;
+    Ok(no_store(Json(HistoryProcessesResponse { captures })).into_response())
 }
 
 async fn static_file(
@@ -543,6 +629,18 @@ fn history_points_query(params: HistoryPointsParams) -> Result<HistoryPointsQuer
         ),
         source,
     })
+}
+
+fn detail_history_query(
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+    limit: Option<i64>,
+) -> HistoryQuery {
+    HistoryQuery {
+        since_ms,
+        until_ms,
+        limit: Some(limit.unwrap_or(DEFAULT_HISTORY_LIMIT).clamp(1, 10_000)),
+    }
 }
 
 impl From<HistoryMarkersParams> for HistoryParams {
@@ -809,7 +907,524 @@ impl From<std::time::SystemTimeError> for ServeError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    struct TempDatabase {
+        directory: PathBuf,
+        url: String,
+    }
+
+    impl TempDatabase {
+        fn new(prefix: &str) -> Self {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("test clock should be after the epoch")
+                .as_nanos();
+            let directory = std::env::temp_dir().join(format!(
+                "tinytop-agent-{prefix}-{}-{stamp}",
+                std::process::id()
+            ));
+            assert!(directory.starts_with(std::env::temp_dir()));
+            std::fs::create_dir_all(&directory).expect("temp directory should be created");
+            let database_path = directory.join("history.sqlite");
+            Self {
+                directory,
+                url: format!("sqlite://{}", database_path.display()),
+            }
+        }
+    }
+
+    impl Drop for TempDatabase {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.directory).ok();
+        }
+    }
+
+    async fn test_state(prefix: &str) -> (TempDatabase, AppState) {
+        let fixture = TempDatabase::new(prefix);
+        let store = SqliteHistoryStore::connect(&fixture.url)
+            .await
+            .expect("fixture store should connect");
+        let state = AppState {
+            collector: Arc::new(Mutex::new(NativeCollector::default())),
+            store,
+            dashboard_assets: DashboardAssets::Disabled,
+            daemon: DaemonMetadata {
+                os: "test".to_string(),
+                arch: "test".to_string(),
+                install: InstallMetadata {
+                    executable: "test".to_string(),
+                    working_directory: fixture.directory.display().to_string(),
+                },
+                bind: BindMetadata {
+                    host: "127.0.0.1".to_string(),
+                    port: 0,
+                },
+                storage: StorageMetadata {
+                    sqlite_url: fixture.url.clone(),
+                    sqlite_path: fixture
+                        .directory
+                        .join("history.sqlite")
+                        .display()
+                        .to_string(),
+                },
+            },
+            embed_frame_ancestors: "'self'".to_string(),
+        };
+        (fixture, state)
+    }
+
+    async fn request_json(app: Router, uri: &str) -> (StatusCode, JsonValue) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router request should complete");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body should collect")
+            .to_bytes();
+        let body = serde_json::from_slice(&bytes).expect("response should be JSON");
+        (status, body)
+    }
+
+    async fn insert_fixture_snapshot(store: &SqliteHistoryStore, captured_at_ms: i64) {
+        let snapshot = serde_json::from_value(json!({
+            "timestamp": format!("fixture-{captured_at_ms}"),
+            "identity": {
+                "hostname": "test-host",
+                "platform": "linux",
+                "arch": "x86_64",
+                "distro": "test",
+                "kernel": "test",
+                "runtime": { "kind": "Linux", "confidence": "high", "reason": "fixture" },
+                "uptimeSeconds": 60
+            },
+            "cpu": {
+                "usagePercent": 10.0,
+                "cores": 4,
+                "times": {
+                    "user": 0, "nice": 0, "system": 0, "idle": 0, "iowait": 0,
+                    "irq": 0, "softirq": 0, "steal": 0, "guest": 0, "guestNice": 0,
+                    "total": 0, "idleTotal": 0
+                }
+            },
+            "memory": {
+                "totalBytes": 100, "availableBytes": 40, "usedBytes": 60,
+                "usedPercent": 60.0
+            },
+            "swap": {
+                "totalBytes": 10, "freeBytes": 5, "usedBytes": 5, "usedPercent": 50.0
+            },
+            "load": {
+                "one": 1.0, "five": 2.0, "fifteen": 3.0, "runnable": 1,
+                "totalThreads": 2, "lastPid": 3
+            },
+            "pressure": { "cpu": {}, "memory": {}, "io": {} },
+            "filesystems": [
+                {
+                    "filesystem": "/dev/root", "type": "ext4", "sizeBytes": 100,
+                    "usedBytes": 50, "availableBytes": 50, "usedPercent": 50.0,
+                    "mount": "/", "inodeUsedPercent": 10.0, "inodeUsed": 1,
+                    "inodeTotal": 10
+                },
+                {
+                    "filesystem": "/dev/data", "type": "xfs", "sizeBytes": 200,
+                    "usedBytes": 100, "availableBytes": 100, "usedPercent": 50.0,
+                    "mount": "/data", "inodeUsedPercent": null, "inodeUsed": null,
+                    "inodeTotal": null
+                }
+            ],
+            "processes": [
+                {
+                    "pid": 42, "command": "tinytop", "cpuPercent": 1.0,
+                    "memoryPercent": 2.0, "rssBytes": 3, "parentPid": null,
+                    "startedAt": null
+                },
+                {
+                    "pid": 43, "command": "worker", "cpuPercent": 4.0,
+                    "memoryPercent": 5.0, "rssBytes": 6, "parentPid": 42,
+                    "startedAt": "2026-08-28T00:00:00Z"
+                }
+            ]
+        }))
+        .expect("fixture snapshot JSON should match SystemSnapshot");
+        store
+            .insert_snapshot(captured_at_ms, &snapshot)
+            .await
+            .expect("fixture snapshot should insert");
+    }
+
+    #[test]
+    fn detail_history_query_clamps_limit() {
+        assert_eq!(detail_history_query(None, None, Some(0)).limit, Some(1));
+        assert_eq!(
+            detail_history_query(None, None, Some(99_999)).limit,
+            Some(10_000)
+        );
+        assert_eq!(
+            detail_history_query(None, None, None).limit,
+            Some(DEFAULT_HISTORY_LIMIT)
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_picks_finest_tier_that_still_holds_the_range_start() {
+        struct Case {
+            name: &'static str,
+            age_ms: i64,
+            limit: i64,
+            include_until: bool,
+            l3_enabled: bool,
+            l4_keep_days: i64,
+            archive_queryable: bool,
+            expected_source: &'static str,
+            expected_resolution_ms: i64,
+        }
+
+        let hour = 3_600_000;
+        let day = 86_400_000;
+        let cases = [
+            Case {
+                name: "one hour",
+                age_ms: hour,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "raw",
+                expected_resolution_ms: 1_500,
+            },
+            Case {
+                name: "two days",
+                age_ms: 2 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "rollup",
+                expected_resolution_ms: 60_000,
+            },
+            Case {
+                name: "six days",
+                age_ms: 6 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "rollup",
+                expected_resolution_ms: 60_000,
+            },
+            Case {
+                name: "thirty days",
+                age_ms: 30 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "5m",
+                expected_resolution_ms: 300_000,
+            },
+            Case {
+                name: "sixty days",
+                age_ms: 60 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "1h",
+                expected_resolution_ms: 3_600_000,
+            },
+            Case {
+                name: "three hundred days",
+                age_ms: 300 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "1h",
+                expected_resolution_ms: 3_600_000,
+            },
+            Case {
+                name: "thirty days without L3",
+                age_ms: 30 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: false,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "1h",
+                expected_resolution_ms: 3_600_000,
+            },
+            Case {
+                name: "thirty days at limit one hundred",
+                age_ms: 30 * day,
+                limit: 100,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "1h",
+                expected_resolution_ms: 3_600_000,
+            },
+            Case {
+                name: "eight hundred days",
+                age_ms: 800 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "1h",
+                expected_resolution_ms: 3_600_000,
+            },
+            Case {
+                name: "eight hundred days with archive",
+                age_ms: 800 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: true,
+                expected_source: "archive",
+                expected_resolution_ms: 3_600_000,
+            },
+            Case {
+                name: "one hour without until",
+                age_ms: hour,
+                limit: 10_000,
+                include_until: false,
+                l3_enabled: true,
+                l4_keep_days: 730,
+                archive_queryable: false,
+                expected_source: "raw",
+                expected_resolution_ms: 1_500,
+            },
+            Case {
+                name: "three thousand days with L4 forever",
+                age_ms: 3_000 * day,
+                limit: 10_000,
+                include_until: true,
+                l3_enabled: true,
+                l4_keep_days: 0,
+                archive_queryable: false,
+                expected_source: "1h",
+                expected_resolution_ms: 3_600_000,
+            },
+        ];
+
+        for (index, case) in cases.into_iter().enumerate() {
+            let (_fixture, state) = test_state(&format!("auto-{index}")).await;
+            let mut settings = state.store.get_settings().await.expect("default settings");
+            settings.retention_ladder.l3.enabled = case.l3_enabled;
+            settings.retention_ladder.l4.keep_days = case.l4_keep_days;
+            settings.retention_ladder.archive.queryable = case.archive_queryable;
+            state
+                .store
+                .put_settings(&settings)
+                .await
+                .expect("case settings");
+
+            let now = now_ms().expect("test time");
+            let mut uri = format!(
+                "/api/history/points?source=auto&sinceMs={}&limit={}",
+                now.saturating_sub(case.age_ms),
+                case.limit
+            );
+            if case.include_until {
+                uri.push_str(&format!("&untilMs={now}"));
+            }
+            let (status, body) = request_json(router(state), &uri).await;
+            assert_eq!(status, StatusCode::OK, "{}: {body}", case.name);
+            assert_eq!(body["source"], case.expected_source, "{}", case.name);
+            assert_eq!(
+                body["resolutionMs"], case.expected_resolution_ms,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                body["available"],
+                case.expected_source != "archive",
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn coverage_reports_every_tier_and_json_horizon() {
+        fn sorted_object_keys(value: &JsonValue) -> Vec<&str> {
+            let mut keys = value
+                .as_object()
+                .expect("coverage value should be an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys
+        }
+
+        let (_fixture, state) = test_state("coverage").await;
+        let (status, body) = request_json(router(state), "/api/history/coverage").await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let tiers = body["tiers"].as_array().expect("tiers should be an array");
+        assert_eq!(
+            tiers
+                .iter()
+                .map(|tier| tier["tier"].as_str().expect("tier name"))
+                .collect::<Vec<_>>(),
+            ["l1", "l2", "l3", "l4"]
+        );
+        for tier in tiers {
+            assert_eq!(
+                sorted_object_keys(tier),
+                [
+                    "bucketCount",
+                    "enabled",
+                    "keepDays",
+                    "newestMs",
+                    "oldestMs",
+                    "resolutionMs",
+                    "tier",
+                ]
+            );
+        }
+        for key in [
+            "snapshotJsonOldestMs",
+            "detailIntervalSec",
+            "disk",
+            "archive",
+            "migration",
+        ] {
+            assert!(
+                body.get(key).is_some(),
+                "coverage must contain {key}: {body}"
+            );
+        }
+        assert_eq!(
+            sorted_object_keys(&body["disk"]),
+            ["freeBytes", "lastCheckMs", "minFreeBytes", "pressure"]
+        );
+        assert_eq!(
+            sorted_object_keys(&body["archive"]["queryable"]),
+            ["bucketCount", "enabled", "newestMs", "oldestMs", "path"]
+        );
+        assert_eq!(
+            sorted_object_keys(&body["archive"]["cold"]),
+            [
+                "bytes",
+                "directory",
+                "enabled",
+                "exportedUntilMonth",
+                "fileCount",
+            ]
+        );
+        assert!(
+            body["migration"].is_null(),
+            "fresh database migration must be null: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn filesystems_endpoint_filters_by_mount_and_clamps_limit() {
+        let (_fixture, state) = test_state("filesystems").await;
+        let now = now_ms().expect("test time");
+        insert_fixture_snapshot(&state.store, now - 120_000).await;
+        insert_fixture_snapshot(&state.store, now - 60_000).await;
+
+        let uri = format!(
+            "/api/history/filesystems?sinceMs={}&untilMs={now}&mount=%2Fdata&limit=0",
+            now - 180_000
+        );
+        let (status, body) = request_json(router(state.clone()), &uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let filesystems = body["filesystems"].as_array().expect("filesystem rows");
+        assert_eq!(filesystems.len(), 1, "limit=0 must clamp to one row");
+        assert_eq!(filesystems[0]["mount"], "/data");
+        assert_eq!(filesystems[0]["capturedAtMs"], now - 60_000);
+
+        let uri = format!(
+            "/api/history/filesystems?sinceMs={}&untilMs={now}&mount=%2Fdata&limit=99999",
+            now - 180_000
+        );
+        let (status, body) = request_json(router(state), &uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let filesystems = body["filesystems"].as_array().expect("filesystem rows");
+        assert_eq!(filesystems.len(), 2, "large limit must return every row");
+        assert!(filesystems.iter().all(|row| row["mount"] == "/data"));
+    }
+
+    #[tokio::test]
+    async fn processes_endpoint_groups_by_capture_time() {
+        let (_fixture, state) = test_state("processes").await;
+        let now = now_ms().expect("test time");
+        insert_fixture_snapshot(&state.store, now - 120_000).await;
+        insert_fixture_snapshot(&state.store, now - 60_000).await;
+
+        let uri = format!(
+            "/api/history/processes?sinceMs={}&untilMs={now}&limit=10",
+            now - 180_000
+        );
+        let (status, body) = request_json(router(state.clone()), &uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let captures = body["captures"].as_array().expect("process captures");
+        assert_eq!(captures.len(), 2);
+        assert_eq!(captures[0]["capturedAtMs"], now - 120_000);
+        assert_eq!(captures[1]["capturedAtMs"], now - 60_000);
+        assert_eq!(captures[0]["processes"].as_array().unwrap().len(), 2);
+        assert_eq!(captures[0]["processes"][0]["rank"], 0);
+        assert_eq!(captures[0]["processes"][1]["rank"], 1);
+
+        let uri = format!(
+            "/api/history/processes?sinceMs={}&untilMs={now}&limit=99999",
+            now - 180_000
+        );
+        let (status, body) = request_json(router(state), &uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let captures = body["captures"].as_array().expect("process captures");
+        assert_eq!(captures.len(), 2, "large limit must return every capture");
+    }
+
+    #[tokio::test]
+    async fn raw_history_omits_rows_without_json() {
+        let (_fixture, state) = test_state("raw-json").await;
+        let now = now_ms().expect("test time");
+        let stripped_at = now - 61 * 60_000;
+        let recent_at = now - 30 * 60_000;
+        insert_fixture_snapshot(&state.store, stripped_at).await;
+        insert_fixture_snapshot(&state.store, recent_at).await;
+        tinytop_store::maintenance::maintain(&state.store, &DashboardSettings::default(), now)
+            .await
+            .expect("maintenance should strip old JSON");
+
+        let uri = format!(
+            "/api/history?sinceMs={}&untilMs={now}&limit=10",
+            now - 2 * 60 * 60_000
+        );
+        let (status, body) = request_json(router(state), &uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let samples = body["samples"].as_array().expect("history samples");
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0]["capturedAtMs"], recent_at);
+    }
 
     #[test]
     fn static_relative_path_serves_ladder_rules() {

@@ -14,7 +14,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite`
 - SQLite retention: Rust daemon uses configurable L1 raw → L2 one-minute → L3 five-minute → L4 hourly horizons; L3/L4 are toggleable and L4 may be kept forever
-- History API: raw snapshots remain available through `/api/history`; rollup-backed chart points and timeline markers are available through `/api/history/points` and `/api/history/markers`
+- History API: raw snapshots remain available through `/api/history`; four-tier chart points, typed filesystem/process detail, coverage, and timeline markers have additive Rust endpoints
 - Runtime identity: `./tinytop status` and `GET /api/version`
 - Settings: browser-local display preferences plus SQLite-backed daemon defaults at `GET`/`PUT /api/settings`
 - Dashboard assets: Rust embedded and legacy Bun dashboard trees stay byte-identical, including the SVG favicon served at `/favicon.svg`
@@ -374,9 +374,22 @@ In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder h
 
 Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. A legacy document without `retentionLadder` is derived in memory from `retentionHours` and `rollupRetentionDays` and is not rewritten until an explicit save. While persisted `history_state.diskPressure.active` is true, the server refuses horizon growth or enabling a tier/archive, but still permits shrinking. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
 
+### History API
+
+| Endpoint | Rust response |
+| --- | --- |
+| `GET /api/history` | Complete raw snapshots whose `snapshot_json` is still retained; `limit` is clamped to 1–10,000. |
+| `GET /api/history/points` | Chart points from `auto`, `raw`, `rollup` (1 minute), `5m`, `1h`, or `archive`, plus top-level `source`, `resolutionMs`, and `available`. Archive is an empty unavailable page until the archive phase. |
+| `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, JSON horizon, detail cadence, disk state, archive state, and migration state. |
+| `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |
+| `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit. |
+| `GET /api/history/markers` | Persisted daemon/settings/migration events and computed coverage gaps. |
+
+The range parameters also retain their existing snake_case aliases for compatibility. For `source=auto`, the daemon uses the configured poll interval for L1 and fixed 1-minute/5-minute/1-hour resolutions for L2/L3/L4. It chooses the finest enabled tier that still holds the requested start and whose whole range fits the page limit. If none fits the limit, it returns the coarsest tier that holds the start; if no tier holds it, it selects the queryable archive when enabled or the coarsest enabled tier otherwise.
+
 The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. Live, 15m, and 1h use paged raw snapshots. Every preset from 6h through All sends one `/api/history/points?source=auto&limit=10000` request so the Rust daemon chooses the finest enabled tier that holds the range start without exceeding 10,000 buckets. At the default ladder this yields 6h → 1 minute (360 points), 24h → 1 minute (1,440), 7d → 5 minutes (2,016), 30d → 5 minutes (8,640), 90d → 1 hour (2,160), and 1y → 1 hour (8,760). All uses the coarsest tier holding the oldest retained data; the newest 10,000 hourly buckets cover about 416 days, and the queryable archive holds the rest. A long preset is disabled only when no enabled tier holds its start and the archive is not queryable; if the selected preset becomes unavailable, the browser falls back to the nearest finer preset without changing the saved preference. The Bun runtime keeps raw presets through 1h, disables longer presets with a Rust-daemon tooltip, and does not expose the Rust-only ladder form. Browser rendering may downsample loaded points when needed. These query windows do not delete older SQLite rows.
 
-The current Rust SQLite implementation stores indexed metric columns plus the complete snapshot JSON, maintains one-minute metric rollups, records daemon timeline events, and exposes history coverage through `GET /api/history/coverage`, chart points through `GET /api/history/points`, and markers through `GET /api/history/markers`.
+The current Rust SQLite implementation stores indexed metric columns with recent complete snapshot JSON, maintains the four-tier ladder, records typed filesystem/process detail and daemon timeline events, and exposes the additive history endpoints above.
 
 ## Verification
 

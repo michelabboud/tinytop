@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.11 - 2026-08-28
+
+- Fixed direct `read_history_points` callers with `limit: None` to use the same 10,000-point effective limit for `auto` source selection and tier reads instead of truncating the selected tier to the legacy 120-row default.
+- Added pure clamp and router regression coverage proving detail-history limits clamp to 1–10,000, default to 120, and accept `limit=99999` while returning all matching fixture rows or capture groups.
+- Tightened history-coverage contract tests to assert the exact tier, disk, queryable-archive, and cold-archive key sets plus a null migration state on fresh databases.
+- Clarified the history read-path documentation so points-store callers and raw-history callers have explicit, distinct omitted-limit behavior.
+- Expanded the Rust history-points API to read L1 raw, L2 one-minute, L3 five-minute, and L4 hourly data. `source=auto` now selects the finest enabled tier that retains the requested start and fits the clamped page limit, reports `source` and `resolutionMs`, falls back to the coarsest retaining tier on overflow, and returns a truthful unavailable archive page until queryable archive reads land.
+- Expanded history coverage with all four tiers, the snapshot-JSON horizon, detail cadence, disk state, archive configuration/state, and schema-migration state while preserving every existing coverage field.
+- Added bounded Rust-only `/api/history/filesystems` and `/api/history/processes` reads over the typed detail tables, including exact mount filtering and complete process groups by capture timestamp. History query parameters accept the specified camelCase names while retaining the existing snake_case aliases.
+- Added in-process Axum router tests using temp-directory SQLite stores for the complete 12-row `auto` selection table, coverage shape, filesystem filtering/limit clamping, grouped processes, and JSON-only raw history. Added exact test-only `tower = 0.5.3` and `http-body-util = 0.1.3` pins already present in the lockfile.
+
 ## 0.2.10 - 2026-08-28
 
 - Added `90d`, `1y`, and `all` dashboard history presets; every preset from `6h` up now selects its tier automatically (`source=auto`, one complete page). Presets disable themselves with a setting-specific tooltip when no enabled tier holds their range (or, on the Bun runtime, beyond `1h`).
