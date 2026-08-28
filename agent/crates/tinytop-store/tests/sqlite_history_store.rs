@@ -426,6 +426,44 @@ async fn sqlite_store_reads_raw_and_rollup_history_points() {
 }
 
 #[tokio::test]
+async fn sqlite_store_auto_none_limit_reads_every_matching_rollup_point() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("store");
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_millis(),
+    )
+    .expect("current epoch milliseconds should fit in i64");
+
+    for index in 0_i64..130 {
+        let captured_at_ms = now - (129 - index) * 60_000;
+        store
+            .insert_snapshot(
+                captured_at_ms,
+                &snapshot("2026-08-29T00:00:00Z", index as f64),
+            )
+            .await
+            .expect("rollup fixture should insert");
+    }
+
+    let points = store
+        .read_history_points(HistoryPointsQuery {
+            since_ms: Some(now - 2 * 86_400_000),
+            until_ms: Some(now),
+            limit: None,
+            source: HistoryPointMode::Auto,
+        })
+        .await
+        .expect("auto points should read");
+
+    assert_eq!(points.len(), 130);
+    assert!(points.iter().all(|point| point.source.as_str() == "rollup"));
+}
+
+#[tokio::test]
 async fn sqlite_store_reads_event_and_gap_history_markers() {
     let store = SqliteHistoryStore::connect("sqlite::memory:")
         .await

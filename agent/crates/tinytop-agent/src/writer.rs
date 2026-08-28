@@ -1062,6 +1062,19 @@ mod tests {
             .expect("fixture snapshot should insert");
     }
 
+    #[test]
+    fn detail_history_query_clamps_limit() {
+        assert_eq!(detail_history_query(None, None, Some(0)).limit, Some(1));
+        assert_eq!(
+            detail_history_query(None, None, Some(99_999)).limit,
+            Some(10_000)
+        );
+        assert_eq!(
+            detail_history_query(None, None, None).limit,
+            Some(DEFAULT_HISTORY_LIMIT)
+        );
+    }
+
     #[tokio::test]
     async fn auto_picks_finest_tier_that_still_holds_the_range_start() {
         struct Case {
@@ -1253,18 +1266,42 @@ mod tests {
 
     #[tokio::test]
     async fn coverage_reports_every_tier_and_json_horizon() {
+        fn sorted_object_keys(value: &JsonValue) -> Vec<&str> {
+            let mut keys = value
+                .as_object()
+                .expect("coverage value should be an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            keys
+        }
+
         let (_fixture, state) = test_state("coverage").await;
         let (status, body) = request_json(router(state), "/api/history/coverage").await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        let tiers = body["tiers"].as_array().expect("tiers should be an array");
         assert_eq!(
-            body["tiers"]
-                .as_array()
-                .expect("tiers should be an array")
+            tiers
                 .iter()
                 .map(|tier| tier["tier"].as_str().expect("tier name"))
                 .collect::<Vec<_>>(),
             ["l1", "l2", "l3", "l4"]
         );
+        for tier in tiers {
+            assert_eq!(
+                sorted_object_keys(tier),
+                [
+                    "bucketCount",
+                    "enabled",
+                    "keepDays",
+                    "newestMs",
+                    "oldestMs",
+                    "resolutionMs",
+                    "tier",
+                ]
+            );
+        }
         for key in [
             "snapshotJsonOldestMs",
             "detailIntervalSec",
@@ -1277,14 +1314,28 @@ mod tests {
                 "coverage must contain {key}: {body}"
             );
         }
-        for key in ["freeBytes", "minFreeBytes", "pressure", "lastCheckMs"] {
-            assert!(
-                body["disk"].get(key).is_some(),
-                "disk must contain {key}: {body}"
-            );
-        }
-        assert!(body["archive"].get("queryable").is_some());
-        assert!(body["archive"].get("cold").is_some());
+        assert_eq!(
+            sorted_object_keys(&body["disk"]),
+            ["freeBytes", "lastCheckMs", "minFreeBytes", "pressure"]
+        );
+        assert_eq!(
+            sorted_object_keys(&body["archive"]["queryable"]),
+            ["bucketCount", "enabled", "newestMs", "oldestMs", "path"]
+        );
+        assert_eq!(
+            sorted_object_keys(&body["archive"]["cold"]),
+            [
+                "bytes",
+                "directory",
+                "enabled",
+                "exportedUntilMonth",
+                "fileCount",
+            ]
+        );
+        assert!(
+            body["migration"].is_null(),
+            "fresh database migration must be null: {body}"
+        );
     }
 
     #[tokio::test]
@@ -1298,12 +1349,22 @@ mod tests {
             "/api/history/filesystems?sinceMs={}&untilMs={now}&mount=%2Fdata&limit=0",
             now - 180_000
         );
-        let (status, body) = request_json(router(state), &uri).await;
+        let (status, body) = request_json(router(state.clone()), &uri).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let filesystems = body["filesystems"].as_array().expect("filesystem rows");
         assert_eq!(filesystems.len(), 1, "limit=0 must clamp to one row");
         assert_eq!(filesystems[0]["mount"], "/data");
         assert_eq!(filesystems[0]["capturedAtMs"], now - 60_000);
+
+        let uri = format!(
+            "/api/history/filesystems?sinceMs={}&untilMs={now}&mount=%2Fdata&limit=99999",
+            now - 180_000
+        );
+        let (status, body) = request_json(router(state), &uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let filesystems = body["filesystems"].as_array().expect("filesystem rows");
+        assert_eq!(filesystems.len(), 2, "large limit must return every row");
+        assert!(filesystems.iter().all(|row| row["mount"] == "/data"));
     }
 
     #[tokio::test]
@@ -1317,7 +1378,7 @@ mod tests {
             "/api/history/processes?sinceMs={}&untilMs={now}&limit=10",
             now - 180_000
         );
-        let (status, body) = request_json(router(state), &uri).await;
+        let (status, body) = request_json(router(state.clone()), &uri).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let captures = body["captures"].as_array().expect("process captures");
         assert_eq!(captures.len(), 2);
@@ -1326,6 +1387,15 @@ mod tests {
         assert_eq!(captures[0]["processes"].as_array().unwrap().len(), 2);
         assert_eq!(captures[0]["processes"][0]["rank"], 0);
         assert_eq!(captures[0]["processes"][1]["rank"], 1);
+
+        let uri = format!(
+            "/api/history/processes?sinceMs={}&untilMs={now}&limit=99999",
+            now - 180_000
+        );
+        let (status, body) = request_json(router(state), &uri).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let captures = body["captures"].as_array().expect("process captures");
+        assert_eq!(captures.len(), 2, "large limit must return every capture");
     }
 
     #[tokio::test]

@@ -1582,7 +1582,7 @@ impl SqliteHistoryStore {
         tier: Tier,
         query: HistoryPointsQuery,
     ) -> Result<Vec<HistoryPoint>, StoreError> {
-        let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
+        let limit = effective_points_limit(&query);
         if tier == Tier::L1 {
             let rows = sqlx::query(
                 r#"
@@ -1881,6 +1881,13 @@ impl SqliteHistoryStore {
     }
 }
 
+pub fn effective_points_limit(query: &HistoryPointsQuery) -> i64 {
+    query
+        .limit
+        .map(|limit| limit.clamp(1, 10_000))
+        .unwrap_or(10_000)
+}
+
 /// Resolve `auto` without consulting SQLite so selection remains deterministic
 /// and table-testable. Explicit sources pass through unchanged.
 pub fn resolve_history_point_source(
@@ -1910,10 +1917,7 @@ pub fn resolve_history_point_source_with_poll(
     let since_ms = query.since_ms.unwrap_or(now_ms);
     let until_ms = query.until_ms.unwrap_or(now_ms);
     let range_ms = until_ms.saturating_sub(since_ms).max(0);
-    let limit = query
-        .limit
-        .map(|limit| limit.clamp(1, 10_000))
-        .unwrap_or(10_000);
+    let limit = effective_points_limit(&query);
     let candidates = [
         (
             HistoryPointMode::Raw,

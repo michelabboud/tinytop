@@ -352,6 +352,8 @@ The Rust daemon accepts `auto`, `raw`, `rollup` (the unchanged one-minute name),
 
 `auto` uses the HTTP-clamped limit (1–10,000, default 120), `untilMs` or the current time, and the configured L1 poll interval rather than `Tier::L1`'s zero sentinel. In finest-to-coarsest order it selects the first enabled tier that retains the range start and satisfies `rangeMs / resolutionMs <= limit` using integer division. When retaining tiers exist but none fits, it selects the coarsest retaining tier so the caller gets the newest bounded page rather than a fine-tier sliver. When no tier retains the start, it selects archive if queryable archive is enabled, otherwise the coarsest enabled tier. L4 `keepDays: 0` always retains the start.
 
+For `/api/history/points`, the effective page limit is the supplied `limit` clamped to 1–10,000; a direct store caller that passes `None` gets 10,000, and the resolver and reader use that same value, while raw `/api/history` keeps its 120-row default.
+
 Typed detail reads are Rust-only and bounded:
 
 ```text
