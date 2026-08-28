@@ -4,6 +4,7 @@
 
 - Added the Rust L1 raw → L2 one-minute → L3 five-minute → L4 hourly history ladder with sample-count-weighted folding, minimum/maximum preservation, nullable root utilization, legacy L2 bound fallback, bounded 50-bucket promotion passes, and persistent fold watermarks.
 - Fixed the measured rollup decimation defect by freezing completed one-minute buckets: L1 pruning no longer rebuilds the cutoff minute from its surviving tail. The regression test fails against the old path when a 40-sample bucket collapses to 16 under the deterministic 90-second cutoff, then passes unchanged after the prune rebuild is removed.
+- Fixed the review finding that the insert path could still rebuild a frozen minute from pruned raw rows. `late_write_into_a_pruned_minute_merges_instead_of_rebuilding` and `late_write_into_the_boundary_minute_merges_instead_of_rebuilding` move RED→GREEN from counts 1/17 to 41 by folding the existing bucket with the late sample whenever the raw minute is provably partial.
 - Enforced promote-before-prune across enabled tiers. L2/L3 rows remain until the nearest enabled coarser watermark has passed them, a newly promoted watermark authorizes deletion only on the next maintenance tick, disabled tiers are neither written nor pruned, and L4 `0` retention means forever.
 - Added late-write ancestor refolding, ongoing 500-row-bounded snapshot JSON stripping, 60-second typed filesystem/process detail sampling, per-tier coverage metadata, and the oldest JSON-bearing raw timestamp.
 

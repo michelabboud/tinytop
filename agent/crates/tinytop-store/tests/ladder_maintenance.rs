@@ -90,6 +90,16 @@ fn bucket(start: i64, resolution_ms: i64, count: i64, value: f64) -> TierBucket 
     }
 }
 
+async fn fill_remaining_hour(store: &SqliteHistoryStore) {
+    for minute in 1..60_i64 {
+        let captured_at_ms = minute * MINUTE_MS;
+        store
+            .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 10.0))
+            .await
+            .expect("ancestor coverage sample should insert");
+    }
+}
+
 #[tokio::test]
 async fn decimation_regression_completed_minute_keeps_its_sample_count() {
     // Break caught: pruning L1 rebuilds the cutoff minute from its surviving
@@ -316,6 +326,160 @@ async fn late_write_refolds_ancestors() {
     assert_eq!(after_l4.sample_count, before_l4.sample_count + 1);
     assert!(after_l3.cpu.avg > before_l3.cpu.avg);
     assert!(after_l4.cpu.avg > before_l4.cpu.avg);
+}
+
+#[tokio::test]
+async fn late_write_into_a_pruned_minute_merges_instead_of_rebuilding() {
+    let fixture = TempDatabase::new("late-write-pruned-minute");
+    let store = fixture.store().await;
+    for sample_index in 0..40_i64 {
+        let captured_at_ms = sample_index * 1_500;
+        store
+            .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 10.0))
+            .await
+            .expect("fixture sample should insert");
+    }
+    fill_remaining_hour(&store).await;
+
+    let now_ms = 60 * MINUTE_MS + 5_000;
+    let mut settings = config();
+    settings.l1_keep_ms = now_ms - MINUTE_MS;
+    maintain_with_config(&store, &settings, now_ms)
+        .await
+        .expect("maintenance should promote and prune the completed minute");
+
+    let pool = fixture.pool().await;
+    let raw_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= 0 AND captured_at_ms < 60000",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("raw minute count after pruning");
+    pool.close().await;
+    assert_eq!(raw_count, 0);
+
+    let before_l2 = store
+        .read_tier_buckets(Tier::L2, 0, MINUTE_MS)
+        .await
+        .expect("L2 bucket before late write")
+        .remove(0);
+    let before_l3 = store
+        .read_tier_buckets(Tier::L3, 0, 5 * MINUTE_MS)
+        .await
+        .expect("L3 bucket before late write")
+        .remove(0);
+    let before_l4 = store
+        .read_tier_buckets(Tier::L4, 0, 60 * MINUTE_MS)
+        .await
+        .expect("L4 bucket before late write")
+        .remove(0);
+    assert_eq!(before_l2.sample_count, 40);
+    assert_eq!(before_l3.sample_count, 44);
+    assert_eq!(before_l4.sample_count, 99);
+
+    store
+        .insert_snapshot(10_000, &snapshot(10_000, 90.0))
+        .await
+        .expect("late sample should merge into the frozen minute");
+
+    let after_l2 = store
+        .read_tier_buckets(Tier::L2, 0, MINUTE_MS)
+        .await
+        .expect("L2 bucket after late write")
+        .remove(0);
+    let after_l3 = store
+        .read_tier_buckets(Tier::L3, 0, 5 * MINUTE_MS)
+        .await
+        .expect("L3 bucket after late write")
+        .remove(0);
+    let after_l4 = store
+        .read_tier_buckets(Tier::L4, 0, 60 * MINUTE_MS)
+        .await
+        .expect("L4 bucket after late write")
+        .remove(0);
+    assert_eq!(after_l2.sample_count, 41);
+    assert!((after_l2.cpu.avg - (10.0 * 40.0 + 90.0) / 41.0).abs() < 1e-9);
+    assert_eq!(after_l2.cpu.min, 10.0);
+    assert_eq!(after_l2.cpu.max, 90.0);
+    assert_eq!(after_l3.sample_count, before_l3.sample_count + 1);
+    assert_eq!(after_l4.sample_count, before_l4.sample_count + 1);
+}
+
+#[tokio::test]
+async fn late_write_into_the_boundary_minute_merges_instead_of_rebuilding() {
+    let fixture = TempDatabase::new("late-write-boundary-minute");
+    let store = fixture.store().await;
+    for sample_index in 0..40_i64 {
+        let captured_at_ms = sample_index * 1_500;
+        store
+            .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 10.0))
+            .await
+            .expect("fixture sample should insert");
+    }
+    fill_remaining_hour(&store).await;
+
+    let now_ms = 60 * MINUTE_MS + 5_000;
+    let mut settings = config();
+    settings.l1_keep_ms = now_ms - 36_000;
+    maintain_with_config(&store, &settings, now_ms)
+        .await
+        .expect("maintenance should promote and partially prune the boundary minute");
+
+    let pool = fixture.pool().await;
+    let raw_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= 0 AND captured_at_ms < 60000",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("raw boundary-minute count after pruning");
+    pool.close().await;
+    assert_eq!(raw_count, 16);
+
+    let before_l2 = store
+        .read_tier_buckets(Tier::L2, 0, MINUTE_MS)
+        .await
+        .expect("L2 boundary bucket before late write")
+        .remove(0);
+    let before_l3 = store
+        .read_tier_buckets(Tier::L3, 0, 5 * MINUTE_MS)
+        .await
+        .expect("L3 boundary bucket before late write")
+        .remove(0);
+    let before_l4 = store
+        .read_tier_buckets(Tier::L4, 0, 60 * MINUTE_MS)
+        .await
+        .expect("L4 boundary bucket before late write")
+        .remove(0);
+    assert_eq!(before_l2.sample_count, 40);
+    assert_eq!(before_l3.sample_count, 44);
+    assert_eq!(before_l4.sample_count, 99);
+
+    store
+        .insert_snapshot(10_000, &snapshot(10_000, 90.0))
+        .await
+        .expect("late sample should merge into the frozen boundary minute");
+
+    let after_l2 = store
+        .read_tier_buckets(Tier::L2, 0, MINUTE_MS)
+        .await
+        .expect("L2 boundary bucket after late write")
+        .remove(0);
+    let after_l3 = store
+        .read_tier_buckets(Tier::L3, 0, 5 * MINUTE_MS)
+        .await
+        .expect("L3 boundary bucket after late write")
+        .remove(0);
+    let after_l4 = store
+        .read_tier_buckets(Tier::L4, 0, 60 * MINUTE_MS)
+        .await
+        .expect("L4 boundary bucket after late write")
+        .remove(0);
+    assert_eq!(after_l2.sample_count, 41);
+    assert!((after_l2.cpu.avg - (10.0 * 40.0 + 90.0) / 41.0).abs() < 1e-9);
+    assert_eq!(after_l2.cpu.min, 10.0);
+    assert_eq!(after_l2.cpu.max, 90.0);
+    assert_eq!(after_l3.sample_count, before_l3.sample_count + 1);
+    assert_eq!(after_l4.sample_count, before_l4.sample_count + 1);
 }
 
 #[tokio::test]

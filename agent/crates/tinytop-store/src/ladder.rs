@@ -166,6 +166,10 @@ pub fn raw_to_bucket(sample: &RawSampleRow) -> TierBucket {
     }
 }
 
+pub fn raw_is_partial(existing_count: i64, raw_count_now: i64) -> bool {
+    existing_count > raw_count_now
+}
+
 pub fn bucket_start_for(resolution_ms: i64, timestamp_ms: i64) -> i64 {
     debug_assert!(resolution_ms > 0, "bucket resolution must be positive");
     timestamp_ms
@@ -182,4 +186,35 @@ pub fn is_complete(bucket_start_ms: i64, resolution_ms: i64, grace_ms: i64, now_
 
 pub fn grace_ms(poll_interval_ms: i64) -> i64 {
     3_000.max(poll_interval_ms.saturating_mul(2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::raw_is_partial;
+
+    #[test]
+    fn raw_is_partial_for_fully_pruned_raw_minute() {
+        assert!(raw_is_partial(40, 1));
+    }
+
+    #[test]
+    fn raw_is_partial_for_boundary_minute_tail() {
+        assert!(raw_is_partial(40, 17));
+    }
+
+    #[test]
+    fn raw_is_not_partial_when_raw_count_exceeds_existing_count() {
+        assert!(!raw_is_partial(5, 6));
+    }
+
+    #[test]
+    fn raw_is_not_partial_when_counts_are_equal() {
+        assert!(!raw_is_partial(5, 5));
+    }
+
+    #[test]
+    fn missing_existing_bucket_is_not_partial() {
+        let existing_count = None;
+        assert!(!existing_count.is_some_and(|count| raw_is_partial(count, 1)));
+    }
 }

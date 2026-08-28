@@ -16,7 +16,7 @@ use sqlx::{
 };
 use tinytop_types::SystemSnapshot;
 
-use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, raw_to_bucket};
+use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, fold, raw_is_partial, raw_to_bucket};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -559,8 +559,46 @@ impl SqliteHistoryStore {
             maintenance::DEFAULT_DETAIL_INTERVAL_MS,
         )
         .await?;
-        self.rebuild_rollup_bucket(bucket_start_ms(captured_at_ms))
-            .await?;
+        let minute_start_ms = bucket_start_ms(captured_at_ms);
+        let minute_end_ms = minute_start_ms.saturating_add(Tier::L2.resolution_ms());
+        let existing_bucket = self
+            .read_tier_buckets(Tier::L2, minute_start_ms, minute_end_ms)
+            .await?
+            .into_iter()
+            .next();
+        let raw_count_now = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM metric_samples
+            WHERE captured_at_ms >= ? AND captured_at_ms < ?
+            "#,
+        )
+        .bind(minute_start_ms)
+        .bind(minute_end_ms)
+        .fetch_one(&self.pool)
+        .await?;
+
+        if let Some(existing_bucket) =
+            existing_bucket.filter(|bucket| raw_is_partial(bucket.sample_count, raw_count_now))
+        {
+            let new_sample = raw_to_bucket(&RawSampleRow {
+                captured_at_ms,
+                cpu_usage_percent: snapshot.cpu.usage_percent,
+                memory_used_percent: snapshot.memory.used_percent,
+                swap_used_percent: snapshot.swap.used_percent,
+                load_percent: load_percent(snapshot),
+                root_used_percent,
+            });
+            let Some(bucket) = fold(minute_start_ms, &[existing_bucket, new_sample]) else {
+                return Err(StoreError::Validation(
+                    "an existing minute bucket and raw sample must have a positive sample count"
+                        .to_string(),
+                ));
+            };
+            self.upsert_tier_bucket(Tier::L2, &bucket).await?;
+        } else {
+            self.rebuild_rollup_bucket(minute_start_ms).await?;
+        }
         maintenance::refold_ancestors_for_late_write(self, captured_at_ms).await?;
 
         Ok(HistorySample {
