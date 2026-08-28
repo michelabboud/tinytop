@@ -360,7 +360,11 @@ The Rust daemon returns persisted `daemonStart`, `settingsChange`, and one-time 
 
 ## Rollups And Coverage
 
-The Rust daemon rebuilds the affected one-minute rollup bucket after each sample insert. Rollups are additive to the raw history table; `/api/history` still returns raw samples today.
+The Rust daemon maintains a fixed-resolution ladder: L1 raw samples, L2 one-minute rollups, L3 five-minute rollups, and L4 hourly rollups. Rollups are additive to the raw history table; `/api/history` still returns recent complete raw snapshots.
+
+Every rung uses the same `fold` rule. `sample_count` is the sum of the finer rows' counts, averages are weighted by those counts, minima are the minimum of minima, and maxima are the maximum of maxima. Root-filesystem utilization ignores finer buckets that have no root value and becomes `NULL` only when none of them reported one. This preserves all represented measurements instead of selecting one sample or averaging already-aggregated averages. Legacy L2 rows whose v1 minimum/root-maximum columns are `NULL` read their corresponding average as the missing bound, so they remain promotable without claiming reconstructed detail.
+
+Each insert compares the affected L2 minute's existing `sample_count` with the number of raw rows still present after the raw upsert. If the existing count is greater, the raw rows are provably partial: that minute is folded from the frozen bucket plus the new sample and is never rebuilt from the partial tail. Open minutes, and duplicate-timestamp upserts whose raw and rollup counts are equal, continue to rebuild from raw so replacements remain exact. If a late or clock-skewed insert lands behind an L3 or L4 fold watermark, the insert then re-folds the already-promoted five-minute and hourly ancestors. Persisted `l3Enabled`/`l4Enabled` state prevents this repair path from writing a disabled tier after it has retained an old watermark.
 
 `GET /api/history/coverage` reports:
 
@@ -374,26 +378,35 @@ The Rust daemon rebuilds the affected one-minute rollup bucket after each sample
 - configured target DB size in bytes
 - database budget percentage
 - oldest/newest rollup timestamps
+- a `tiers` entry for each of L1 through L4 with enabled state, retention days, resolution, count, and oldest/newest bucket timestamps
+- the oldest raw timestamp that still carries `snapshot_json`
 
 ## Retention
 
-Current behavior:
+Rust maintenance runs after each insert in this order:
 
 - Every successful scheduled or manual Rust collection writes one raw row into `metric_samples`.
-- On the one-time populated-v0 migration, JSON is retained for the most recent 60 minutes and set to `NULL` on older rows; all typed columns and rows are preserved. Fresh and post-migration inserts still include JSON until the subsequent ladder-maintenance task adds ongoing window stripping.
-- The Rust daemon deletes raw rows older than the configured `retentionHours` cutoff.
-- The Rust daemon deletes rollup buckets older than the configured `rollupRetentionDays` cutoff.
-- `metric_rollups_5m`, `metric_rollups_1h`, `fs_samples`, and `process_samples` exist in v1 but are not populated or used for reads by this schema-only task.
+- The insert refreshes its L2 minute and repairs already-promoted ancestors for a late write.
+- Maintenance promotes at most 50 complete L3 buckets, then at most 50 complete L4 buckets. A bucket is complete only when its end plus `max(3 seconds, 2 × poll interval)` has passed. L4 folds from L2 when L3 is disabled.
+- Each successful promotion advances `history_state.l3FoldedUntilMs` or `l4FoldedUntilMs` to the promoted bucket's end. Pruning uses the watermarks visible at the start of the tick, so a newly promoted range becomes deletion authority on the next tick.
+- At most 500 rows per tick have `snapshot_json` stripped when they are outside the recent JSON window; typed L1 metrics remain until the L1 horizon.
+- L1 rows are deleted after their horizon without rebuilding any L2 bucket.
+- Filesystem and process detail rows are written on the 60-second default cadence and deleted after the L2 horizon.
+- An L2 bucket can be deleted only when its end is older than the L2 horizon and no later than the nearest enabled coarser watermark. L3 uses the same rule against L4. L4 expires by its own horizon; `0` means forever.
+- A disabled L3 or L4 table is neither written nor pruned. It is removed from the dependency chain, while its existing rows remain untouched until the tier is re-enabled.
 - `/api/history` and `/history` select bounded windows for callers and return only rows whose `snapshot_json` is present in both runtimes. Their raw-snapshot horizon is the JSON keep window; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
 - The dashboard hydrates the browser-selected timestamp window. Live, 15m, and 1h use `/api/history`; 6h, 24h, 7d, and 30d use `/api/history/points` backed by one-minute rollups. Raw windows may be paged and downsampled only for browser rendering; that is a rendering limit, not a storage limit.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 - Legacy Bun split mode keeps the earlier manual archive/reset behavior.
 
-Current defaults:
+Until the `retentionLadder` settings block lands, the Rust maintenance adapter derives L1 and L2 from the legacy settings and supplies the agreed ladder defaults for the new fields:
 
 - Raw samples: configurable, default 72 hours.
 - One-minute rollups: 30 days.
-- Migrated v0 JSON window: 60 minutes.
+- Five-minute rollups: enabled, 90 days.
+- Hourly rollups: enabled, 730 days; the maintenance model also supports `0` for forever.
+- Snapshot JSON window: 60 minutes.
+- Filesystem/process detail cadence: 60 seconds.
 - Target database budget: 128 MiB.
 
 ## Future Tables
@@ -402,7 +415,7 @@ Potential future normalized tables:
 
 - `pressure_samples`
 
-Schema v1 now reserves `fs_samples` and `process_samples` for typed detail rows; their cadence and retention maintenance are implemented by later ladder tasks. Pressure detail remains inside recent snapshot JSON in this phase. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
+Schema v1 provides `fs_samples` and `process_samples` for the typed detail rows now populated and retained by ladder maintenance. Pressure detail remains inside recent snapshot JSON in this phase. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
 
 ## Operational Notes
 
