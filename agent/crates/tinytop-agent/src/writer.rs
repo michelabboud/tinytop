@@ -601,6 +601,7 @@ fn static_relative_path(path: &str) -> Option<&'static Path> {
         "/styles.css" => Some(Path::new("styles.css")),
         "/app.js" => Some(Path::new("app.js")),
         "/vendor/echarts.min.js" => Some(Path::new("vendor/echarts.min.js")),
+        "/ladder-rules.js" => Some(Path::new("ladder-rules.js")),
         _ => None,
     }
 }
@@ -809,6 +810,14 @@ impl From<std::time::SystemTimeError> for ServeError {
 mod tests {
     use super::*;
     use axum::body::Body;
+
+    #[test]
+    fn static_relative_path_serves_ladder_rules() {
+        assert_eq!(
+            static_relative_path("/ladder-rules.js"),
+            Some(Path::new("ladder-rules.js"))
+        );
+    }
 
     fn csp(response: &Response) -> &str {
         response

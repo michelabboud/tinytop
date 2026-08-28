@@ -30,6 +30,29 @@ describe("dashboard timestamp timeline", () => {
     expect(app).not.toContain("window_seconds=${HISTORY_WINDOW_SECONDS}");
   });
 
+  test("fetches every non-raw preset as one auto page and keeps response metadata", () => {
+    expect(app).toContain('fetchHistoryPoints({ sinceMs, untilMs, limit, source: "auto" })');
+    expect(app).toContain("resolutionMs");
+    expect(app).toContain("available: body.available !== false");
+    expect(app).toContain('sample.source !== "raw"');
+    expect(app).not.toContain('sample.source === "rollup"');
+  });
+
+  test("renders the not-yet-queryable archive response as an empty state", () => {
+    expect(app).toContain('historyResponse.available === false && historyResponse.source === "archive"');
+    expect(app).toContain("Archive not available until 0.4.0");
+  });
+
+  test("falls back without persisting when coverage disables the selected preset", () => {
+    expect(app).toContain("fallbackWindowKey");
+    expect(app).toContain("setHistoryWindow(fallbackWindow, { persist: false })");
+  });
+
+  test("marks missing coverage as a Bun runtime and explains disabled presets", () => {
+    expect(app).toContain("renderHistoryCoverage({ unavailable: true })");
+    expect(app).toContain("History presets beyond 1h need the Rust daemon");
+  });
+
   test("persists only this browser's selected history window locally", () => {
     expect(app).toContain("tinytop.historyWindow");
     expect(app).toContain("readStoredValue(STORAGE_KEYS.historyWindow");

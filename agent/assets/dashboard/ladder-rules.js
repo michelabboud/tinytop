@@ -1,24 +1,26 @@
 const MIN_FREE_BYTES = 256 * 1024 * 1024;
 const MAX_HISTORY_PAGE_SIZE = 10_000;
+const DAY_MS = 86_400_000;
+const LONG_HISTORY_WINDOW_KEYS = new Set(["6h", "24h", "7d", "30d", "90d", "1y", "all"]);
+const FALLBACK_WINDOW_KEYS = ["all", "1y", "90d", "30d", "7d", "24h", "6h", "1h", "15m", "live"];
+const TIER_ORDER = new Map([
+  ["l1", 1],
+  ["l2", 2],
+  ["l3", 3],
+  ["l4", 4],
+]);
 
 export const HISTORY_WINDOWS = Object.freeze({
   live: { label: "Live", durationMs: 5 * 60 * 1000, pageSize: 240, source: "raw" },
   "15m": { label: "15m", durationMs: 15 * 60 * 1000, pageSize: 900, source: "raw" },
   "1h": { label: "1h", durationMs: 60 * 60 * 1000, pageSize: 2_400, source: "raw" },
-  "6h": { label: "6h", durationMs: 6 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-  "24h": { label: "24h", durationMs: 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-  "7d": { label: "7d", durationMs: 7 * 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-  "30d": { label: "30d", durationMs: 30 * 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "rollup" },
-  "90d": { label: "90d", durationMs: 90 * 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "5m" },
-  "1y": { label: "1y", durationMs: 365 * 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "1h" },
+  "6h": { label: "6h", durationMs: 6 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
+  "24h": { label: "24h", durationMs: 24 * 60 * 60 * 1000, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
+  "7d": { label: "7d", durationMs: 7 * DAY_MS, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
+  "30d": { label: "30d", durationMs: 30 * DAY_MS, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
+  "90d": { label: "90d", durationMs: 90 * DAY_MS, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
+  "1y": { label: "1y", durationMs: 365 * DAY_MS, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
   all: { label: "All", durationMs: null, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
-});
-
-const SOURCE_TIERS = Object.freeze({
-  raw: { tier: "l1", setting: "retentionLadder.l1.keepDays" },
-  rollup: { tier: "l2", setting: "retentionLadder.l2.keepDays" },
-  "5m": { tier: "l3", setting: "retentionLadder.l3.enabled" },
-  "1h": { tier: "l4", setting: "retentionLadder.l4.enabled" },
 });
 
 function finiteTimestamp(value) {
@@ -51,6 +53,10 @@ export function historyWindowFor(key, coverage) {
   const windowKey = Object.hasOwn(HISTORY_WINDOWS, key) ? key : "live";
   const config = { ...HISTORY_WINDOWS[windowKey], disabled: false, reason: "" };
 
+  if (coverage?.unavailable === true && LONG_HISTORY_WINDOW_KEYS.has(windowKey)) {
+    return { ...config, disabled: true, reason: "runtime" };
+  }
+
   if (windowKey === "all") {
     const sinceMs = retainedOldestMs(coverage);
     if (sinceMs !== null) return { ...config, sinceMs };
@@ -61,21 +67,70 @@ export function historyWindowFor(key, coverage) {
       : config;
   }
 
-  const sourceTier = SOURCE_TIERS[config.source];
-  if (!sourceTier || !Array.isArray(coverage?.tiers)) return config;
+  if (windowKey === "live") return config;
+
   if (
     config.source === "raw" &&
+    coverage != null &&
     Object.hasOwn(coverage, "snapshotJsonOldestMs") &&
     finiteTimestamp(coverage.snapshotJsonOldestMs) === null
   ) {
     return { ...config, disabled: true, reason: "retentionLadder.snapshotJsonKeepMinutes" };
   }
-  const tier = coverage.tiers.find((candidate) => candidate?.tier === sourceTier.tier);
-  if (!tier) return config;
-  if (tier.enabled === false || Number(tier.bucketCount ?? 0) <= 0 || finiteTimestamp(tier.oldestMs) === null) {
-    return { ...config, disabled: true, reason: sourceTier.setting };
+  if (config.source === "raw" || !Array.isArray(coverage?.tiers)) return config;
+  if (coverage?.archive?.queryable?.enabled === true) return config;
+
+  const durationMs = Number(config.durationMs);
+  const holdsStart = (tier) => {
+    const keepDays = Number(tier?.keepDays);
+    return Number.isFinite(keepDays) && (keepDays === 0 || keepDays * DAY_MS >= durationMs);
+  };
+  if (coverage.tiers.some((tier) => tier?.enabled === true && holdsStart(tier))) return config;
+
+  const byCoarsest = (left, right) => (TIER_ORDER.get(right?.tier) ?? 0) - (TIER_ORDER.get(left?.tier) ?? 0);
+  const disabledTier = coverage.tiers
+    .filter((tier) => tier?.enabled === false && holdsStart(tier))
+    .sort(byCoarsest)[0];
+  if (disabledTier) {
+    return { ...config, disabled: true, reason: `retentionLadder.${disabledTier.tier}.enabled` };
   }
-  return config;
+
+  const coarsestEnabled = coverage.tiers.filter((tier) => tier?.enabled === true).sort(byCoarsest)[0];
+  if (coarsestEnabled) {
+    return { ...config, disabled: true, reason: `retentionLadder.${coarsestEnabled.tier}.keepDays` };
+  }
+
+  const coarsestPresent = coverage.tiers.filter((tier) => TIER_ORDER.has(tier?.tier)).sort(byCoarsest)[0];
+  if (coarsestPresent) {
+    return { ...config, disabled: true, reason: `retentionLadder.${coarsestPresent.tier}.enabled` };
+  }
+  return { ...config, disabled: true, reason: "retentionLadder tiers" };
+}
+
+export function fallbackWindowKey(key, coverage) {
+  const windowKey = Object.hasOwn(HISTORY_WINDOWS, key) ? key : "live";
+  if (!historyWindowFor(windowKey, coverage).disabled) return windowKey;
+
+  const start = FALLBACK_WINDOW_KEYS.indexOf(windowKey);
+  for (const candidate of FALLBACK_WINDOW_KEYS.slice(start + 1)) {
+    if (candidate === "live" || !historyWindowFor(candidate, coverage).disabled) return candidate;
+  }
+  return "live";
+}
+
+export function settingsRetentionLadderAvailable(settings) {
+  return Boolean(
+    settings &&
+      typeof settings === "object" &&
+      Object.hasOwn(settings, "retentionLadder") &&
+      settings.retentionLadder != null,
+  );
+}
+
+export function settingsPutPayload(settings, retentionLadderAvailable) {
+  const payload = { ...settings };
+  if (!retentionLadderAvailable) delete payload.retentionLadder;
+  return payload;
 }
 
 function rangeError(field, value, min, max) {
@@ -158,7 +213,7 @@ export function validateRetentionLadder(ladder, previous, diskPressure) {
     ];
   }
 
-  const pressureActive = Boolean(diskPressure?.active ?? diskPressure?.pressure);
+  const pressureActive = Boolean(diskPressure?.pressure);
   if (pressureActive && previous && growsFrom(ladder, previous)) {
     return [
       `disk pressure active: free ${diskPressure.freeBytes} < minFreeBytes ${diskPressure.minFreeBytes}; shrink first or free disk`,

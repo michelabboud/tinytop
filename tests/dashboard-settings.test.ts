@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import {
+  settingsPutPayload,
+  settingsRetentionLadderAvailable,
+} from "../agent/assets/dashboard/ladder-rules.js";
 
 const html = readFileSync("agent/assets/dashboard/index.html", "utf8");
 const app = readFileSync("agent/assets/dashboard/app.js", "utf8");
@@ -107,6 +111,31 @@ describe("dashboard settings", () => {
     expect(html).toContain('id="daemon-retention-hours" type="number" readonly');
     expect(html).toContain('id="daemon-rollup-retention-days" type="number" readonly');
     expect(html).toContain("derived from L1/L2");
+  });
+
+  test("omits retentionLadder from a Bun runtime PUT payload", () => {
+    const runtimeSettings = {
+      defaultHistoryWindow: "90d",
+      retentionHours: 72,
+      rollupRetentionDays: 30,
+    };
+    const normalizedInternalSettings = {
+      ...runtimeSettings,
+      retentionLadder: {
+        l1: { keepDays: 3 },
+        l2: { keepDays: 30 },
+      },
+    };
+
+    expect(settingsRetentionLadderAvailable(runtimeSettings)).toBe(false);
+    expect(settingsPutPayload(normalizedInternalSettings, false)).toEqual(runtimeSettings);
+  });
+
+  test("declares the Rust-only ladder replacement line", () => {
+    expect(html).toContain('id="history-ladder-unavailable"');
+    expect(html).toContain("History ladder — Rust daemon only");
+    expect(app).toContain("settingsRetentionLadderAvailable");
+    expect(app).toContain("settingsPutPayload");
   });
 
   test("renders the new history presets and ladder coverage surfaces", () => {

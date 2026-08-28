@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-- Added `90d`, `1y`, and `all` dashboard history presets backed by five-minute, hourly, and automatic tier selection. Presets disable themselves with a setting-specific tooltip when their tier is disabled or empty.
-- Added the complete History ladder settings group, exact client-side mirrors of the Rust ladder validation messages, L4 forever mode, and read-only `retentionHours`/`rollupRetentionDays` compatibility mirrors derived from L1/L2.
-- Added a pre-save shrink confirmation that lists approximate affected rows/buckets from current coverage until the server-computed Task 10 dry-run replaces it.
-- Expanded History coverage with per-tier ranges/counts, disk-pressure status, and archive status, while remaining compatible with runtimes that omit newer coverage keys.
-- Added the shared `ladder-rules.js` browser module to both the embedded Rust agent and Bun static-asset allow-list.
+- Fixed Rust dashboard serving for the shared `ladder-rules.js` module and added unit plus served-asset contract coverage.
+- Standardized dashboard disk-pressure handling on the coverage API's `disk.pressure` field, removing the stale `disk.active` compatibility hedge.
+- Added non-persistent fallback to the nearest finer available preset when coverage makes the selected window unavailable.
+- Expanded Bun's accepted default-history windows to all ten presets; Bun hides the Rust-only ladder/coverage UI, keeps legacy retention inputs editable, and omits `retentionLadder` from saves.
+- Switched every preset from 6h up to one `source=auto&limit=10000` request and render from returned source/resolution metadata; previously `30d` silently showed only the newest 6.9 days.
+- Corrected the GUIDE timeline walkthrough to list all ten presets and identify the Rust-only long-range boundary.
+- Disabled 6h-and-longer presets when the Bun runtime lacks coverage/points routes, with a Rust-daemon tooltip and automatic fallback to a working raw preset.
 
 ## 0.2.9 - 2026-08-28
 

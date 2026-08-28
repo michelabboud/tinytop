@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   HISTORY_WINDOWS,
+  fallbackWindowKey,
   historyWindowFor,
   validateRetentionLadder,
 } from "../agent/assets/dashboard/ladder-rules.js";
@@ -30,7 +31,7 @@ function ladder() {
 }
 
 describe("history ladder windows", () => {
-  test("exposes every preset with its server history source", () => {
+  test("uses raw for short presets and auto with one 10000-point page from 6h up", () => {
     expect(Object.keys(HISTORY_WINDOWS)).toEqual([
       "live",
       "15m",
@@ -47,34 +48,90 @@ describe("history ladder windows", () => {
       "raw",
       "raw",
       "raw",
-      "rollup",
-      "rollup",
-      "rollup",
-      "rollup",
-      "5m",
-      "1h",
+      "auto",
+      "auto",
+      "auto",
+      "auto",
+      "auto",
+      "auto",
       "auto",
     ]);
+    expect(Object.values(HISTORY_WINDOWS).slice(3).map(({ pageSize }) => pageSize)).toEqual(
+      Array(7).fill(10_000),
+    );
   });
 
-  test("disables the 90d preset when L3 is disabled", () => {
-    const result = historyWindowFor("90d", {
-      tiers: [{ tier: "l3", enabled: false, bucketCount: 10, oldestMs: 100, newestMs: 200 }],
-    });
-
-    expect(result).toMatchObject({ disabled: true, reason: "retentionLadder.l3.enabled" });
-  });
-
-  test("disables the 1y preset when L4 has no retained data", () => {
+  test("disables 1y on the coarsest disabled tier that would have held it", () => {
     const result = historyWindowFor("1y", {
-      tiers: [{ tier: "l4", enabled: true, bucketCount: 0, oldestMs: null, newestMs: null }],
+      tiers: [
+        { tier: "l1", enabled: true, keepDays: 3 },
+        { tier: "l2", enabled: true, keepDays: 30 },
+        { tier: "l3", enabled: true, keepDays: 90 },
+        { tier: "l4", enabled: false, keepDays: 730 },
+      ],
     });
 
     expect(result).toMatchObject({ disabled: true, reason: "retentionLadder.l4.enabled" });
   });
 
+  test("keeps 90d available through enabled L4 when L3 is disabled", () => {
+    const result = historyWindowFor("90d", {
+      tiers: [
+        { tier: "l3", enabled: false, keepDays: 90 },
+        { tier: "l4", enabled: true, keepDays: 730 },
+      ],
+    });
+
+    expect(result).toMatchObject({ disabled: false });
+  });
+
+  test("disables 90d on L4 enabled when L3 is too short and L4 is disabled", () => {
+    const result = historyWindowFor("90d", {
+      tiers: [
+        { tier: "l3", enabled: true, keepDays: 30 },
+        { tier: "l4", enabled: false, keepDays: 730 },
+      ],
+    });
+
+    expect(result).toMatchObject({ disabled: true, reason: "retentionLadder.l4.enabled" });
+  });
+
+  test("names the coarsest enabled keepDays when no enabled tier holds 30d", () => {
+    const result = historyWindowFor("30d", {
+      tiers: [
+        { tier: "l1", enabled: true, keepDays: 3 },
+        { tier: "l2", enabled: true, keepDays: 7 },
+        { tier: "l3", enabled: true, keepDays: 14 },
+        { tier: "l4", enabled: true, keepDays: 20 },
+      ],
+    });
+
+    expect(result).toMatchObject({ disabled: true, reason: "retentionLadder.l4.keepDays" });
+  });
+
+  test("does not treat an absent tier record as holding the requested start", () => {
+    const result = historyWindowFor("90d", {
+      tiers: [{ tier: "l3", enabled: true, keepDays: 30 }],
+    });
+
+    expect(result).toMatchObject({ disabled: true, reason: "retentionLadder.l3.keepDays" });
+  });
+
   test("keeps presets usable when an older runtime omits tier coverage", () => {
     expect(historyWindowFor("90d", { oldestCapturedAtMs: 100 }).disabled).toBe(false);
+  });
+
+  test("keeps raw presets usable before coverage has loaded", () => {
+    expect(historyWindowFor("live", null)).toMatchObject({ disabled: false, source: "raw" });
+  });
+
+  test("keeps a long preset available when the queryable archive is enabled", () => {
+    const result = historyWindowFor("1y", {
+      tiers: [{ tier: "l4", enabled: false, keepDays: 30 }],
+      archive: { queryable: { enabled: true } },
+    });
+
+    expect(result).toMatchObject({ disabled: false });
   });
 
   test("disables raw presets when coverage reports no retained snapshot JSON", () => {
@@ -87,6 +144,12 @@ describe("history ladder windows", () => {
       disabled: true,
       reason: "retentionLadder.snapshotJsonKeepMinutes",
     });
+    expect(
+      historyWindowFor("live", {
+        snapshotJsonOldestMs: null,
+        tiers: [],
+      }),
+    ).toMatchObject({ disabled: false });
   });
 
   test("starts all-history at the oldest tier or queryable archive bucket", () => {
@@ -101,6 +164,58 @@ describe("history ladder windows", () => {
     });
 
     expect(result).toMatchObject({ disabled: false, source: "auto", sinceMs: 100 });
+  });
+
+  test("falls back from 1y to the nearest finer 90d preset", () => {
+    const coverage = {
+      tiers: [
+        { tier: "l1", enabled: true, keepDays: 3 },
+        { tier: "l2", enabled: true, keepDays: 30 },
+        { tier: "l3", enabled: true, keepDays: 90 },
+        { tier: "l4", enabled: false, keepDays: 730 },
+      ],
+    };
+
+    expect(fallbackWindowKey("1y", coverage)).toBe("90d");
+  });
+
+  test("falls back from 1y to 30d when L3 retains only 30 days", () => {
+    const coverage = {
+      tiers: [
+        { tier: "l1", enabled: true, keepDays: 3 },
+        { tier: "l2", enabled: true, keepDays: 30 },
+        { tier: "l3", enabled: true, keepDays: 30 },
+        { tier: "l4", enabled: false, keepDays: 730 },
+      ],
+    };
+
+    expect(fallbackWindowKey("1y", coverage)).toBe("30d");
+  });
+
+  test("falls back to 7d when every tier except seven-day L2 is disabled", () => {
+    const coverage = {
+      tiers: [
+        { tier: "l1", enabled: false, keepDays: 3 },
+        { tier: "l2", enabled: true, keepDays: 7 },
+        { tier: "l3", enabled: false, keepDays: 90 },
+        { tier: "l4", enabled: false, keepDays: 730 },
+      ],
+    };
+
+    expect(fallbackWindowKey("1y", coverage)).toBe("7d");
+  });
+
+  test("keeps the requested key on older coverage without tiers", () => {
+    expect(fallbackWindowKey("1y", { oldestCapturedAtMs: 100 })).toBe("1y");
+  });
+
+  test("disables Rust-only presets when coverage is unavailable", () => {
+    expect(historyWindowFor("6h", { unavailable: true })).toMatchObject({
+      disabled: true,
+      reason: "runtime",
+    });
+    expect(historyWindowFor("1h", { unavailable: true })).toMatchObject({ disabled: false });
+    expect(fallbackWindowKey("30d", { unavailable: true })).toBe("1h");
   });
 });
 
@@ -228,18 +343,33 @@ describe("retention ladder validation mirror", () => {
     });
   }
 
-  test("matches the disk-pressure growth refusal", () => {
+  test("refuses growth when the coverage pressure field is true", () => {
     const previous = ladder();
     const candidate = ladder();
     candidate.l2.keepDays = 31;
 
     expect(
       validateRetentionLadder(candidate, previous, {
-        active: true,
-        freeBytes: 100,
-        minFreeBytes: 200,
+        active: false,
+        pressure: true,
+        freeBytes: 1000,
+        minFreeBytes: 5000,
       }),
-    ).toEqual(["disk pressure active: free 100 < minFreeBytes 200; shrink first or free disk"]);
+    ).toEqual(["disk pressure active: free 1000 < minFreeBytes 5000; shrink first or free disk"]);
+  });
+
+  test("allows growth when the coverage pressure field is false", () => {
+    const previous = ladder();
+    const candidate = ladder();
+    candidate.l2.keepDays = 31;
+
+    expect(
+      validateRetentionLadder(candidate, previous, {
+        pressure: false,
+        freeBytes: 1000,
+        minFreeBytes: 5000,
+      }),
+    ).toEqual([]);
   });
 
   test("allows a shrink while disk pressure is active", () => {

@@ -476,12 +476,12 @@
               <label>
                 <span>History hours</span>
                 <input id="daemon-retention-hours" type="number" readonly />
-                <small>derived from L1/L2</small>
+                <small id="daemon-retention-hours-derived">derived from L1/L2</small>
               </label>
               <label>
                 <span>Rollup days</span>
                 <input id="daemon-rollup-retention-days" type="number" readonly />
-                <small>derived from L1/L2</small>
+                <small id="daemon-rollup-retention-days-derived">derived from L1/L2</small>
               </label>
               <label>
                 <span>DB budget MiB</span>
@@ -557,7 +557,8 @@
               </label>
             </fieldset>
 
-            <fieldset class="settings-group history-ladder-settings-group">
+            <p class="settings-runtime-note" id="history-ladder-unavailable" hidden>History ladder — Rust daemon only</p>
+            <fieldset class="settings-group history-ladder-settings-group" id="history-ladder-settings-group">
               <legend>History ladder</legend>
               <label>
                 <span>L1 raw days</span>

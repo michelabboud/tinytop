@@ -1,4 +1,11 @@
-import { HISTORY_WINDOWS, historyWindowFor, validateRetentionLadder } from "./ladder-rules.js";
+import {
+  HISTORY_WINDOWS,
+  fallbackWindowKey,
+  historyWindowFor,
+  settingsPutPayload,
+  settingsRetentionLadderAvailable,
+  validateRetentionLadder,
+} from "./ladder-rules.js";
 
 const DEFAULT_POLL_MS = 1500;
 const DASHBOARD_URL = new URL(window.location.href);
@@ -202,6 +209,7 @@ const state = {
   settingsBaseline: cloneSettings(DEFAULT_DAEMON_SETTINGS),
   settingsDirty: false,
   settingsErrors: [],
+  retentionLadderAvailable: true,
   theme: "midnight",
   graphMode: "line",
   historyWindowKey: "live",
@@ -217,6 +225,7 @@ const state = {
   lastSnapshot: null,
   lastSnapshotAtMs: null,
   historyCoverage: null,
+  historyEmptyMessage: null,
   historyMarkers: [],
   historyFetchToken: 0,
   lastOperatorResult: null,
@@ -341,7 +350,9 @@ const elements = {
   daemonDefaultWindow: document.querySelector("#daemon-default-window"),
   daemonPollInterval: document.querySelector("#daemon-poll-interval"),
   daemonRetentionHours: document.querySelector("#daemon-retention-hours"),
+  daemonRetentionHoursDerived: document.querySelector("#daemon-retention-hours-derived"),
   daemonRollupRetentionDays: document.querySelector("#daemon-rollup-retention-days"),
+  daemonRollupRetentionDaysDerived: document.querySelector("#daemon-rollup-retention-days-derived"),
   daemonL1KeepDays: document.querySelector("#daemon-l1-keep-days"),
   daemonL2KeepDays: document.querySelector("#daemon-l2-keep-days"),
   daemonL3Enabled: document.querySelector("#daemon-l3-enabled"),
@@ -357,6 +368,8 @@ const elements = {
   daemonArchiveDirectory: document.querySelector("#daemon-archive-directory"),
   daemonDiskCheckIntervalMinutes: document.querySelector("#daemon-disk-check-interval-minutes"),
   daemonDiskCheckMinFreeGib: document.querySelector("#daemon-disk-check-min-free-gib"),
+  historyLadderSettingsGroup: document.querySelector("#history-ladder-settings-group"),
+  historyLadderUnavailable: document.querySelector("#history-ladder-unavailable"),
   daemonDbBudgetMib: document.querySelector("#daemon-db-budget-mib"),
   daemonTopProcessCount: document.querySelector("#daemon-top-process-count"),
   daemonCpuWarn: document.querySelector("#daemon-cpu-warn"),
@@ -520,8 +533,12 @@ function normalizeSettings(settings) {
     ...fallback,
     ...settings,
     targetDatabaseBytes: Number(settings.targetDatabaseBytes ?? fallback.targetDatabaseBytes),
-    retentionHours: retentionLadder.l1.keepDays * 24,
-    rollupRetentionDays: retentionLadder.l2.keepDays,
+    retentionHours: hasProvidedLadder
+      ? retentionLadder.l1.keepDays * 24
+      : Number(settings.retentionHours ?? fallback.retentionHours),
+    rollupRetentionDays: hasProvidedLadder
+      ? retentionLadder.l2.keepDays
+      : Number(settings.rollupRetentionDays ?? fallback.rollupRetentionDays),
     retentionLadder,
     thresholds: normalizeThresholds(settings.thresholds),
     enabledSections: {
@@ -848,6 +865,7 @@ function resetHistory({ keepSelection = false } = {}) {
   state.history.ram = [];
   state.history.swap = [];
   state.history.load = [];
+  state.historyEmptyMessage = null;
   if (!keepSelection) state.selectedAtMs = null;
 }
 
@@ -924,14 +942,17 @@ function emptySnapshot(capturedAtMs = Date.now()) {
   };
 }
 
-function normalizedHistoryPoints(points) {
+function normalizedHistoryPoints(points, { source, resolutionMs } = {}) {
   if (!Array.isArray(points)) return [];
+  const responseSource =
+    typeof source === "string" ? source : Number.isFinite(Number(resolutionMs)) ? "rollup" : "raw";
   return points
     .filter((point) => Number.isFinite(Number(point?.capturedAtMs)))
     .map((point) => ({
       capturedAt: Number(point.capturedAtMs),
       snapshot: snapshotFromHistoryPoint(point),
-      source: point.source ?? "rollup",
+      source: point.source ?? responseSource,
+      resolutionMs: Number(point.resolutionMs ?? resolutionMs ?? 0),
       sampleCount: Number(point.sampleCount ?? 1),
     }))
     .sort((left, right) => left.capturedAt - right.capturedAt);
@@ -968,10 +989,14 @@ function hydrateHistory(samples, { keepSelection = false } = {}) {
   redrawCharts();
 }
 
-function hydrateHistoryPoints(points, { keepSelection = false } = {}) {
+function hydrateHistoryPoints(points, { keepSelection = false, source, resolutionMs, emptyMessage = null } = {}) {
   const selectedAtMs = state.selectedAtMs;
   resetHistory({ keepSelection });
-  state.snapshots = downsampleHistorySamples(normalizedHistoryPoints(points), MAX_HISTORY_RENDER_SAMPLES);
+  state.historyEmptyMessage = emptyMessage;
+  state.snapshots = downsampleHistorySamples(
+    normalizedHistoryPoints(points, { source, resolutionMs }),
+    MAX_HISTORY_RENDER_SAMPLES,
+  );
   if (keepSelection) state.selectedAtMs = selectedAtMs;
   if (state.snapshots.length === 0) state.selectedAtMs = null;
   rebuildHistoryValues();
@@ -1040,7 +1065,11 @@ function drawTimelineRail() {
   if (samples.length < 2) {
     context.fillStyle = palette.muted;
     context.font = "700 12px system-ui, sans-serif";
-    context.fillText(samples.length === 1 ? "One sample loaded" : "No history loaded", 14, Math.round(height / 2));
+    context.fillText(
+      samples.length === 1 ? "One sample loaded" : state.historyEmptyMessage ?? "No history loaded",
+      14,
+      Math.round(height / 2),
+    );
     return;
   }
 
@@ -1563,7 +1592,7 @@ function historySampleCountText(sampleCount, range) {
 function updateHistoryChartTitle(sample) {
   if (!elements.historyChart) return;
   if (!sample) {
-    elements.historyChart.title = "No history samples loaded";
+    elements.historyChart.title = state.historyEmptyMessage ?? "No history samples loaded";
     return;
   }
   const metrics = sampleMetricValues(sample)
@@ -1636,7 +1665,7 @@ function renderSelectedSample() {
     updateHistoryControls();
     return;
   }
-  if (sample.source === "rollup") {
+  if (sample.source !== "raw") {
     updateHistoryControls();
     return;
   }
@@ -2407,13 +2436,15 @@ function validateDaemonSettings(settings = collectDaemonSettingsFromForm()) {
   validateRange(errors, "Refresh ms", settings.pollIntervalMs, 250, 60_000);
   validateRange(errors, "DB budget MiB", Math.round(settings.targetDatabaseBytes / 1024 / 1024), 1, 10_240);
   validateRange(errors, "Processes", settings.topProcessCount, 1, 50);
-  errors.push(
-    ...validateRetentionLadder(
-      settings.retentionLadder,
-      state.settingsBaseline?.retentionLadder ?? null,
-      state.historyCoverage?.disk ?? null,
-    ),
-  );
+  if (state.retentionLadderAvailable) {
+    errors.push(
+      ...validateRetentionLadder(
+        settings.retentionLadder,
+        state.settingsBaseline?.retentionLadder ?? null,
+        state.historyCoverage?.disk ?? null,
+      ),
+    );
+  }
   for (const [label, warnKey, criticalKey] of [
     ["CPU", "cpuWarn", "cpuCritical"],
     ["RAM", "memoryWarn", "memoryCritical"],
@@ -2432,23 +2463,31 @@ function validateDaemonSettings(settings = collectDaemonSettingsFromForm()) {
 function renderEffectiveSettings(settings = collectDaemonSettingsFromForm()) {
   if (!elements.effectiveSettingsReadout) return;
   const activeTheme = state.theme === settings.defaultTheme ? settings.defaultTheme : `${state.theme} over ${settings.defaultTheme}`;
+  const historyEntries = state.retentionLadderAvailable
+    ? [
+        ["L1", `${settings.retentionLadder.l1.keepDays} d`],
+        ["L2", `${settings.retentionLadder.l2.keepDays} d`],
+        ["L3", settings.retentionLadder.l3.enabled ? `${settings.retentionLadder.l3.keepDays} d` : "off"],
+        [
+          "L4",
+          settings.retentionLadder.l4.enabled
+            ? settings.retentionLadder.l4.keepDays === 0
+              ? "forever"
+              : `${settings.retentionLadder.l4.keepDays} d`
+            : "off",
+        ],
+      ]
+    : [
+        ["History", `${settings.retentionHours} h`],
+        ["Rollups", `${settings.rollupRetentionDays} d`],
+      ];
   elements.effectiveSettingsReadout.replaceChildren(
     ...[
       ["Theme", activeTheme],
       ["Graph", state.graphMode],
       ["Window", state.historyWindowKey],
       ["Refresh", `${settings.pollIntervalMs} ms`],
-      ["L1", `${settings.retentionLadder.l1.keepDays} d`],
-      ["L2", `${settings.retentionLadder.l2.keepDays} d`],
-      ["L3", settings.retentionLadder.l3.enabled ? `${settings.retentionLadder.l3.keepDays} d` : "off"],
-      [
-        "L4",
-        settings.retentionLadder.l4.enabled
-          ? settings.retentionLadder.l4.keepDays === 0
-            ? "forever"
-            : `${settings.retentionLadder.l4.keepDays} d`
-          : "off",
-      ],
+      ...historyEntries,
       ["Budget", formatBytes(settings.targetDatabaseBytes)],
     ].map(([labelText, valueText]) => {
       const item = document.createElement("span");
@@ -2549,24 +2588,26 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
   setControlValue(elements.daemonPollInterval, nextSettings.pollIntervalMs);
   setControlValue(elements.daemonRetentionHours, nextSettings.retentionHours);
   setControlValue(elements.daemonRollupRetentionDays, nextSettings.rollupRetentionDays);
-  setControlValue(elements.daemonL1KeepDays, nextSettings.retentionLadder.l1.keepDays);
-  setControlValue(elements.daemonL2KeepDays, nextSettings.retentionLadder.l2.keepDays);
-  setCheckboxValue(elements.daemonL3Enabled, nextSettings.retentionLadder.l3.enabled);
-  setControlValue(elements.daemonL3KeepDays, nextSettings.retentionLadder.l3.keepDays);
-  setCheckboxValue(elements.daemonL4Enabled, nextSettings.retentionLadder.l4.enabled);
-  setControlValue(elements.daemonL4KeepDays, nextSettings.retentionLadder.l4.keepDays);
-  setCheckboxValue(elements.daemonL4Forever, nextSettings.retentionLadder.l4.keepDays === 0);
-  setControlValue(elements.daemonSnapshotJsonKeepMinutes, nextSettings.retentionLadder.snapshotJsonKeepMinutes);
-  setControlValue(elements.daemonDetailIntervalSec, nextSettings.retentionLadder.detailIntervalSec);
-  setCheckboxValue(elements.daemonArchiveQueryable, nextSettings.retentionLadder.archive.queryable);
-  setCheckboxValue(elements.daemonArchiveCold, nextSettings.retentionLadder.archive.cold);
-  setControlValue(elements.daemonArchiveColdAfterMonths, nextSettings.retentionLadder.archive.coldAfterMonths);
-  setControlValue(elements.daemonArchiveDirectory, nextSettings.retentionLadder.archive.directory);
-  setControlValue(elements.daemonDiskCheckIntervalMinutes, nextSettings.retentionLadder.diskCheck.intervalMinutes);
-  setControlValue(
-    elements.daemonDiskCheckMinFreeGib,
-    nextSettings.retentionLadder.diskCheck.minFreeBytes / 1024 / 1024 / 1024,
-  );
+  if (state.retentionLadderAvailable) {
+    setControlValue(elements.daemonL1KeepDays, nextSettings.retentionLadder.l1.keepDays);
+    setControlValue(elements.daemonL2KeepDays, nextSettings.retentionLadder.l2.keepDays);
+    setCheckboxValue(elements.daemonL3Enabled, nextSettings.retentionLadder.l3.enabled);
+    setControlValue(elements.daemonL3KeepDays, nextSettings.retentionLadder.l3.keepDays);
+    setCheckboxValue(elements.daemonL4Enabled, nextSettings.retentionLadder.l4.enabled);
+    setControlValue(elements.daemonL4KeepDays, nextSettings.retentionLadder.l4.keepDays);
+    setCheckboxValue(elements.daemonL4Forever, nextSettings.retentionLadder.l4.keepDays === 0);
+    setControlValue(elements.daemonSnapshotJsonKeepMinutes, nextSettings.retentionLadder.snapshotJsonKeepMinutes);
+    setControlValue(elements.daemonDetailIntervalSec, nextSettings.retentionLadder.detailIntervalSec);
+    setCheckboxValue(elements.daemonArchiveQueryable, nextSettings.retentionLadder.archive.queryable);
+    setCheckboxValue(elements.daemonArchiveCold, nextSettings.retentionLadder.archive.cold);
+    setControlValue(elements.daemonArchiveColdAfterMonths, nextSettings.retentionLadder.archive.coldAfterMonths);
+    setControlValue(elements.daemonArchiveDirectory, nextSettings.retentionLadder.archive.directory);
+    setControlValue(elements.daemonDiskCheckIntervalMinutes, nextSettings.retentionLadder.diskCheck.intervalMinutes);
+    setControlValue(
+      elements.daemonDiskCheckMinFreeGib,
+      nextSettings.retentionLadder.diskCheck.minFreeBytes / 1024 / 1024 / 1024,
+    );
+  }
   setControlValue(elements.daemonDbBudgetMib, Math.round(nextSettings.targetDatabaseBytes / 1024 / 1024));
   setControlValue(elements.daemonTopProcessCount, nextSettings.topProcessCount);
   setControlValue(elements.daemonCpuWarn, nextSettings.thresholds.cpuWarn);
@@ -2586,6 +2627,7 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
   setCheckboxValue(elements.daemonSectionPressure, nextSettings.enabledSections.pressure);
   setCheckboxValue(elements.daemonSectionProcesses, nextSettings.enabledSections.processes);
   syncDerivedLegacyMirrors(nextSettings);
+  syncRetentionLadderAvailability();
   syncLadderControlStates();
   validateDaemonSettings(nextSettings);
   renderEffectiveSettings(nextSettings);
@@ -2605,11 +2647,13 @@ function numericControlValue(control, fallback) {
 }
 
 function syncDerivedLegacyMirrors(settings) {
+  if (!state.retentionLadderAvailable) return;
   setControlValue(elements.daemonRetentionHours, settings.retentionLadder.l1.keepDays * 24);
   setControlValue(elements.daemonRollupRetentionDays, settings.retentionLadder.l2.keepDays);
 }
 
 function syncLadderControlStates() {
+  if (!state.retentionLadderAvailable) return;
   if (elements.daemonL3KeepDays) elements.daemonL3KeepDays.disabled = !elements.daemonL3Enabled?.checked;
   if (elements.daemonL4Forever) elements.daemonL4Forever.disabled = !elements.daemonL4Enabled?.checked;
   if (elements.daemonL4KeepDays) {
@@ -2617,39 +2661,61 @@ function syncLadderControlStates() {
   }
 }
 
+function syncRetentionLadderAvailability() {
+  setHidden(elements.historyLadderSettingsGroup, !state.retentionLadderAvailable);
+  setHidden(elements.historyLadderUnavailable, state.retentionLadderAvailable);
+  renderTierCoverage(state.historyCoverage?.tiers);
+  if (elements.daemonRetentionHours) elements.daemonRetentionHours.readOnly = state.retentionLadderAvailable;
+  if (elements.daemonRollupRetentionDays) elements.daemonRollupRetentionDays.readOnly = state.retentionLadderAvailable;
+  setHidden(elements.daemonRetentionHoursDerived, !state.retentionLadderAvailable);
+  setHidden(elements.daemonRollupRetentionDaysDerived, !state.retentionLadderAvailable);
+}
+
 function collectDaemonSettingsFromForm() {
-  const retentionLadder = {
-    l1: { keepDays: numberControlValue(elements.daemonL1KeepDays, 3) },
-    l2: { keepDays: numberControlValue(elements.daemonL2KeepDays, 30) },
-    l3: {
-      enabled: Boolean(elements.daemonL3Enabled?.checked),
-      keepDays: numberControlValue(elements.daemonL3KeepDays, 90),
-    },
-    l4: {
-      enabled: Boolean(elements.daemonL4Enabled?.checked),
-      keepDays: elements.daemonL4Forever?.checked ? 0 : numberControlValue(elements.daemonL4KeepDays, 730),
-    },
-    snapshotJsonKeepMinutes: numberControlValue(elements.daemonSnapshotJsonKeepMinutes, 60),
-    detailIntervalSec: numberControlValue(elements.daemonDetailIntervalSec, 60),
-    archive: {
-      queryable: Boolean(elements.daemonArchiveQueryable?.checked),
-      cold: Boolean(elements.daemonArchiveCold?.checked),
-      coldAfterMonths: numberControlValue(elements.daemonArchiveColdAfterMonths, 12),
-      directory: elements.daemonArchiveDirectory?.value ?? "",
-    },
-    diskCheck: {
-      intervalMinutes: numberControlValue(elements.daemonDiskCheckIntervalMinutes, 60),
-      minFreeBytes: Math.round(numericControlValue(elements.daemonDiskCheckMinFreeGib, 5) * 1024 * 1024 * 1024),
-    },
-  };
+  const retentionLadder = state.retentionLadderAvailable
+    ? {
+        l1: { keepDays: numberControlValue(elements.daemonL1KeepDays, 3) },
+        l2: { keepDays: numberControlValue(elements.daemonL2KeepDays, 30) },
+        l3: {
+          enabled: Boolean(elements.daemonL3Enabled?.checked),
+          keepDays: numberControlValue(elements.daemonL3KeepDays, 90),
+        },
+        l4: {
+          enabled: Boolean(elements.daemonL4Enabled?.checked),
+          keepDays: elements.daemonL4Forever?.checked
+            ? 0
+            : numberControlValue(elements.daemonL4KeepDays, 730),
+        },
+        snapshotJsonKeepMinutes: numberControlValue(elements.daemonSnapshotJsonKeepMinutes, 60),
+        detailIntervalSec: numberControlValue(elements.daemonDetailIntervalSec, 60),
+        archive: {
+          queryable: Boolean(elements.daemonArchiveQueryable?.checked),
+          cold: Boolean(elements.daemonArchiveCold?.checked),
+          coldAfterMonths: numberControlValue(elements.daemonArchiveColdAfterMonths, 12),
+          directory: elements.daemonArchiveDirectory?.value ?? "",
+        },
+        diskCheck: {
+          intervalMinutes: numberControlValue(elements.daemonDiskCheckIntervalMinutes, 60),
+          minFreeBytes: Math.round(
+            numericControlValue(elements.daemonDiskCheckMinFreeGib, 5) * 1024 * 1024 * 1024,
+          ),
+        },
+      }
+    : cloneSettings(state.daemonSettings).retentionLadder;
+  const retentionHours = state.retentionLadderAvailable
+    ? retentionLadder.l1.keepDays * 24
+    : numberControlValue(elements.daemonRetentionHours, state.daemonSettings.retentionHours);
+  const rollupRetentionDays = state.retentionLadderAvailable
+    ? retentionLadder.l2.keepDays
+    : numberControlValue(elements.daemonRollupRetentionDays, state.daemonSettings.rollupRetentionDays);
   return {
     ...cloneSettings(state.daemonSettings),
     defaultTheme: elements.daemonDefaultTheme?.value ?? "midnight",
     defaultGraphMode: elements.daemonDefaultGraph?.value ?? "line",
     defaultHistoryWindow: elements.daemonDefaultWindow?.value ?? "live",
     pollIntervalMs: numberControlValue(elements.daemonPollInterval, DEFAULT_POLL_MS),
-    retentionHours: retentionLadder.l1.keepDays * 24,
-    rollupRetentionDays: retentionLadder.l2.keepDays,
+    retentionHours,
+    rollupRetentionDays,
     retentionLadder,
     targetDatabaseBytes: numberControlValue(elements.daemonDbBudgetMib, 128) * 1024 * 1024,
     topProcessCount: numberControlValue(elements.daemonTopProcessCount, 8),
@@ -2728,7 +2794,9 @@ async function fetchSettings() {
   try {
     const response = await fetch(apiPath("/api/settings"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Settings failed with HTTP ${response.status}`);
-    const settings = normalizeSettings(await response.json());
+    const document = await response.json();
+    state.retentionLadderAvailable = settingsRetentionLadderAvailable(document);
+    const settings = normalizeSettings(document);
     populateDaemonSettings(settings);
     renderSettingsStatus("Daemon defaults loaded.");
     return settings;
@@ -2815,7 +2883,9 @@ async function saveDaemonSettings() {
     renderSettingsStatus("Fix validation errors before saving.");
     return;
   }
-  const wouldDelete = approximateDeletionSummary(settings, state.settingsBaseline);
+  const wouldDelete = state.retentionLadderAvailable
+    ? approximateDeletionSummary(settings, state.settingsBaseline)
+    : [];
   if (wouldDelete.length > 0) {
     const accepted = await requestConfirmation({
       title: "Shrink history retention?",
@@ -2836,10 +2906,12 @@ async function saveDaemonSettings() {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(settings),
+      body: JSON.stringify(settingsPutPayload(settings, state.retentionLadderAvailable)),
     });
     if (!response.ok) throw new Error(`Settings save failed with HTTP ${response.status}`);
-    const saved = normalizeSettings(await response.json());
+    const savedDocument = await response.json();
+    state.retentionLadderAvailable = settingsRetentionLadderAvailable(savedDocument);
+    const saved = normalizeSettings(savedDocument);
     populateDaemonSettings(saved);
     state.settingsDirty = false;
     renderSettingsDirtyIndicator();
@@ -2893,24 +2965,33 @@ function formatCoverageTime(timestampMs) {
 }
 
 function syncHistoryWindowAvailability(coverage) {
+  const unavailableTitle = (window) =>
+    window.reason === "runtime"
+      ? "History presets beyond 1h need the Rust daemon"
+      : `Unavailable: ${window.reason}`;
   for (const button of elements.historyWindowButtons) {
     const window = historyWindowFor(button.dataset.historyWindow, coverage);
     button.disabled = window.disabled;
-    button.title = window.disabled ? `Unavailable: ${window.reason}` : "";
+    button.title = window.disabled ? unavailableTitle(window) : "";
   }
   for (const select of [elements.browserHistoryWindowSetting, elements.daemonDefaultWindow]) {
     if (!select) continue;
     for (const option of select.options) {
       const window = historyWindowFor(option.value, coverage);
       option.disabled = window.disabled;
-      option.title = window.disabled ? `Unavailable: ${window.reason}` : "";
+      option.title = window.disabled ? unavailableTitle(window) : "";
     }
+  }
+
+  const fallbackWindow = fallbackWindowKey(state.historyWindowKey, coverage);
+  if (fallbackWindow !== state.historyWindowKey) {
+    setHistoryWindow(fallbackWindow, { persist: false });
   }
 }
 
 function renderTierCoverage(tiers) {
   if (!elements.historyLadderCoverage) return;
-  if (!Array.isArray(tiers)) {
+  if (!state.retentionLadderAvailable || !Array.isArray(tiers)) {
     elements.historyLadderCoverage.replaceChildren();
     setHidden(elements.historyLadderCoverage, true);
     return;
@@ -2937,7 +3018,7 @@ function renderDiskCoverage(disk) {
     setHidden(elements.historyDiskPressure, true);
     return;
   }
-  const pressure = Boolean(disk.pressure ?? disk.active);
+  const pressure = Boolean(disk.pressure);
   elements.historyDiskPressure.dataset.status = pressure ? "critical" : "healthy";
   elements.historyDiskPressure.textContent = pressure
     ? `Disk pressure: ${formatBytes(Number(disk.freeBytes ?? 0))} free is below ${formatBytes(Number(disk.minFreeBytes ?? 0))}. Shrink history or free disk before extending retention.`
@@ -3015,8 +3096,9 @@ async function fetchHistoryCoverage() {
     renderHistoryCoverage(coverage);
     return coverage;
   } catch {
-    renderHistoryCoverage(null);
-    return null;
+    const coverage = { unavailable: true };
+    renderHistoryCoverage({ unavailable: true });
+    return coverage;
   }
 }
 
@@ -3044,9 +3126,14 @@ async function fetchHistoryPoints({ sinceMs, untilMs, limit, source }) {
   const response = await fetch(apiPath(`/api/history/points?${params}`), {
     cache: "no-store",
   });
-  if (!response.ok) return [];
+  if (!response.ok) throw new Error(`History points failed with HTTP ${response.status}`);
   const body = await response.json();
-  return Array.isArray(body.points) ? body.points : [];
+  return {
+    points: Array.isArray(body.points) ? body.points : [],
+    source: typeof body.source === "string" ? body.source : null,
+    resolutionMs: Number.isFinite(Number(body.resolutionMs)) ? Number(body.resolutionMs) : null,
+    available: body.available !== false,
+  };
 }
 
 async function fetchHistoryMarkers({ sinceMs, untilMs }) {
@@ -3082,9 +3169,18 @@ async function fetchHistoryWindow() {
   try {
     await fetchHistoryMarkers({ sinceMs, untilMs });
     if (windowConfig.source !== "raw") {
-      const points = await fetchHistoryPoints({ sinceMs, untilMs, limit, source: windowConfig.source });
+      const historyResponse = await fetchHistoryPoints({ sinceMs, untilMs, limit, source: "auto" });
       if (state.historyFetchToken !== fetchToken) return;
-      hydrateHistoryPoints(points, { keepSelection: state.selectedAtMs !== null });
+      const emptyMessage =
+        historyResponse.available === false && historyResponse.source === "archive"
+          ? "Archive not available until 0.4.0"
+          : null;
+      hydrateHistoryPoints(historyResponse.points, {
+        keepSelection: state.selectedAtMs !== null,
+        source: historyResponse.source,
+        resolutionMs: historyResponse.resolutionMs,
+        emptyMessage,
+      });
       return;
     }
 

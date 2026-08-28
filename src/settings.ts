@@ -60,7 +60,18 @@ export const DEFAULT_DASHBOARD_SETTINGS: DashboardSettings = {
 
 const allowedThemes = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
 const allowedGraphModes = new Set(["line", "area", "bar", "heatmap", "treemap"]);
-const allowedHistoryWindows = new Set(["live", "15m", "1h", "6h", "24h"]);
+const allowedHistoryWindows = new Set([
+  "live",
+  "15m",
+  "1h",
+  "6h",
+  "24h",
+  "7d",
+  "30d",
+  "90d",
+  "1y",
+  "all",
+]);
 
 export function cloneDashboardSettings(settings = DEFAULT_DASHBOARD_SETTINGS): DashboardSettings {
   return {
