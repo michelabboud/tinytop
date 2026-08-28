@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Expanded the Rust history-points API to read L1 raw, L2 one-minute, L3 five-minute, and L4 hourly data. `source=auto` now selects the finest enabled tier that retains the requested start and fits the clamped page limit, reports `source` and `resolutionMs`, falls back to the coarsest retaining tier on overflow, and returns a truthful unavailable archive page until queryable archive reads land.
+- Expanded history coverage with all four tiers, the snapshot-JSON horizon, detail cadence, disk state, archive configuration/state, and schema-migration state while preserving every existing coverage field.
+- Added bounded Rust-only `/api/history/filesystems` and `/api/history/processes` reads over the typed detail tables, including exact mount filtering and complete process groups by capture timestamp. History query parameters accept the specified camelCase names while retaining the existing snake_case aliases.
+- Added in-process Axum router tests using temp-directory SQLite stores for the complete 12-row `auto` selection table, coverage shape, filesystem filtering/limit clamping, grouped processes, and JSON-only raw history. Added exact test-only `tower = 0.5.3` and `http-body-util = 0.1.3` pins already present in the lockfile.
+
 ## 0.2.9 - 2026-08-28
 
 - Added the validated camelCase `retentionLadder` settings block with configurable L1/L2 horizons, L3/L4 toggles and monotonic retention, L4 forever mode, snapshot JSON retention, detail cadence, archive configuration, and disk-check thresholds.

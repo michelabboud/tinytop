@@ -5,6 +5,7 @@ pub mod migration;
 pub mod retention_ladder;
 
 use std::{
+    path::{Path, PathBuf},
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -275,6 +276,10 @@ pub struct HistoryCoverage {
     pub rollup_newest_captured_at_ms: Option<i64>,
     pub tiers: Vec<HistoryTierCoverage>,
     pub snapshot_json_oldest_ms: Option<i64>,
+    pub detail_interval_sec: i64,
+    pub disk: HistoryDiskCoverage,
+    pub archive: HistoryArchiveCoverage,
+    pub migration: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -289,6 +294,79 @@ pub struct HistoryTierCoverage {
     pub newest_ms: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryDiskCoverage {
+    pub free_bytes: Option<i64>,
+    pub min_free_bytes: i64,
+    pub pressure: bool,
+    pub last_check_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryArchiveCoverage {
+    pub queryable: HistoryQueryableArchiveCoverage,
+    pub cold: HistoryColdArchiveCoverage,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryQueryableArchiveCoverage {
+    pub enabled: bool,
+    pub path: String,
+    pub bucket_count: i64,
+    pub oldest_ms: Option<i64>,
+    pub newest_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryColdArchiveCoverage {
+    pub enabled: bool,
+    pub directory: String,
+    pub exported_until_month: Option<String>,
+    pub file_count: i64,
+    pub bytes: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryFilesystemSample {
+    pub captured_at_ms: i64,
+    pub mount: String,
+    pub filesystem: String,
+    #[serde(rename = "type")]
+    pub fs_type: String,
+    pub size_bytes: i64,
+    pub used_bytes: i64,
+    pub available_bytes: i64,
+    pub used_percent: f64,
+    pub inode_used_percent: Option<f64>,
+    pub inode_used: Option<i64>,
+    pub inode_total: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryProcessSample {
+    pub rank: i64,
+    pub pid: i64,
+    pub command: String,
+    pub cpu_percent: f64,
+    pub memory_percent: f64,
+    pub rss_bytes: i64,
+    pub parent_pid: Option<i64>,
+    pub started_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryProcessCapture {
+    pub captured_at_ms: i64,
+    pub processes: Vec<HistoryProcessSample>,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HistoryQuery {
     pub since_ms: Option<i64>,
@@ -301,6 +379,11 @@ pub struct HistoryQuery {
 pub enum HistoryPointSource {
     Raw,
     Rollup,
+    #[serde(rename = "5m")]
+    Rollup5m,
+    #[serde(rename = "1h")]
+    Rollup1h,
+    Archive,
 }
 
 impl HistoryPointSource {
@@ -308,6 +391,9 @@ impl HistoryPointSource {
         match self {
             Self::Raw => "raw",
             Self::Rollup => "rollup",
+            Self::Rollup5m => "5m",
+            Self::Rollup1h => "1h",
+            Self::Archive => "archive",
         }
     }
 }
@@ -318,6 +404,31 @@ pub enum HistoryPointMode {
     Auto,
     Raw,
     Rollup,
+    Rollup5m,
+    Rollup1h,
+    Archive,
+}
+
+impl HistoryPointMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Raw => "raw",
+            Self::Rollup => "rollup",
+            Self::Rollup5m => "5m",
+            Self::Rollup1h => "1h",
+            Self::Archive => "archive",
+        }
+    }
+
+    pub fn resolution_ms(self, poll_interval_ms: i64) -> i64 {
+        match self {
+            Self::Auto | Self::Raw => poll_interval_ms,
+            Self::Rollup => Tier::L2.resolution_ms(),
+            Self::Rollup5m => Tier::L3.resolution_ms(),
+            Self::Rollup1h | Self::Archive => Tier::L4.resolution_ms(),
+        }
+    }
 }
 
 impl FromStr for HistoryPointMode {
@@ -328,8 +439,11 @@ impl FromStr for HistoryPointMode {
             "auto" => Ok(Self::Auto),
             "raw" => Ok(Self::Raw),
             "rollup" | "1m" | "rollup1m" => Ok(Self::Rollup),
+            "5m" => Ok(Self::Rollup5m),
+            "1h" => Ok(Self::Rollup1h),
+            "archive" => Ok(Self::Archive),
             other => Err(StoreError::Validation(format!(
-                "source must be auto, raw, or rollup, got {other}"
+                "source must be auto, raw, rollup, 5m, 1h, or archive, got {other}"
             ))),
         }
     }
@@ -400,6 +514,7 @@ pub struct HistoryMarker {
 #[derive(Debug, Clone)]
 pub struct SqliteHistoryStore {
     pool: SqlitePool,
+    database_path: PathBuf,
 }
 
 impl SqliteHistoryStore {
@@ -410,7 +525,10 @@ impl SqliteHistoryStore {
             .max_connections(1)
             .connect_with(options)
             .await?;
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            database_path: db_path.clone(),
+        };
         store.apply_pragmas().await?;
         let _migration_report = migration::ensure_schema(
             &store.pool,
@@ -1009,11 +1127,132 @@ impl SqliteHistoryStore {
         &self,
         query: HistoryPointsQuery,
     ) -> Result<Vec<HistoryPoint>, StoreError> {
-        match self.resolve_history_point_source(query) {
-            HistoryPointMode::Raw => self.read_raw_history_points(query).await,
-            HistoryPointMode::Rollup => self.read_rollup_history_points(query).await,
+        let source = match query.source {
+            HistoryPointMode::Auto => {
+                let settings = self.get_settings().await?;
+                resolve_history_point_source_with_poll(
+                    &settings.retention_ladder,
+                    settings.poll_interval_ms,
+                    now_ms(),
+                    query,
+                )
+            }
+            source => source,
+        };
+        match source {
+            HistoryPointMode::Raw => self.read_tier_history_points(Tier::L1, query).await,
+            HistoryPointMode::Rollup => self.read_tier_history_points(Tier::L2, query).await,
+            HistoryPointMode::Rollup5m => self.read_tier_history_points(Tier::L3, query).await,
+            HistoryPointMode::Rollup1h => self.read_tier_history_points(Tier::L4, query).await,
+            HistoryPointMode::Archive => Ok(Vec::new()),
             HistoryPointMode::Auto => unreachable!("history point source is resolved above"),
         }
+    }
+
+    pub async fn read_history_filesystems(
+        &self,
+        query: HistoryQuery,
+        mount: Option<&str>,
+    ) -> Result<Vec<HistoryFilesystemSample>, StoreError> {
+        let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
+        let rows = sqlx::query(
+            r#"
+            SELECT captured_at_ms, mount, filesystem, fs_type, size_bytes, used_bytes,
+                   available_bytes, used_percent, inode_used_percent, inode_used, inode_total
+            FROM fs_samples
+            WHERE (?1 IS NULL OR captured_at_ms >= ?1)
+              AND (?2 IS NULL OR captured_at_ms <= ?2)
+              AND (?3 IS NULL OR mount = ?3)
+            ORDER BY captured_at_ms DESC, mount DESC
+            LIMIT ?4
+            "#,
+        )
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(mount)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut samples = rows
+            .into_iter()
+            .map(|row| {
+                Ok(HistoryFilesystemSample {
+                    captured_at_ms: row.try_get("captured_at_ms")?,
+                    mount: row.try_get("mount")?,
+                    filesystem: row.try_get("filesystem")?,
+                    fs_type: row.try_get("fs_type")?,
+                    size_bytes: row.try_get("size_bytes")?,
+                    used_bytes: row.try_get("used_bytes")?,
+                    available_bytes: row.try_get("available_bytes")?,
+                    used_percent: row.try_get("used_percent")?,
+                    inode_used_percent: row.try_get("inode_used_percent")?,
+                    inode_used: row.try_get("inode_used")?,
+                    inode_total: row.try_get("inode_total")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        samples.reverse();
+        Ok(samples)
+    }
+
+    pub async fn read_history_processes(
+        &self,
+        query: HistoryQuery,
+    ) -> Result<Vec<HistoryProcessCapture>, StoreError> {
+        let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
+        let rows = sqlx::query(
+            r#"
+            WITH capture_times AS (
+              SELECT DISTINCT captured_at_ms
+              FROM process_samples
+              WHERE (?1 IS NULL OR captured_at_ms >= ?1)
+                AND (?2 IS NULL OR captured_at_ms <= ?2)
+              ORDER BY captured_at_ms DESC
+              LIMIT ?3
+            )
+            SELECT p.captured_at_ms, p.rank, p.pid, p.command, p.cpu_percent,
+                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at
+            FROM process_samples p
+            INNER JOIN capture_times c ON c.captured_at_ms = p.captured_at_ms
+            ORDER BY p.captured_at_ms, p.rank
+            "#,
+        )
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut captures = Vec::<HistoryProcessCapture>::new();
+        for row in rows {
+            let captured_at_ms: i64 = row.try_get("captured_at_ms")?;
+            if captures
+                .last()
+                .is_none_or(|capture| capture.captured_at_ms != captured_at_ms)
+            {
+                captures.push(HistoryProcessCapture {
+                    captured_at_ms,
+                    processes: Vec::new(),
+                });
+            }
+            let process = HistoryProcessSample {
+                rank: row.try_get("rank")?,
+                pid: row.try_get("pid")?,
+                command: row.try_get("command")?,
+                cpu_percent: row.try_get("cpu_percent")?,
+                memory_percent: row.try_get("memory_percent")?,
+                rss_bytes: row.try_get("rss_bytes")?,
+                parent_pid: row.try_get("parent_pid")?,
+                started_at: row.try_get("started_at")?,
+            };
+            let Some(capture) = captures.last_mut() else {
+                return Err(StoreError::Validation(
+                    "process capture grouping produced a row without a timestamp group".to_string(),
+                ));
+            };
+            capture.processes.push(process);
+        }
+        Ok(captures)
     }
 
     pub async fn record_event(
@@ -1179,6 +1418,25 @@ impl SqliteHistoryStore {
         } else {
             0.0
         };
+        let disk_pressure = self
+            .history_state_get::<DiskPressureState>("diskPressure")
+            .await?;
+        let last_check_ms = self.history_state_get::<i64>("lastDiskCheckMs").await?;
+        let migration = self
+            .history_state_get::<JsonValue>("schemaMigration")
+            .await?;
+        let exported_until_month = self
+            .history_state_get::<String>("coldExportedUntilMonth")
+            .await?;
+        let archive_directory = if settings.retention_ladder.archive.directory.is_empty() {
+            self.database_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        } else {
+            PathBuf::from(&settings.retention_ladder.archive.directory)
+        };
+        let archive_path = archive_directory.join("history-archive.sqlite");
 
         Ok(HistoryCoverage {
             sample_count: stats.sample_count,
@@ -1196,6 +1454,30 @@ impl SqliteHistoryStore {
                 .try_get::<Option<i64>, _>("rollup_newest_captured_at_ms")?,
             tiers,
             snapshot_json_oldest_ms,
+            detail_interval_sec: settings.retention_ladder.detail_interval_sec,
+            disk: HistoryDiskCoverage {
+                free_bytes: disk_pressure.as_ref().map(|state| state.free_bytes),
+                min_free_bytes: settings.retention_ladder.disk_check.min_free_bytes,
+                pressure: disk_pressure.is_some_and(|state| state.active),
+                last_check_ms,
+            },
+            archive: HistoryArchiveCoverage {
+                queryable: HistoryQueryableArchiveCoverage {
+                    enabled: settings.retention_ladder.archive.queryable,
+                    path: archive_path.display().to_string(),
+                    bucket_count: 0,
+                    oldest_ms: None,
+                    newest_ms: None,
+                },
+                cold: HistoryColdArchiveCoverage {
+                    enabled: settings.retention_ladder.archive.cold,
+                    directory: archive_directory.display().to_string(),
+                    exported_until_month,
+                    file_count: 0,
+                    bytes: 0,
+                },
+            },
+            migration,
         })
     }
 
@@ -1295,30 +1577,15 @@ impl SqliteHistoryStore {
         Ok(page_count.saturating_mul(page_size))
     }
 
-    fn resolve_history_point_source(&self, query: HistoryPointsQuery) -> HistoryPointMode {
-        match query.source {
-            HistoryPointMode::Auto => {
-                let range_ms = match (query.since_ms, query.until_ms) {
-                    (Some(since_ms), Some(until_ms)) => until_ms.saturating_sub(since_ms),
-                    _ => 0,
-                };
-                if range_ms > 86_400_000 {
-                    HistoryPointMode::Rollup
-                } else {
-                    HistoryPointMode::Raw
-                }
-            }
-            source => source,
-        }
-    }
-
-    async fn read_raw_history_points(
+    async fn read_tier_history_points(
         &self,
+        tier: Tier,
         query: HistoryPointsQuery,
     ) -> Result<Vec<HistoryPoint>, StoreError> {
         let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
-        let rows = sqlx::query(
-            r#"
+        if tier == Tier::L1 {
+            let rows = sqlx::query(
+                r#"
             SELECT
               captured_at_ms,
               cpu_usage_percent,
@@ -1332,38 +1599,33 @@ impl SqliteHistoryStore {
             ORDER BY captured_at_ms DESC
             LIMIT ?3
             "#,
-        )
-        .bind(query.since_ms)
-        .bind(query.until_ms)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(query.since_ms)
+            .bind(query.until_ms)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut points = rows
-            .into_iter()
-            .map(|row| {
-                Ok(HistoryPoint {
-                    captured_at_ms: row.try_get::<i64, _>("captured_at_ms")?,
-                    source: HistoryPointSource::Raw,
-                    sample_count: 1,
-                    cpu_usage_percent: row.try_get::<f64, _>("cpu_usage_percent")?,
-                    memory_used_percent: row.try_get::<f64, _>("memory_used_percent")?,
-                    swap_used_percent: row.try_get::<f64, _>("swap_used_percent")?,
-                    load_percent: row.try_get::<f64, _>("load_percent")?,
-                    root_used_percent: row.try_get::<Option<f64>, _>("root_used_percent")?,
+            let mut points = rows
+                .into_iter()
+                .map(|row| {
+                    Ok(HistoryPoint {
+                        captured_at_ms: row.try_get::<i64, _>("captured_at_ms")?,
+                        source: HistoryPointSource::Raw,
+                        sample_count: 1,
+                        cpu_usage_percent: row.try_get::<f64, _>("cpu_usage_percent")?,
+                        memory_used_percent: row.try_get::<f64, _>("memory_used_percent")?,
+                        swap_used_percent: row.try_get::<f64, _>("swap_used_percent")?,
+                        load_percent: row.try_get::<f64, _>("load_percent")?,
+                        root_used_percent: row.try_get::<Option<f64>, _>("root_used_percent")?,
+                    })
                 })
-            })
-            .collect::<Result<Vec<_>, StoreError>>()?;
-        points.reverse();
-        Ok(points)
-    }
+                .collect::<Result<Vec<_>, StoreError>>()?;
+            points.reverse();
+            return Ok(points);
+        }
 
-    async fn read_rollup_history_points(
-        &self,
-        query: HistoryPointsQuery,
-    ) -> Result<Vec<HistoryPoint>, StoreError> {
-        let limit = query.limit.unwrap_or(720).clamp(1, 10_000);
-        let rows = sqlx::query(
+        let sql = format!(
             r#"
             SELECT
               newest_captured_at_ms,
@@ -1373,25 +1635,32 @@ impl SqliteHistoryStore {
               avg_swap_used_percent,
               avg_load_percent,
               avg_root_used_percent
-            FROM metric_rollups_1m
+            FROM {}
             WHERE (?1 IS NULL OR newest_captured_at_ms >= ?1)
               AND (?2 IS NULL OR newest_captured_at_ms <= ?2)
             ORDER BY newest_captured_at_ms DESC
             LIMIT ?3
             "#,
-        )
-        .bind(query.since_ms)
-        .bind(query.until_ms)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+            tier.table()
+        );
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .bind(query.since_ms)
+            .bind(query.until_ms)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut points = rows
             .into_iter()
             .map(|row| {
                 Ok(HistoryPoint {
                     captured_at_ms: row.try_get::<i64, _>("newest_captured_at_ms")?,
-                    source: HistoryPointSource::Rollup,
+                    source: match tier {
+                        Tier::L1 => unreachable!("raw points return above"),
+                        Tier::L2 => HistoryPointSource::Rollup,
+                        Tier::L3 => HistoryPointSource::Rollup5m,
+                        Tier::L4 => HistoryPointSource::Rollup1h,
+                    },
                     sample_count: row.try_get::<i64, _>("sample_count")?,
                     cpu_usage_percent: row.try_get::<f64, _>("avg_cpu_usage_percent")?,
                     memory_used_percent: row.try_get::<f64, _>("avg_memory_used_percent")?,
@@ -1609,6 +1878,97 @@ impl SqliteHistoryStore {
             .await?;
 
         Ok(())
+    }
+}
+
+/// Resolve `auto` without consulting SQLite so selection remains deterministic
+/// and table-testable. Explicit sources pass through unchanged.
+pub fn resolve_history_point_source(
+    ladder: &RetentionLadder,
+    now_ms: i64,
+    query: HistoryPointsQuery,
+) -> HistoryPointMode {
+    resolve_history_point_source_with_poll(
+        ladder,
+        DashboardSettings::default().poll_interval_ms,
+        now_ms,
+        query,
+    )
+}
+
+pub fn resolve_history_point_source_with_poll(
+    ladder: &RetentionLadder,
+    poll_interval_ms: i64,
+    now_ms: i64,
+    query: HistoryPointsQuery,
+) -> HistoryPointMode {
+    if query.source != HistoryPointMode::Auto {
+        return query.source;
+    }
+
+    const DAY_MS: i64 = 86_400_000;
+    let since_ms = query.since_ms.unwrap_or(now_ms);
+    let until_ms = query.until_ms.unwrap_or(now_ms);
+    let range_ms = until_ms.saturating_sub(since_ms).max(0);
+    let limit = query
+        .limit
+        .map(|limit| limit.clamp(1, 10_000))
+        .unwrap_or(10_000);
+    let candidates = [
+        (
+            HistoryPointMode::Raw,
+            ladder.l1.keep_days,
+            true,
+            poll_interval_ms.max(1),
+        ),
+        (
+            HistoryPointMode::Rollup,
+            ladder.l2.keep_days,
+            true,
+            Tier::L2.resolution_ms(),
+        ),
+        (
+            HistoryPointMode::Rollup5m,
+            ladder.l3.keep_days,
+            ladder.l3.enabled,
+            Tier::L3.resolution_ms(),
+        ),
+        (
+            HistoryPointMode::Rollup1h,
+            ladder.l4.keep_days,
+            ladder.l4.enabled,
+            Tier::L4.resolution_ms(),
+        ),
+    ];
+
+    let mut coarsest_holding = None;
+    for (source, keep_days, enabled, fixed_resolution_ms) in candidates {
+        if !enabled {
+            continue;
+        }
+        let holds_start = source == HistoryPointMode::Rollup1h && keep_days == 0
+            || since_ms >= now_ms.saturating_sub(keep_days.saturating_mul(DAY_MS));
+        if !holds_start {
+            continue;
+        }
+        coarsest_holding = Some(source);
+        if range_ms / fixed_resolution_ms <= limit {
+            return source;
+        }
+    }
+
+    if let Some(source) = coarsest_holding {
+        return source;
+    }
+    if ladder.archive.queryable {
+        return HistoryPointMode::Archive;
+    }
+    if ladder.l4.enabled {
+        HistoryPointMode::Rollup1h
+    } else if ladder.l3.enabled {
+        HistoryPointMode::Rollup5m
+    } else {
+        HistoryPointMode::Rollup
     }
 }
 
