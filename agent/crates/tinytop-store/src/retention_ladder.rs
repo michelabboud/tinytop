@@ -54,6 +54,14 @@ pub struct DiskCheckSettings {
     pub min_free_bytes: i64,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DiskPressureState {
+    pub active: bool,
+    pub free_bytes: i64,
+    pub min_free_bytes: i64,
+}
+
 impl Default for RetentionLadder {
     fn default() -> Self {
         Self {
@@ -194,7 +202,7 @@ impl RetentionLadder {
 
     pub fn validate(
         &self,
-        disk_pressure_active: bool,
+        disk_pressure: Option<&DiskPressureState>,
         previous: Option<&RetentionLadder>,
     ) -> Result<(), StoreError> {
         validate_range("retentionLadder.l1.keepDays", self.l1.keep_days, 3, 3_650)?;
@@ -262,10 +270,13 @@ impl RetentionLadder {
                 self.archive.directory
             )));
         }
-        if disk_pressure_active && previous.is_some_and(|previous| self.grows_from(previous)) {
+        if let Some(pressure) = disk_pressure
+            && pressure.active
+            && previous.is_some_and(|previous| self.grows_from(previous))
+        {
             return Err(StoreError::Validation(format!(
-                "disk pressure active: retentionLadder would grow from the previous settings; observed minFreeBytes {}; shrink first or free disk",
-                self.disk_check.min_free_bytes
+                "disk pressure active: free {} < minFreeBytes {}; shrink first or free disk",
+                pressure.free_bytes, pressure.min_free_bytes
             )));
         }
         Ok(())

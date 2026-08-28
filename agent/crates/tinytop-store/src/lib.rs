@@ -18,6 +18,7 @@ use sqlx::{
 use tinytop_types::SystemSnapshot;
 
 use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, fold, raw_is_partial, raw_to_bucket};
+pub use crate::retention_ladder::DiskPressureState;
 use crate::retention_ladder::RetentionLadder;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -135,6 +136,33 @@ impl Default for DashboardSections {
 }
 
 impl DashboardSettings {
+    pub fn from_document(
+        document: JsonValue,
+        persisted_ladder: Option<&RetentionLadder>,
+    ) -> Result<Self, StoreError> {
+        let has_retention_ladder = document.get("retentionLadder").is_some();
+        let mut settings: Self = serde_json::from_value(document).map_err(|error| {
+            StoreError::Validation(format!("settings document could not be decoded: {error}"))
+        })?;
+        if !has_retention_ladder {
+            settings.retention_ladder = match persisted_ladder {
+                Some(persisted) => {
+                    let mut ladder = persisted.clone();
+                    ladder.apply_legacy_aliases(
+                        settings.retention_hours,
+                        settings.rollup_retention_days,
+                    );
+                    ladder
+                }
+                None => RetentionLadder::from_legacy(
+                    settings.retention_hours,
+                    settings.rollup_retention_days,
+                ),
+            };
+        }
+        Ok(settings)
+    }
+
     pub fn validate(&self) -> Result<(), StoreError> {
         validate_one_of(
             "defaultTheme",
@@ -226,7 +254,7 @@ impl DashboardSettings {
             self.thresholds.pressure_warn,
             self.thresholds.pressure_critical,
         )?;
-        self.retention_ladder.validate(false, None)?;
+        self.retention_ladder.validate(None, None)?;
         Ok(())
     }
 }
@@ -374,14 +402,6 @@ pub struct SqliteHistoryStore {
     pool: SqlitePool,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
-struct DiskPressureState {
-    active: bool,
-    free_bytes: i64,
-    min_free_bytes: i64,
-}
-
 impl SqliteHistoryStore {
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
         let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
@@ -420,14 +440,7 @@ impl SqliteHistoryStore {
 
         let value_json = row.try_get::<String, _>("value_json")?;
         let document: JsonValue = serde_json::from_str(&value_json)?;
-        let has_retention_ladder = document.get("retentionLadder").is_some();
-        let mut settings: DashboardSettings = serde_json::from_value(document)?;
-        if !has_retention_ladder {
-            settings.retention_ladder = RetentionLadder::from_legacy(
-                settings.retention_hours,
-                settings.rollup_retention_days,
-            );
-        }
+        let settings = DashboardSettings::from_document(document, None)?;
         settings.validate()?;
         Ok(settings)
     }
@@ -477,14 +490,6 @@ impl SqliteHistoryStore {
     ) -> Result<DashboardSettings, StoreError> {
         let previous = self.get_settings().await?;
         let mut normalized = settings.clone();
-        let ladder_changed = settings.retention_ladder != previous.retention_ladder;
-        let legacy_aliases_changed = settings.retention_hours != previous.retention_hours
-            || settings.rollup_retention_days != previous.rollup_retention_days;
-        if !ladder_changed && legacy_aliases_changed {
-            normalized
-                .retention_ladder
-                .apply_legacy_aliases(settings.retention_hours, settings.rollup_retention_days);
-        }
         normalized.retention_hours = normalized.retention_ladder.l1.keep_days.saturating_mul(24);
         normalized.rollup_retention_days = normalized.retention_ladder.l2.keep_days;
         normalized.validate()?;
@@ -493,16 +498,9 @@ impl SqliteHistoryStore {
             .history_state_get::<DiskPressureState>("diskPressure")
             .await?
             .unwrap_or_default();
-        if disk_pressure.active
-            && normalized
-                .retention_ladder
-                .grows_from(&previous.retention_ladder)
-        {
-            return Err(StoreError::Validation(format!(
-                "disk pressure active: free {} < minFreeBytes {}; shrink first or free disk",
-                disk_pressure.free_bytes, disk_pressure.min_free_bytes
-            )));
-        }
+        normalized
+            .retention_ladder
+            .validate(Some(&disk_pressure), Some(&previous.retention_ladder))?;
 
         let value_json = serde_json::to_string(&normalized)?;
         let updated_at_ms = now_ms();

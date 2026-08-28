@@ -359,7 +359,7 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API.
 
-In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder horizon, the recent snapshot-JSON window, and typed filesystem/process sampling cadence. `retentionHours` and `rollupRetentionDays` remain in every saved document as derived compatibility mirrors for the Bun runtime; L1/L2 are the source of truth. Legacy Bun split mode keeps the older manual archive/reset behavior.
+In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder horizon, the recent snapshot-JSON window, and typed filesystem/process sampling cadence. `retentionHours` and `rollupRetentionDays` remain in every saved document as derived compatibility mirrors for the Bun runtime, so a typed save that edits only those mirrors is overwritten from authoritative L1/L2. Legacy Bun split mode keeps the older manual archive/reset behavior.
 
 | Setting | Default | Validation / meaning |
 | --- | ---: | --- |

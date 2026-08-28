@@ -407,9 +407,11 @@ Rust maintenance runs after each insert in this order:
 - Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute. The archive phase implements the corresponding storage actions.
 - Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB. The disk phase implements the check itself.
 
-Every explicit settings save validates the complete block and writes `retentionHours = l1.keepDays × 24` plus `rollupRetentionDays = l2.keepDays` for Bun compatibility. A stored pre-ladder document is derived in memory from those legacy fields (`ceil(retentionHours / 24)`, floored at 3 days; rollup days floored at 7) and is not rewritten until an explicit save. The save transaction also updates `history_state.l3Enabled` and `l4Enabled`, so a late insert immediately after disabling a tier cannot refold into it before the next maintenance tick.
+Every explicit settings save validates the complete block and writes `retentionHours = l1.keepDays × 24` plus `rollupRetentionDays = l2.keepDays` for Bun compatibility. These legacy fields are derived mirrors: a typed save that edits only `retentionHours` or `rollupRetentionDays` is overwritten from the authoritative ladder. The save transaction also updates `history_state.l3Enabled` and `l4Enabled`, so a late insert immediately after disabling a tier cannot refold into it before the next maintenance tick.
 
-If `history_state.diskPressure.active` is present, saves that extend a horizon, enable L3/L4, or enable an archive are refused; shrinking remains allowed. This makes disk-pressure state written by the later disk phase effective without changing the settings contract.
+`DashboardSettings::from_document` is the only decoder for settings documents that may lack `retentionLadder`. It derives a stored pre-ladder document in memory from the legacy fields (`ceil(retentionHours / 24)`, floored at 3 days; rollup days floored at 7) without rewriting it, and merges a legacy-only update onto the persisted ladder. The Task 10 import endpoint must use this decoder.
+
+If `history_state.diskPressure.active` is present, saves that extend a horizon, enable L3/L4, or enable an archive are refused with `disk pressure active: free X < minFreeBytes Y; shrink first or free disk`; shrinking remains allowed. The ladder validator owns this rule for both pure validation and the persisted settings path.
 
 ## Future Tables
 

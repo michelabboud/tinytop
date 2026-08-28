@@ -17,8 +17,7 @@ use serde_json::{Value as JsonValue, json};
 use tinytop_collectors::NativeCollector;
 use tinytop_store::{
     DashboardSettings, HistoryMarker, HistoryMarkerType, HistoryPoint, HistoryPointMode,
-    HistoryPointsQuery, HistoryQuery, HistorySample, SqliteHistoryStore, StoreError,
-    retention_ladder::RetentionLadder,
+    HistoryPointsQuery, HistoryQuery, HistorySample, SqliteHistoryStore,
 };
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
@@ -247,7 +246,7 @@ async fn update_settings(
     Json(payload): Json<JsonValue>,
 ) -> Result<Response, ServeError> {
     let previous = state.store.get_settings().await?;
-    let settings = dashboard_settings_from_payload(payload, &previous.retention_ladder)?;
+    let settings = DashboardSettings::from_document(payload, Some(&previous.retention_ladder))?;
     let saved = state.store.put_settings(&settings).await?;
     maintain_history(&state, &saved).await?;
     state
@@ -262,23 +261,6 @@ async fn update_settings(
         )
         .await?;
     Ok(no_store(Json(saved)).into_response())
-}
-
-fn dashboard_settings_from_payload(
-    payload: JsonValue,
-    persisted_ladder: &RetentionLadder,
-) -> Result<DashboardSettings, ServeError> {
-    let has_retention_ladder = payload.get("retentionLadder").is_some();
-    let mut settings: DashboardSettings = serde_json::from_value(payload).map_err(|error| {
-        StoreError::Validation(format!("settings payload could not be decoded: {error}"))
-    })?;
-    if !has_retention_ladder {
-        settings.retention_ladder = persisted_ladder.clone();
-        settings
-            .retention_ladder
-            .apply_legacy_aliases(settings.retention_hours, settings.rollup_retention_days);
-    }
-    Ok(settings)
 }
 
 async fn latest_snapshot(State(state): State<AppState>) -> Result<Response, ServeError> {
@@ -867,32 +849,5 @@ mod tests {
             changed_setting_keys(&previous, &saved),
             vec!["retentionLadder"]
         );
-    }
-
-    #[test]
-    fn settings_payload_without_ladder_derives_it_from_legacy_aliases() {
-        let mut persisted_ladder = RetentionLadder::default();
-        persisted_ladder.l3.enabled = false;
-        persisted_ladder.l4.keep_days = 0;
-        persisted_ladder.detail_interval_sec = 30;
-        persisted_ladder.archive.queryable = true;
-        let mut payload = serde_json::to_value(DashboardSettings::default())
-            .expect("default settings should serialize");
-        payload
-            .as_object_mut()
-            .expect("settings should be an object")
-            .remove("retentionLadder");
-        payload["retentionHours"] = json!(96);
-        payload["rollupRetentionDays"] = json!(14);
-
-        let settings = dashboard_settings_from_payload(payload, &persisted_ladder)
-            .expect("payload should parse");
-
-        assert_eq!(settings.retention_ladder.l1.keep_days, 4);
-        assert_eq!(settings.retention_ladder.l2.keep_days, 14);
-        assert_eq!(settings.retention_ladder.l3, persisted_ladder.l3);
-        assert_eq!(settings.retention_ladder.l4, persisted_ladder.l4);
-        assert_eq!(settings.retention_ladder.detail_interval_sec, 30);
-        assert!(settings.retention_ladder.archive.queryable);
     }
 }

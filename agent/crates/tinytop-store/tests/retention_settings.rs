@@ -1,7 +1,8 @@
 use serde_json::{Value, json};
 use tinytop_store::{
-    DashboardSettings, SqliteHistoryStore, StoreError, ladder::Tier,
-    retention_ladder::RetentionLadder,
+    DashboardSettings, SqliteHistoryStore, StoreError,
+    ladder::Tier,
+    retention_ladder::{DiskPressureState, RetentionLadder},
 };
 use tinytop_types::{
     CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
@@ -46,6 +47,16 @@ fn with_field(path: &[&str], value: Value) -> Value {
     }
     current[path[path.len() - 1]] = value;
     ladder
+}
+
+fn settings_document_without_ladder(settings: &DashboardSettings) -> Value {
+    let mut document =
+        serde_json::to_value(settings).expect("dashboard settings should serialize to JSON");
+    document
+        .as_object_mut()
+        .expect("dashboard settings should serialize to an object")
+        .remove("retentionLadder");
+    document
 }
 
 fn invalid_cases() -> Vec<InvalidCase> {
@@ -211,8 +222,189 @@ fn retention_ladder_accepts_boundaries_and_forever() {
     ladder.disk_check.min_free_bytes = 256 * 1024 * 1024;
 
     ladder
-        .validate(false, None)
+        .validate(None, None)
         .expect("documented lower bounds and L4 forever should be valid");
+}
+
+#[test]
+fn validate_emits_the_spec_disk_pressure_message() {
+    let previous = RetentionLadder::default();
+    let mut growing = previous.clone();
+    growing.l2.keep_days += 1;
+    let active_pressure = DiskPressureState {
+        active: true,
+        free_bytes: 1_000,
+        min_free_bytes: 5_000,
+    };
+
+    let error = growing
+        .validate(Some(&active_pressure), Some(&previous))
+        .expect_err("growth should be refused while disk pressure is active");
+    assert_eq!(
+        error.to_string(),
+        "disk pressure active: free 1000 < minFreeBytes 5000; shrink first or free disk"
+    );
+
+    let inactive_pressure = DiskPressureState {
+        active: false,
+        ..active_pressure
+    };
+    growing
+        .validate(Some(&inactive_pressure), Some(&previous))
+        .expect("inactive disk pressure should allow growth");
+}
+
+#[test]
+fn disk_pressure_rule_table() {
+    struct PressureCase {
+        name: &'static str,
+        configure: fn(&mut RetentionLadder, &mut RetentionLadder),
+        refused: bool,
+    }
+
+    let cases = [
+        PressureCase {
+            name: "l1 +1",
+            configure: |_, candidate| candidate.l1.keep_days += 1,
+            refused: true,
+        },
+        PressureCase {
+            name: "l2 +1",
+            configure: |_, candidate| candidate.l2.keep_days += 1,
+            refused: true,
+        },
+        PressureCase {
+            name: "l3 enabled keepDays +1",
+            configure: |_, candidate| candidate.l3.keep_days += 1,
+            refused: true,
+        },
+        PressureCase {
+            name: "l3 enable",
+            configure: |previous, _| previous.l3.enabled = false,
+            refused: true,
+        },
+        PressureCase {
+            name: "l3 disabled keepDays +1",
+            configure: |previous, candidate| {
+                previous.l3.enabled = false;
+                candidate.l3.enabled = false;
+                candidate.l3.keep_days += 1;
+            },
+            refused: false,
+        },
+        PressureCase {
+            name: "l4 enable",
+            configure: |previous, _| previous.l4.enabled = false,
+            refused: true,
+        },
+        PressureCase {
+            name: "l4 finite to forever",
+            configure: |_, candidate| candidate.l4.keep_days = 0,
+            refused: true,
+        },
+        PressureCase {
+            name: "l4 forever to finite",
+            configure: |previous, _| previous.l4.keep_days = 0,
+            refused: false,
+        },
+        PressureCase {
+            name: "l4 finite +1",
+            configure: |_, candidate| candidate.l4.keep_days += 1,
+            refused: true,
+        },
+        PressureCase {
+            name: "snapshotJsonKeepMinutes +1",
+            configure: |_, candidate| candidate.snapshot_json_keep_minutes += 1,
+            refused: true,
+        },
+        PressureCase {
+            name: "archive.queryable enable",
+            configure: |_, candidate| candidate.archive.queryable = true,
+            refused: true,
+        },
+        PressureCase {
+            name: "archive.cold enable",
+            configure: |previous, candidate| {
+                previous.archive.queryable = true;
+                candidate.archive.queryable = true;
+                candidate.archive.cold = true;
+            },
+            refused: true,
+        },
+        PressureCase {
+            name: "detailIntervalSec change",
+            configure: |_, candidate| candidate.detail_interval_sec += 1,
+            refused: false,
+        },
+        PressureCase {
+            name: "diskCheck.* change",
+            configure: |_, candidate| {
+                candidate.disk_check.interval_minutes += 1;
+                candidate.disk_check.min_free_bytes += 1;
+            },
+            refused: false,
+        },
+        PressureCase {
+            name: "l1 shrink",
+            configure: |previous, _| previous.l1.keep_days += 1,
+            refused: false,
+        },
+        PressureCase {
+            name: "l2 shrink",
+            configure: |previous, _| previous.l2.keep_days += 1,
+            refused: false,
+        },
+        PressureCase {
+            name: "l3 shrink",
+            configure: |previous, _| previous.l3.keep_days += 1,
+            refused: false,
+        },
+        PressureCase {
+            name: "l4 shrink",
+            configure: |previous, _| previous.l4.keep_days += 1,
+            refused: false,
+        },
+    ];
+    let active_pressure = DiskPressureState {
+        active: true,
+        free_bytes: 1_000,
+        min_free_bytes: 5_000,
+    };
+    let inactive_pressure = DiskPressureState {
+        active: false,
+        free_bytes: 1_000,
+        min_free_bytes: 5_000,
+    };
+    let expected_message =
+        "disk pressure active: free 1000 < minFreeBytes 5000; shrink first or free disk";
+    let mut failures = Vec::new();
+
+    for case in cases {
+        let mut previous = RetentionLadder::default();
+        let mut candidate = previous.clone();
+        (case.configure)(&mut previous, &mut candidate);
+
+        match (
+            case.refused,
+            candidate.validate(Some(&active_pressure), Some(&previous)),
+        ) {
+            (true, Err(StoreError::Validation(message))) if message == expected_message => {}
+            (false, Ok(())) => {}
+            (_, result) => failures.push(format!(
+                "{} with active pressure: expected refused={}, observed {result:?}",
+                case.name, case.refused
+            )),
+        }
+
+        if let Err(error) = candidate.validate(Some(&inactive_pressure), Some(&previous)) {
+            failures.push(format!(
+                "{} with inactive pressure: expected Ok, observed {error}",
+                case.name
+            ));
+        }
+    }
+
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -224,6 +416,46 @@ fn legacy_aliases_derive_ladder_with_minimums() {
     let clamped = RetentionLadder::from_legacy(24, 2);
     assert_eq!(clamped.l1.keep_days, 3);
     assert_eq!(clamped.l2.keep_days, 7);
+}
+
+#[test]
+fn from_document_without_ladder_merges_legacy_aliases_onto_the_persisted_ladder() {
+    let mut persisted_ladder = RetentionLadder::default();
+    persisted_ladder.l3.enabled = false;
+    persisted_ladder.l4.keep_days = 0;
+    persisted_ladder.detail_interval_sec = 30;
+    persisted_ladder.archive.queryable = true;
+    let mut document = settings_document_without_ladder(&DashboardSettings::default());
+    document["retentionHours"] = json!(96);
+    document["rollupRetentionDays"] = json!(14);
+
+    let settings = DashboardSettings::from_document(document, Some(&persisted_ladder))
+        .expect("legacy settings document should decode");
+
+    assert_eq!(settings.retention_ladder.l1.keep_days, 4);
+    assert_eq!(settings.retention_ladder.l2.keep_days, 14);
+    assert_eq!(settings.retention_ladder.l3, persisted_ladder.l3);
+    assert_eq!(settings.retention_ladder.l4, persisted_ladder.l4);
+    assert_eq!(settings.retention_ladder.detail_interval_sec, 30);
+    assert!(settings.retention_ladder.archive.queryable);
+}
+
+#[test]
+fn from_document_with_persisted_ladder_never_resets_customised_toggles() {
+    let mut persisted_ladder = RetentionLadder::default();
+    persisted_ladder.l3.enabled = false;
+    persisted_ladder.l4.keep_days = 0;
+    persisted_ladder.archive.directory = "/x".to_string();
+    let mut document = settings_document_without_ladder(&DashboardSettings::default());
+    document["retentionHours"] = json!(96);
+
+    let settings = DashboardSettings::from_document(document, Some(&persisted_ladder))
+        .expect("legacy settings document should decode");
+
+    assert_eq!(settings.retention_ladder.l1.keep_days, 4);
+    assert!(!settings.retention_ladder.l3.enabled);
+    assert_eq!(settings.retention_ladder.l4.keep_days, 0);
+    assert_eq!(settings.retention_ladder.archive.directory, "/x");
 }
 
 #[test]
@@ -317,6 +549,31 @@ async fn settings_save_round_trip_writes_legacy_mirrors() {
     let store = SqliteHistoryStore::connect(&database_url)
         .await
         .expect("store should connect");
+    let default_saved = store
+        .put_settings(&DashboardSettings::default())
+        .await
+        .expect("default settings should save");
+    assert_eq!(default_saved.retention_hours, 72);
+    assert_eq!(default_saved.rollup_retention_days, 30);
+    drop(store);
+
+    let pool = sqlx::SqlitePool::connect(&database_url)
+        .await
+        .expect("raw database should open");
+    let value_json: String =
+        sqlx::query_scalar("SELECT value_json FROM app_settings WHERE setting_key = 'dashboard'")
+            .fetch_one(&pool)
+            .await
+            .expect("stored default settings JSON");
+    let document: Value =
+        serde_json::from_str(&value_json).expect("stored default settings should be JSON");
+    assert_eq!(document["retentionHours"], json!(72));
+    assert_eq!(document["rollupRetentionDays"], json!(30));
+    pool.close().await;
+
+    let store = SqliteHistoryStore::connect(&database_url)
+        .await
+        .expect("store should reopen for customized settings");
     let mut candidate = DashboardSettings::default();
     candidate.retention_ladder.l1.keep_days = 4;
     candidate.retention_ladder.l2.keep_days = 31;
@@ -360,16 +617,26 @@ async fn consecutive_legacy_edits_work_and_explicit_ladder_reset_wins() {
     let store = SqliteHistoryStore::connect("sqlite::memory:")
         .await
         .expect("store should connect");
-    let mut first_legacy_edit = DashboardSettings::default();
-    first_legacy_edit.retention_hours = 96;
+    let previous = store
+        .get_settings()
+        .await
+        .expect("default settings should load");
+    let mut first_document = settings_document_without_ladder(&previous);
+    first_document["retentionHours"] = json!(96);
+    let first_legacy_edit =
+        DashboardSettings::from_document(first_document, Some(&previous.retention_ladder))
+            .expect("first legacy document should decode");
     let first = store
         .put_settings(&first_legacy_edit)
         .await
         .expect("first legacy edit should save");
     assert_eq!(first.retention_ladder.l1.keep_days, 4);
 
-    let mut second_legacy_edit = first.clone();
-    second_legacy_edit.retention_hours = 120;
+    let mut second_document = settings_document_without_ladder(&first);
+    second_document["retentionHours"] = json!(120);
+    let second_legacy_edit =
+        DashboardSettings::from_document(second_document, Some(&first.retention_ladder))
+            .expect("second legacy document should decode");
     let second = store
         .put_settings(&second_legacy_edit)
         .await
@@ -404,8 +671,11 @@ async fn legacy_alias_edit_preserves_non_legacy_ladder_settings() {
         .await
         .expect("non-default baseline should save");
 
-    let mut legacy_edit = baseline.clone();
-    legacy_edit.retention_hours = 96;
+    let mut legacy_document = settings_document_without_ladder(&baseline);
+    legacy_document["retentionHours"] = json!(96);
+    let legacy_edit =
+        DashboardSettings::from_document(legacy_document, Some(&baseline.retention_ladder))
+            .expect("legacy document should decode");
     let saved = store
         .put_settings(&legacy_edit)
         .await
