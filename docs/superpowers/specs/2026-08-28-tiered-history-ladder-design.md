@@ -207,7 +207,7 @@ Exporter: `opentelemetry` / `opentelemetry_sdk` / `opentelemetry-otlp` at the sa
 
 ## 13. Two-runtime invariant — what stays identical
 
-Retention, folding, migration, archive, disk check, OTel and config import are **Rust-daemon-only** (as maintenance already is; ADR 0005/0009 pattern). The dashboard is single-source and identical. Bun's `history-store.ts` needs **no change**: its `INSERT` still supplies every column including `snapshot_json`; the legacy settings keys remain present and derived. `bun run check` must stay green after every lane.
+Retention, folding, migration, archive, disk check, OTel and config import are **Rust-daemon-only** (as maintenance already is; ADR 0005/0009 pattern). The dashboard is single-source and identical. Bun's `history-store.ts` changes in exactly one way (found by the T1 review, 2026-08-28): its two raw `SELECT`s filter `snapshot_json IS NOT NULL`, so the raw endpoint's horizon is the JSON window on both runtimes (§10) instead of a `JSON.parse(null)` crash on migrated rows. Its `INSERT` still supplies every column including `snapshot_json`; the legacy settings keys remain present and derived. `bun run check` must stay green after every lane.
 
 ## 14. CLI additions (`tinytop-agent`)
 
