@@ -1,4 +1,6 @@
 pub mod disk;
+pub mod ladder;
+pub mod maintenance;
 pub mod migration;
 
 use std::{
@@ -9,10 +11,12 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value as JsonValue;
 use sqlx::{
-    Row, SqlitePool,
+    AssertSqlSafe, Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use tinytop_types::SystemSnapshot;
+
+use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, raw_to_bucket};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,6 +239,20 @@ pub struct HistoryCoverage {
     pub database_budget_percent: f64,
     pub rollup_oldest_captured_at_ms: Option<i64>,
     pub rollup_newest_captured_at_ms: Option<i64>,
+    pub tiers: Vec<HistoryTierCoverage>,
+    pub snapshot_json_oldest_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryTierCoverage {
+    pub tier: String,
+    pub enabled: bool,
+    pub keep_days: i64,
+    pub resolution_ms: i64,
+    pub bucket_count: i64,
+    pub oldest_ms: Option<i64>,
+    pub newest_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -535,13 +553,298 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
+        self.write_detail_rows_if_due(
+            captured_at_ms,
+            snapshot,
+            maintenance::DEFAULT_DETAIL_INTERVAL_MS,
+        )
+        .await?;
         self.rebuild_rollup_bucket(bucket_start_ms(captured_at_ms))
             .await?;
+        maintenance::refold_ancestors_for_late_write(self, captured_at_ms).await?;
 
         Ok(HistorySample {
             captured_at_ms,
             snapshot: snapshot.clone(),
         })
+    }
+
+    pub async fn read_tier_buckets(
+        &self,
+        tier: Tier,
+        since_ms: i64,
+        until_ms: i64,
+    ) -> Result<Vec<TierBucket>, StoreError> {
+        if tier == Tier::L1 {
+            let rows = sqlx::query(
+                r#"
+                SELECT captured_at_ms, cpu_usage_percent, memory_used_percent,
+                       swap_used_percent, load_percent, root_used_percent
+                FROM metric_samples
+                WHERE captured_at_ms >= ? AND captured_at_ms < ?
+                ORDER BY captured_at_ms
+                "#,
+            )
+            .bind(since_ms)
+            .bind(until_ms)
+            .fetch_all(&self.pool)
+            .await?;
+            return rows
+                .into_iter()
+                .map(|row| {
+                    Ok(raw_to_bucket(&RawSampleRow {
+                        captured_at_ms: row.try_get("captured_at_ms")?,
+                        cpu_usage_percent: row.try_get("cpu_usage_percent")?,
+                        memory_used_percent: row.try_get("memory_used_percent")?,
+                        swap_used_percent: row.try_get("swap_used_percent")?,
+                        load_percent: row.try_get("load_percent")?,
+                        root_used_percent: row.try_get("root_used_percent")?,
+                    }))
+                })
+                .collect();
+        }
+
+        let sql = format!(
+            r#"
+            SELECT bucket_start_ms, first_captured_at_ms, newest_captured_at_ms, sample_count,
+                   avg_cpu_usage_percent,
+                   COALESCE(min_cpu_usage_percent, avg_cpu_usage_percent) AS min_cpu_usage_percent,
+                   max_cpu_usage_percent,
+                   avg_memory_used_percent,
+                   COALESCE(min_memory_used_percent, avg_memory_used_percent) AS min_memory_used_percent,
+                   max_memory_used_percent,
+                   avg_swap_used_percent,
+                   COALESCE(min_swap_used_percent, avg_swap_used_percent) AS min_swap_used_percent,
+                   max_swap_used_percent,
+                   avg_load_percent,
+                   COALESCE(min_load_percent, avg_load_percent) AS min_load_percent,
+                   max_load_percent,
+                   avg_root_used_percent,
+                   COALESCE(min_root_used_percent, avg_root_used_percent) AS min_root_used_percent,
+                   COALESCE(max_root_used_percent, avg_root_used_percent) AS max_root_used_percent
+            FROM {}
+            WHERE bucket_start_ms >= ? AND bucket_start_ms < ?
+            ORDER BY bucket_start_ms
+            "#,
+            tier.table()
+        );
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .bind(since_ms)
+            .bind(until_ms)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.into_iter().map(tier_bucket_from_row).collect()
+    }
+
+    pub async fn upsert_tier_bucket(
+        &self,
+        tier: Tier,
+        bucket: &TierBucket,
+    ) -> Result<(), StoreError> {
+        if tier == Tier::L1 {
+            return Err(StoreError::Validation(
+                "Tier::L1 is written through insert_snapshot, not upsert_tier_bucket".to_string(),
+            ));
+        }
+        let sql = format!(
+            r#"
+            INSERT INTO {} (
+              bucket_start_ms, first_captured_at_ms, newest_captured_at_ms, sample_count,
+              avg_cpu_usage_percent, min_cpu_usage_percent, max_cpu_usage_percent,
+              avg_memory_used_percent, min_memory_used_percent, max_memory_used_percent,
+              avg_swap_used_percent, min_swap_used_percent, max_swap_used_percent,
+              avg_load_percent, min_load_percent, max_load_percent,
+              avg_root_used_percent, min_root_used_percent, max_root_used_percent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket_start_ms) DO UPDATE SET
+              first_captured_at_ms = excluded.first_captured_at_ms,
+              newest_captured_at_ms = excluded.newest_captured_at_ms,
+              sample_count = excluded.sample_count,
+              avg_cpu_usage_percent = excluded.avg_cpu_usage_percent,
+              min_cpu_usage_percent = excluded.min_cpu_usage_percent,
+              max_cpu_usage_percent = excluded.max_cpu_usage_percent,
+              avg_memory_used_percent = excluded.avg_memory_used_percent,
+              min_memory_used_percent = excluded.min_memory_used_percent,
+              max_memory_used_percent = excluded.max_memory_used_percent,
+              avg_swap_used_percent = excluded.avg_swap_used_percent,
+              min_swap_used_percent = excluded.min_swap_used_percent,
+              max_swap_used_percent = excluded.max_swap_used_percent,
+              avg_load_percent = excluded.avg_load_percent,
+              min_load_percent = excluded.min_load_percent,
+              max_load_percent = excluded.max_load_percent,
+              avg_root_used_percent = excluded.avg_root_used_percent,
+              min_root_used_percent = excluded.min_root_used_percent,
+              max_root_used_percent = excluded.max_root_used_percent
+            "#,
+            tier.table()
+        );
+        sqlx::query(AssertSqlSafe(sql))
+            .bind(bucket.bucket_start_ms)
+            .bind(bucket.first_captured_at_ms)
+            .bind(bucket.newest_captured_at_ms)
+            .bind(bucket.sample_count)
+            .bind(bucket.cpu.avg)
+            .bind(bucket.cpu.min)
+            .bind(bucket.cpu.max)
+            .bind(bucket.memory.avg)
+            .bind(bucket.memory.min)
+            .bind(bucket.memory.max)
+            .bind(bucket.swap.avg)
+            .bind(bucket.swap.min)
+            .bind(bucket.swap.max)
+            .bind(bucket.load.avg)
+            .bind(bucket.load.min)
+            .bind(bucket.load.max)
+            .bind(bucket.root_used.map(|stat| stat.avg))
+            .bind(bucket.root_used.map(|stat| stat.min))
+            .bind(bucket.root_used.map(|stat| stat.max))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn oldest_tier_bucket_start_at_or_after(
+        &self,
+        tier: Tier,
+        since_ms: i64,
+    ) -> Result<Option<i64>, StoreError> {
+        let time_column = if tier == Tier::L1 {
+            "captured_at_ms"
+        } else {
+            "bucket_start_ms"
+        };
+        let sql = format!(
+            "SELECT MIN({time_column}) FROM {} WHERE {time_column} >= ?",
+            tier.table()
+        );
+        Ok(sqlx::query_scalar(AssertSqlSafe(sql))
+            .bind(since_ms)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    async fn write_detail_rows_if_due(
+        &self,
+        captured_at_ms: i64,
+        snapshot: &SystemSnapshot,
+        interval_ms: i64,
+    ) -> Result<i64, StoreError> {
+        let last_detail_ms = self.history_state_get::<i64>("lastDetailMs").await?;
+        if last_detail_ms.is_some_and(|last| {
+            captured_at_ms != last && captured_at_ms.saturating_sub(last) < interval_ms
+        }) {
+            return Ok(0);
+        }
+        let detail_rows = to_i64(
+            snapshot
+                .filesystems
+                .len()
+                .saturating_add(snapshot.processes.len()),
+            "detail row count",
+        )?;
+
+        let mut transaction = self.pool.begin().await?;
+        for filesystem in &snapshot.filesystems {
+            sqlx::query(
+                r#"
+                INSERT INTO fs_samples (
+                  captured_at_ms, mount, filesystem, fs_type, size_bytes, used_bytes,
+                  available_bytes, used_percent, inode_used_percent, inode_used, inode_total
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(captured_at_ms, mount) DO UPDATE SET
+                  filesystem = excluded.filesystem, fs_type = excluded.fs_type,
+                  size_bytes = excluded.size_bytes, used_bytes = excluded.used_bytes,
+                  available_bytes = excluded.available_bytes, used_percent = excluded.used_percent,
+                  inode_used_percent = excluded.inode_used_percent,
+                  inode_used = excluded.inode_used, inode_total = excluded.inode_total
+                "#,
+            )
+            .bind(captured_at_ms)
+            .bind(&filesystem.mount)
+            .bind(&filesystem.filesystem)
+            .bind(&filesystem.fs_type)
+            .bind(to_i64(filesystem.size_bytes, "filesystem size bytes")?)
+            .bind(to_i64(filesystem.used_bytes, "filesystem used bytes")?)
+            .bind(to_i64(
+                filesystem.available_bytes,
+                "filesystem available bytes",
+            )?)
+            .bind(filesystem.used_percent)
+            .bind(filesystem.inode_used_percent)
+            .bind(
+                filesystem
+                    .inode_used
+                    .map(|value| to_i64(value, "filesystem inode used"))
+                    .transpose()?,
+            )
+            .bind(
+                filesystem
+                    .inode_total
+                    .map(|value| to_i64(value, "filesystem inode total"))
+                    .transpose()?,
+            )
+            .execute(&mut *transaction)
+            .await?;
+        }
+        for (rank, process) in snapshot.processes.iter().enumerate() {
+            sqlx::query(
+                r#"
+                INSERT INTO process_samples (
+                  captured_at_ms, rank, pid, command, cpu_percent, memory_percent,
+                  rss_bytes, parent_pid, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(captured_at_ms, rank) DO UPDATE SET
+                  pid = excluded.pid, command = excluded.command,
+                  cpu_percent = excluded.cpu_percent, memory_percent = excluded.memory_percent,
+                  rss_bytes = excluded.rss_bytes, parent_pid = excluded.parent_pid,
+                  started_at = excluded.started_at
+                "#,
+            )
+            .bind(captured_at_ms)
+            .bind(to_i64(rank, "process rank")?)
+            .bind(to_i64(process.pid, "process pid")?)
+            .bind(&process.command)
+            .bind(process.cpu_percent)
+            .bind(process.memory_percent)
+            .bind(to_i64(process.rss_bytes, "process rss bytes")?)
+            .bind(
+                process
+                    .parent_pid
+                    .map(|value| to_i64(value, "process parent pid"))
+                    .transpose()?,
+            )
+            .bind(&process.started_at)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        let value_json = serde_json::to_string(&captured_at_ms)?;
+        sqlx::query(
+            r#"
+            INSERT INTO history_state (state_key, value_json, updated_at_ms)
+            VALUES ('lastDetailMs', ?, ?)
+            ON CONFLICT(state_key) DO UPDATE SET
+              value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms
+            "#,
+        )
+        .bind(value_json)
+        .bind(captured_at_ms)
+        .execute(&mut *transaction)
+        .await?;
+        let detail_rows_json = serde_json::to_string(&detail_rows)?;
+        sqlx::query(
+            r#"
+            INSERT INTO history_state (state_key, value_json, updated_at_ms)
+            VALUES ('pendingDetailRows', ?, ?)
+            ON CONFLICT(state_key) DO UPDATE SET
+              value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms
+            "#,
+        )
+        .bind(detail_rows_json)
+        .bind(captured_at_ms)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(detail_rows)
     }
 
     pub async fn latest_snapshot(&self) -> Result<Option<HistorySample>, StoreError> {
@@ -706,6 +1009,62 @@ impl SqliteHistoryStore {
         )
         .fetch_one(&self.pool)
         .await?;
+        let snapshot_json_oldest_ms: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(captured_at_ms) FROM metric_samples WHERE snapshot_json IS NOT NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let l3_enabled = self
+            .history_state_get::<bool>("l3Enabled")
+            .await?
+            .unwrap_or(true);
+        let l4_enabled = self
+            .history_state_get::<bool>("l4Enabled")
+            .await?
+            .unwrap_or(true);
+        let mut tiers = Vec::with_capacity(4);
+        for (tier, keep_days) in [
+            (Tier::L1, (settings.retention_hours + 23).saturating_div(24)),
+            (Tier::L2, settings.rollup_retention_days),
+            (Tier::L3, 90),
+            (Tier::L4, 730),
+        ] {
+            let time_column = if tier == Tier::L1 {
+                "captured_at_ms"
+            } else {
+                "bucket_start_ms"
+            };
+            let sql = format!(
+                "SELECT COUNT(*) AS bucket_count, MIN({time_column}) AS oldest_ms, MAX({time_column}) AS newest_ms FROM {}",
+                tier.table()
+            );
+            let tier_row = sqlx::query(AssertSqlSafe(sql))
+                .fetch_one(&self.pool)
+                .await?;
+            tiers.push(HistoryTierCoverage {
+                tier: match tier {
+                    Tier::L1 => "l1",
+                    Tier::L2 => "l2",
+                    Tier::L3 => "l3",
+                    Tier::L4 => "l4",
+                }
+                .to_string(),
+                enabled: match tier {
+                    Tier::L1 | Tier::L2 => true,
+                    Tier::L3 => l3_enabled,
+                    Tier::L4 => l4_enabled,
+                },
+                keep_days,
+                resolution_ms: if tier == Tier::L1 {
+                    settings.poll_interval_ms
+                } else {
+                    tier.resolution_ms()
+                },
+                bucket_count: tier_row.try_get("bucket_count")?,
+                oldest_ms: tier_row.try_get("oldest_ms")?,
+                newest_ms: tier_row.try_get("newest_ms")?,
+            });
+        }
         let database_bytes = self.database_bytes().await?;
         let database_budget_percent = if settings.target_database_bytes > 0 {
             (database_bytes as f64 / settings.target_database_bytes as f64) * 100.0
@@ -727,6 +1086,8 @@ impl SqliteHistoryStore {
                 .try_get::<Option<i64>, _>("rollup_oldest_captured_at_ms")?,
             rollup_newest_captured_at_ms: row
                 .try_get::<Option<i64>, _>("rollup_newest_captured_at_ms")?,
+            tiers,
+            snapshot_json_oldest_ms,
         })
     }
 
@@ -741,23 +1102,65 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
-        self.rebuild_rollup_bucket(bucket_start_ms(cutoff_ms))
-            .await?;
-
         Ok(result.rows_affected())
     }
 
-    pub async fn prune_rollups(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+    pub async fn prune_rollups(&self, tier: Tier, cutoff_end_ms: i64) -> Result<u64, StoreError> {
+        if tier == Tier::L1 {
+            return Err(StoreError::Validation(
+                "Tier::L1 is pruned through prune_raw_history, not prune_rollups".to_string(),
+            ));
+        }
+        let sql = format!(
+            "DELETE FROM {} WHERE bucket_start_ms + ? <= ?",
+            tier.table()
+        );
+        let result = sqlx::query(AssertSqlSafe(sql))
+            .bind(tier.resolution_ms())
+            .bind(cutoff_end_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub(crate) async fn strip_snapshot_json(
+        &self,
+        cutoff_ms: i64,
+        limit: i64,
+    ) -> Result<u64, StoreError> {
         let result = sqlx::query(
             r#"
-            DELETE FROM metric_rollups_1m
-            WHERE bucket_start_ms < ?
+            UPDATE metric_samples
+            SET snapshot_json = NULL
+            WHERE rowid IN (
+              SELECT rowid FROM metric_samples
+              WHERE captured_at_ms < ? AND snapshot_json IS NOT NULL
+              ORDER BY captured_at_ms
+              LIMIT ?
+            )
             "#,
         )
-        .bind(bucket_start_ms(cutoff_ms))
+        .bind(cutoff_ms)
+        .bind(limit)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
+    }
+
+    pub(crate) async fn prune_detail_history(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+        let mut transaction = self.pool.begin().await?;
+        let fs = sqlx::query("DELETE FROM fs_samples WHERE captured_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+        let processes = sqlx::query("DELETE FROM process_samples WHERE captured_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+        transaction.commit().await?;
+        Ok(fs.saturating_add(processes))
     }
 
     pub async fn integrity_check(&self) -> Result<String, StoreError> {
@@ -954,14 +1357,20 @@ impl SqliteHistoryStore {
               MIN(captured_at_ms) AS first_captured_at_ms,
               MAX(captured_at_ms) AS newest_captured_at_ms,
               AVG(cpu_usage_percent) AS avg_cpu_usage_percent,
+              MIN(cpu_usage_percent) AS min_cpu_usage_percent,
               MAX(cpu_usage_percent) AS max_cpu_usage_percent,
               AVG(memory_used_percent) AS avg_memory_used_percent,
+              MIN(memory_used_percent) AS min_memory_used_percent,
               MAX(memory_used_percent) AS max_memory_used_percent,
               AVG(swap_used_percent) AS avg_swap_used_percent,
+              MIN(swap_used_percent) AS min_swap_used_percent,
               MAX(swap_used_percent) AS max_swap_used_percent,
               AVG(load_percent) AS avg_load_percent,
+              MIN(load_percent) AS min_load_percent,
               MAX(load_percent) AS max_load_percent,
-              AVG(root_used_percent) AS avg_root_used_percent
+              AVG(root_used_percent) AS avg_root_used_percent,
+              MIN(root_used_percent) AS min_root_used_percent,
+              MAX(root_used_percent) AS max_root_used_percent
             FROM metric_samples
             WHERE captured_at_ms >= ? AND captured_at_ms < ?
             "#,
@@ -993,28 +1402,40 @@ impl SqliteHistoryStore {
               newest_captured_at_ms,
               sample_count,
               avg_cpu_usage_percent,
+              min_cpu_usage_percent,
               max_cpu_usage_percent,
               avg_memory_used_percent,
+              min_memory_used_percent,
               max_memory_used_percent,
               avg_swap_used_percent,
+              min_swap_used_percent,
               max_swap_used_percent,
               avg_load_percent,
+              min_load_percent,
               max_load_percent,
-              avg_root_used_percent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              avg_root_used_percent,
+              min_root_used_percent,
+              max_root_used_percent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(bucket_start_ms) DO UPDATE SET
               first_captured_at_ms = excluded.first_captured_at_ms,
               newest_captured_at_ms = excluded.newest_captured_at_ms,
               sample_count = excluded.sample_count,
               avg_cpu_usage_percent = excluded.avg_cpu_usage_percent,
+              min_cpu_usage_percent = excluded.min_cpu_usage_percent,
               max_cpu_usage_percent = excluded.max_cpu_usage_percent,
               avg_memory_used_percent = excluded.avg_memory_used_percent,
+              min_memory_used_percent = excluded.min_memory_used_percent,
               max_memory_used_percent = excluded.max_memory_used_percent,
               avg_swap_used_percent = excluded.avg_swap_used_percent,
+              min_swap_used_percent = excluded.min_swap_used_percent,
               max_swap_used_percent = excluded.max_swap_used_percent,
               avg_load_percent = excluded.avg_load_percent,
+              min_load_percent = excluded.min_load_percent,
               max_load_percent = excluded.max_load_percent,
-              avg_root_used_percent = excluded.avg_root_used_percent
+              avg_root_used_percent = excluded.avg_root_used_percent,
+              min_root_used_percent = excluded.min_root_used_percent,
+              max_root_used_percent = excluded.max_root_used_percent
             "#,
         )
         .bind(bucket_start_ms)
@@ -1022,14 +1443,20 @@ impl SqliteHistoryStore {
         .bind(row.try_get::<i64, _>("newest_captured_at_ms")?)
         .bind(sample_count)
         .bind(row.try_get::<f64, _>("avg_cpu_usage_percent")?)
+        .bind(row.try_get::<f64, _>("min_cpu_usage_percent")?)
         .bind(row.try_get::<f64, _>("max_cpu_usage_percent")?)
         .bind(row.try_get::<f64, _>("avg_memory_used_percent")?)
+        .bind(row.try_get::<f64, _>("min_memory_used_percent")?)
         .bind(row.try_get::<f64, _>("max_memory_used_percent")?)
         .bind(row.try_get::<f64, _>("avg_swap_used_percent")?)
+        .bind(row.try_get::<f64, _>("min_swap_used_percent")?)
         .bind(row.try_get::<f64, _>("max_swap_used_percent")?)
         .bind(row.try_get::<f64, _>("avg_load_percent")?)
+        .bind(row.try_get::<f64, _>("min_load_percent")?)
         .bind(row.try_get::<f64, _>("max_load_percent")?)
         .bind(row.try_get::<Option<f64>, _>("avg_root_used_percent")?)
+        .bind(row.try_get::<Option<f64>, _>("min_root_used_percent")?)
+        .bind(row.try_get::<Option<f64>, _>("max_root_used_percent")?)
         .execute(&self.pool)
         .await?;
 
@@ -1137,6 +1564,54 @@ fn row_to_sample(row: sqlx::sqlite::SqliteRow) -> Result<HistorySample, StoreErr
     Ok(HistorySample {
         captured_at_ms,
         snapshot,
+    })
+}
+
+fn tier_bucket_from_row(row: sqlx::sqlite::SqliteRow) -> Result<TierBucket, StoreError> {
+    let stat =
+        |avg: &'static str, min: &'static str, max: &'static str| -> Result<Stat, StoreError> {
+            Ok(Stat {
+                avg: row.try_get(avg)?,
+                min: row.try_get(min)?,
+                max: row.try_get(max)?,
+            })
+        };
+    let root_used = row
+        .try_get::<Option<f64>, _>("avg_root_used_percent")?
+        .map(|avg| {
+            Ok::<Stat, StoreError>(Stat {
+                avg,
+                min: row
+                    .try_get::<Option<f64>, _>("min_root_used_percent")?
+                    .unwrap_or(avg),
+                max: row
+                    .try_get::<Option<f64>, _>("max_root_used_percent")?
+                    .unwrap_or(avg),
+            })
+        })
+        .transpose()?;
+    Ok(TierBucket {
+        bucket_start_ms: row.try_get("bucket_start_ms")?,
+        first_captured_at_ms: row.try_get("first_captured_at_ms")?,
+        newest_captured_at_ms: row.try_get("newest_captured_at_ms")?,
+        sample_count: row.try_get("sample_count")?,
+        cpu: stat(
+            "avg_cpu_usage_percent",
+            "min_cpu_usage_percent",
+            "max_cpu_usage_percent",
+        )?,
+        memory: stat(
+            "avg_memory_used_percent",
+            "min_memory_used_percent",
+            "max_memory_used_percent",
+        )?,
+        swap: stat(
+            "avg_swap_used_percent",
+            "min_swap_used_percent",
+            "max_swap_used_percent",
+        )?,
+        load: stat("avg_load_percent", "min_load_percent", "max_load_percent")?,
+        root_used,
     })
 }
 

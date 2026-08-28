@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.8 - 2026-08-28
+
+- Added the Rust L1 raw → L2 one-minute → L3 five-minute → L4 hourly history ladder with sample-count-weighted folding, minimum/maximum preservation, nullable root utilization, legacy L2 bound fallback, bounded 50-bucket promotion passes, and persistent fold watermarks.
+- Fixed the measured rollup decimation defect by freezing completed one-minute buckets: L1 pruning no longer rebuilds the cutoff minute from its surviving tail. The regression test fails against the old path when a 40-sample bucket collapses to 16 under the deterministic 90-second cutoff, then passes unchanged after the prune rebuild is removed.
+- Enforced promote-before-prune across enabled tiers. L2/L3 rows remain until the nearest enabled coarser watermark has passed them, a newly promoted watermark authorizes deletion only on the next maintenance tick, disabled tiers are neither written nor pruned, and L4 `0` retention means forever.
+- Added late-write ancestor refolding, ongoing 500-row-bounded snapshot JSON stripping, 60-second typed filesystem/process detail sampling, per-tier coverage metadata, and the oldest JSON-bearing raw timestamp.
+
 ## 0.2.7 - 2026-08-28
 
 - Added SQLite schema v1: nullable `metric_samples.snapshot_json`, minimum/root-maximum columns on one-minute rollups, five-minute and hourly rollup tables, migration state, and typed filesystem/process detail tables.

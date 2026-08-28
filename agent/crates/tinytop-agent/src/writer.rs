@@ -458,14 +458,22 @@ async fn maintain_history(
     settings: &DashboardSettings,
 ) -> Result<(), ServeError> {
     let now = now_ms()?;
-    let raw_cutoff = now.saturating_sub(settings.retention_hours.saturating_mul(60 * 60 * 1000));
-    let rollup_cutoff = now.saturating_sub(
-        settings
-            .rollup_retention_days
-            .saturating_mul(24 * 60 * 60 * 1000),
-    );
-    state.store.prune_raw_history(raw_cutoff).await?;
-    state.store.prune_rollups(rollup_cutoff).await?;
+    let report = match tinytop_store::maintenance::maintain(&state.store, settings, now).await {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("history maintenance completed with an error: {error}");
+            return Ok(());
+        }
+    };
+    if report != tinytop_store::maintenance::MaintenanceReport::default() {
+        eprintln!("history maintenance debug: {report:?}");
+    }
+    if report.pruned.iter().any(|count| *count > 0) || report.expired_l4 > 0 {
+        eprintln!(
+            "history maintenance info: deleted tier rows {:?}, expired L4 rows {}",
+            report.pruned, report.expired_l4
+        );
+    }
     Ok(())
 }
 
