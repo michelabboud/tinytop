@@ -3,7 +3,7 @@
 Your escalation was **correct**: the plan claimed a call path that does not exist —
 `tinytop-store` has no dependency on `tinytop-collectors`, and the collector's `statvfs` is
 Linux-only. Thank you for stopping instead of guessing. The plan is amended on this branch
-(commit `PLAN_FIX_SHA`); nothing else changed.
+(commit `96701b9`); nothing else changed.
 
 Re-read, in this order, before touching code:
 
