@@ -549,6 +549,7 @@ impl SqliteHistoryStore {
             r#"
             SELECT captured_at_ms, snapshot_json
             FROM metric_samples
+            WHERE snapshot_json IS NOT NULL
             ORDER BY captured_at_ms DESC
             LIMIT 1
             "#,
@@ -568,7 +569,8 @@ impl SqliteHistoryStore {
             r#"
             SELECT captured_at_ms, snapshot_json
             FROM metric_samples
-            WHERE (?1 IS NULL OR captured_at_ms >= ?1)
+            WHERE snapshot_json IS NOT NULL
+              AND (?1 IS NULL OR captured_at_ms >= ?1)
               AND (?2 IS NULL OR captured_at_ms <= ?2)
             ORDER BY captured_at_ms DESC
             LIMIT ?3
@@ -1124,7 +1126,13 @@ impl From<serde_json::Error> for StoreError {
 
 fn row_to_sample(row: sqlx::sqlite::SqliteRow) -> Result<HistorySample, StoreError> {
     let captured_at_ms = row.try_get::<i64, _>("captured_at_ms")?;
-    let snapshot_json = row.try_get::<String, _>("snapshot_json")?;
+    let snapshot_json = row
+        .try_get::<Option<String>, _>("snapshot_json")?
+        .ok_or_else(|| {
+            StoreError::Validation(format!(
+                "metric_samples row at {captured_at_ms} has no snapshot_json"
+            ))
+        })?;
     let snapshot = serde_json::from_str(&snapshot_json)?;
     Ok(HistorySample {
         captured_at_ms,

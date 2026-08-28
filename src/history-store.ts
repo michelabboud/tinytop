@@ -203,7 +203,9 @@ export function openHistoryStore(dbPath = defaultHistoryDbPath()): HistoryStore 
 
     latestSnapshot() {
       const row = db
-        .query("SELECT captured_at_ms, snapshot_json FROM metric_samples ORDER BY captured_at_ms DESC LIMIT 1")
+        .query(
+          "SELECT captured_at_ms, snapshot_json FROM metric_samples WHERE snapshot_json IS NOT NULL ORDER BY captured_at_ms DESC LIMIT 1",
+        )
         .get() as MetricSampleRow | null;
       return row ? rowToHistorySample(row) : null;
     },
@@ -223,7 +225,7 @@ export function openHistoryStore(dbPath = defaultHistoryDbPath()): HistoryStore 
         params.$untilMs = Number(query.untilMs);
       }
 
-      const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+      const where = clauses.length > 0 ? `WHERE snapshot_json IS NOT NULL AND ${clauses.join(" AND ")}` : "WHERE snapshot_json IS NOT NULL";
       const rows = db
         .query(
           `

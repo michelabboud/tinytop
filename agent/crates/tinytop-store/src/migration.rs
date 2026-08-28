@@ -2,10 +2,11 @@ use std::{
     ffi::OsString,
     io,
     path::{Path, PathBuf},
-    time::Instant,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 use crate::{StoreError, disk};
@@ -13,7 +14,7 @@ use crate::{StoreError, disk};
 pub const SCHEMA_VERSION: i64 = 1;
 pub(crate) const DEFAULT_SNAPSHOT_JSON_KEEP_MS: i64 = 60 * 60 * 1_000;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationReport {
     pub from: i64,
@@ -21,18 +22,18 @@ pub struct MigrationReport {
     pub pre_image_path: Option<PathBuf>,
     pub samples_kept: i64,
     pub json_rows_kept: i64,
-    pub duration_ms: i64,
     pub bytes_before: i64,
-    pub bytes_after: i64,
+    pub vacuumed_at_ms: Option<i64>,
+    pub bytes_after: Option<i64>,
+    pub duration_ms: Option<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct MigrationAudit<'a> {
+struct MigrationAudit {
     #[serde(flatten)]
-    report: &'a MigrationReport,
-    started_ms: i64,
-    finished_ms: i64,
+    report: MigrationReport,
+    started_at_ms: i64,
 }
 
 const CREATE_SCHEMA_V1_SQL: &str = r#"
@@ -316,7 +317,7 @@ pub(crate) async fn ensure_schema(
     match user_version {
         SCHEMA_VERSION => {
             sqlx::raw_sql(CREATE_SCHEMA_V1_SQL).execute(pool).await?;
-            Ok(None)
+            complete_pending_migration(pool, db_path).await
         }
         0 => {
             let metric_samples_exists = table_exists(pool, "metric_samples").await?;
@@ -329,7 +330,7 @@ pub(crate) async fn ensure_schema(
                 .fetch_one(pool)
                 .await?;
             if sample_count == 0 {
-                rebuild_v0_schema(pool, now_ms, snapshot_json_keep_ms).await?;
+                rebuild_v0_schema(pool, now_ms, snapshot_json_keep_ms, None).await?;
                 return Ok(None);
             }
 
@@ -356,7 +357,6 @@ async fn migrate_populated_v0(
     snapshot_json_keep_ms: i64,
     sample_count: i64,
 ) -> Result<MigrationReport, StoreError> {
-    let started = Instant::now();
     let canonical_db_path = db_path
         .canonicalize()
         .map_err(|error| StoreError::Migration {
@@ -392,9 +392,11 @@ async fn migrate_populated_v0(
                 .to_string(),
         })?;
     let free_bytes = disk::free_bytes_at(database_dir).map_err(|error| StoreError::Migration {
-        reason: format!(
-            "cannot determine free bytes for database {}: {error}",
-            canonical_db_path.display()
+        reason: undeterminable_free_space_reason(
+            &canonical_db_path,
+            database_bytes,
+            required_bytes,
+            &error,
         ),
         remedy: format!(
             "make the database filesystem visible and ensure at least {required_bytes} bytes are free, then retry"
@@ -423,37 +425,46 @@ async fn migrate_populated_v0(
     .bind(cutoff_ms)
     .fetch_one(pool)
     .await?;
-    rebuild_v0_schema(pool, now_ms, snapshot_json_keep_ms).await?;
-
-    sqlx::query("VACUUM").execute(pool).await?;
-    let bytes_after = std::fs::metadata(&canonical_db_path)
-        .map_err(|error| StoreError::Migration {
-            reason: format!(
-                "schema reached v1 but the post-migration size of {} could not be read: {error}",
-                canonical_db_path.display()
-            ),
-            remedy: "keep the pre-image, inspect the main database, and retry startup".to_string(),
-        })?
-        .len();
-    let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
-    let report = MigrationReport {
-        from: 0,
-        to: SCHEMA_VERSION,
-        pre_image_path: Some(pre_image_path),
-        samples_kept: sample_count,
-        json_rows_kept,
-        duration_ms,
-        bytes_before: bytes_to_i64(database_bytes, "pre-migration database")?,
-        bytes_after: bytes_to_i64(bytes_after, "post-migration database")?,
+    let audit = MigrationAudit {
+        report: MigrationReport {
+            from: 0,
+            to: SCHEMA_VERSION,
+            pre_image_path: Some(pre_image_path),
+            samples_kept: sample_count,
+            json_rows_kept,
+            bytes_before: bytes_to_i64(database_bytes, "pre-migration database")?,
+            vacuumed_at_ms: None,
+            bytes_after: None,
+            duration_ms: None,
+        },
+        started_at_ms: now_ms,
     };
-    record_migration_audit(pool, &report, now_ms).await?;
-    Ok(report)
+    rebuild_v0_schema(pool, now_ms, snapshot_json_keep_ms, Some(&audit)).await?;
+
+    Ok(
+        vacuum_and_complete_migration(pool, &canonical_db_path, audit)
+            .await?
+            .report,
+    )
+}
+
+fn undeterminable_free_space_reason(
+    db_path: &Path,
+    database_bytes: u64,
+    required_bytes: u64,
+    error: &io::Error,
+) -> String {
+    format!(
+        "cannot determine free bytes for database {} with {database_bytes} bytes; {required_bytes} bytes are required for its pre-image: {error}",
+        db_path.display(),
+    )
 }
 
 async fn rebuild_v0_schema(
     pool: &SqlitePool,
     now_ms: i64,
     snapshot_json_keep_ms: i64,
+    migration_audit: Option<&MigrationAudit>,
 ) -> Result<(), StoreError> {
     let cutoff_ms = now_ms.saturating_sub(snapshot_json_keep_ms);
     let mut transaction = pool.begin().await?;
@@ -474,6 +485,9 @@ async fn rebuild_v0_schema(
         .execute(&mut *transaction)
         .await?;
     add_rollup_1m_columns(&mut transaction).await?;
+    if let Some(audit) = migration_audit {
+        write_migration_state(&mut transaction, audit, now_ms).await?;
+    }
     transaction.commit().await?;
     Ok(())
 }
@@ -558,19 +572,67 @@ async fn create_pre_image(pool: &SqlitePool, pre_image_path: &Path) -> Result<()
     Ok(())
 }
 
-async fn record_migration_audit(
+async fn complete_pending_migration(
     pool: &SqlitePool,
-    report: &MigrationReport,
-    started_ms: i64,
-) -> Result<(), StoreError> {
-    let finished_ms = started_ms.saturating_add(report.duration_ms);
-    let audit = MigrationAudit {
-        report,
-        started_ms,
-        finished_ms,
+    db_path: &Path,
+) -> Result<Option<MigrationReport>, StoreError> {
+    let value_json: Option<String> = sqlx::query_scalar(
+        "SELECT value_json FROM history_state WHERE state_key = 'schemaMigration'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    let Some(value_json) = value_json else {
+        return Ok(None);
     };
+    let value: JsonValue = serde_json::from_str(&value_json)?;
+    if !matches!(value.get("vacuumedAtMs"), Some(JsonValue::Null)) {
+        return Ok(None);
+    }
+
+    let audit: MigrationAudit = serde_json::from_value(value)?;
+    let canonical_db_path = db_path
+        .canonicalize()
+        .map_err(|error| StoreError::Migration {
+            reason: format!(
+                "schema reached v1 with an incomplete migration record, but database path {} cannot be resolved: {error}",
+                db_path.display()
+            ),
+            remedy: "keep the pre-image, make the database path accessible, and retry startup"
+                .to_string(),
+        })?;
+    let completed = vacuum_and_complete_migration(pool, &canonical_db_path, audit).await?;
+    Ok(Some(completed.report))
+}
+
+async fn vacuum_and_complete_migration(
+    pool: &SqlitePool,
+    db_path: &Path,
+    mut audit: MigrationAudit,
+) -> Result<MigrationAudit, StoreError> {
+    sqlx::query("VACUUM").execute(pool).await?;
+    let vacuumed_at_ms = current_time_ms();
+    let bytes_after = std::fs::metadata(db_path)
+        .map_err(|error| StoreError::Migration {
+            reason: format!(
+                "schema reached v1 but the post-migration size of {} could not be read: {error}",
+                db_path.display()
+            ),
+            remedy: "keep the pre-image, inspect the main database, and retry startup".to_string(),
+        })?
+        .len();
+    audit.report.vacuumed_at_ms = Some(vacuumed_at_ms);
+    audit.report.bytes_after = Some(bytes_to_i64(bytes_after, "post-migration database")?);
+    audit.report.duration_ms = Some(vacuumed_at_ms.saturating_sub(audit.started_at_ms).max(0));
+    finish_migration_audit(pool, &audit, vacuumed_at_ms).await?;
+    Ok(audit)
+}
+
+async fn write_migration_state(
+    transaction: &mut Transaction<'_, Sqlite>,
+    audit: &MigrationAudit,
+    updated_at_ms: i64,
+) -> Result<(), StoreError> {
     let value_json = serde_json::to_string(&audit)?;
-    let mut transaction = pool.begin().await?;
     sqlx::query(
         r#"
         INSERT INTO history_state (state_key, value_json, updated_at_ms)
@@ -581,16 +643,30 @@ async fn record_migration_audit(
         "#,
     )
     .bind(&value_json)
-    .bind(finished_ms)
-    .execute(&mut *transaction)
+    .bind(updated_at_ms)
+    .execute(&mut **transaction)
     .await?;
+    Ok(())
+}
+
+async fn finish_migration_audit(
+    pool: &SqlitePool,
+    audit: &MigrationAudit,
+    vacuumed_at_ms: i64,
+) -> Result<(), StoreError> {
+    let value_json = serde_json::to_string(audit)?;
+    let mut transaction = pool.begin().await?;
+    write_migration_state(&mut transaction, audit, vacuumed_at_ms).await?;
     sqlx::query(
         r#"
         INSERT INTO app_events (occurred_at_ms, marker_type, label, details_json)
-        VALUES (?, 'schemaMigrated', 'SQLite schema migrated from v0 to v1', ?)
+        SELECT ?, 'schemaMigrated', 'SQLite schema migrated from v0 to v1', ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM app_events WHERE marker_type = 'schemaMigrated'
+        )
         "#,
     )
-    .bind(finished_ms)
+    .bind(vacuumed_at_ms)
     .bind(&value_json)
     .execute(&mut *transaction)
     .await?;
@@ -598,9 +674,37 @@ async fn record_migration_audit(
     Ok(())
 }
 
+fn current_time_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
 fn bytes_to_i64(bytes: u64, description: &str) -> Result<i64, StoreError> {
     i64::try_from(bytes).map_err(|_| StoreError::Migration {
         reason: format!("{description} size {bytes} does not fit in SQLite INTEGER"),
         remedy: "keep the pre-image and inspect the database before retrying".to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn undeterminable_free_space_reason_names_database_and_required_bytes() {
+        let error = io::Error::new(io::ErrorKind::NotFound, "fixture mount lookup failed");
+
+        let reason = undeterminable_free_space_reason(
+            Path::new("/var/lib/tinytop/history.sqlite"),
+            4_096,
+            4_915,
+            &error,
+        );
+
+        assert!(reason.contains("4096"), "missing database bytes: {reason}");
+        assert!(reason.contains("4915"), "missing required bytes: {reason}");
+    }
 }

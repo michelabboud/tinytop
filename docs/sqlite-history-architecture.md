@@ -266,11 +266,17 @@ A populated v0 database is migrated fail-closed:
 3. One SQLite transaction rebuilds `metric_samples` with nullable
    `snapshot_json`, retains JSON only for rows within the last 60 minutes,
    preserves every typed row and `sample_id`, adds the v1 rollup columns and
-   tables, and sets `user_version = 1`. A failed transaction leaves v0 in
-   place.
-4. The store runs the product's one automatic post-migration `VACUUM`, writes
-   `history_state.schemaMigration`, and records a `schemaMigrated` event with
-   the pre-image path, row counts, duration, and before/after file sizes.
+   tables, sets `user_version = 1`, and writes
+   `history_state.schemaMigration` with the pre-image path, row counts,
+   `bytesBefore`, and `startedAtMs`. Its `vacuumedAtMs`, `bytesAfter`, and
+   `durationMs` fields remain `null` in this transaction. A failed transaction
+   leaves v0 in place without an audit record that claims otherwise.
+4. The store runs the product's one automatic post-migration `VACUUM`, then
+   atomically completes those three audit fields and records the one
+   `schemaMigrated` event. On every v1 connection, an audit whose
+   `vacuumedAtMs` is still `null` causes the VACUUM and audit completion to run
+   again. This makes a crash after the schema commit recoverable and keeps the
+   completion idempotent.
 
 The pre-image is never overwritten, replaced, or deleted automatically. Until
 the explicit `db pre-image` operator commands land in the later CLI task, an
@@ -298,6 +304,7 @@ Latest sample:
 ```sql
 SELECT captured_at_ms, snapshot_json
 FROM metric_samples
+WHERE snapshot_json IS NOT NULL
 ORDER BY captured_at_ms DESC
 LIMIT 1;
 ```
@@ -307,13 +314,14 @@ History window:
 ```sql
 SELECT captured_at_ms, snapshot_json
 FROM metric_samples
-WHERE captured_at_ms >= ?
+WHERE snapshot_json IS NOT NULL
+  AND captured_at_ms >= ?
   AND captured_at_ms <= ?
 ORDER BY captured_at_ms DESC
 LIMIT ?;
 ```
 
-The SQLite owner reverses the selected rows before returning them so the browser receives oldest-to-newest samples.
+The SQLite owner reverses the selected rows before returning them so the browser receives oldest-to-newest samples. Both the Rust and Bun stores apply the `snapshot_json IS NOT NULL` rule. Raw `/api/history` and legacy `/history` reads therefore expose only complete snapshots, and their horizon is the snapshot JSON keep window rather than the longer typed-row retention horizon.
 
 ## Frontend Hydration
 
@@ -376,7 +384,7 @@ Current behavior:
 - The Rust daemon deletes raw rows older than the configured `retentionHours` cutoff.
 - The Rust daemon deletes rollup buckets older than the configured `rollupRetentionDays` cutoff.
 - `metric_rollups_5m`, `metric_rollups_1h`, `fs_samples`, and `process_samples` exist in v1 but are not populated or used for reads by this schema-only task.
-- `/api/history` and `/history` select bounded windows for callers; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
+- `/api/history` and `/history` select bounded windows for callers and return only rows whose `snapshot_json` is present in both runtimes. Their raw-snapshot horizon is the JSON keep window; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
 - The dashboard hydrates the browser-selected timestamp window. Live, 15m, and 1h use `/api/history`; 6h, 24h, 7d, and 30d use `/api/history/points` backed by one-minute rollups. Raw windows may be paged and downsampled only for browser rendering; that is a rendering limit, not a storage limit.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 - Legacy Bun split mode keeps the earlier manual archive/reset behavior.
@@ -397,6 +405,14 @@ Potential future normalized tables:
 Schema v1 now reserves `fs_samples` and `process_samples` for typed detail rows; their cadence and retention maintenance are implemented by later ladder tasks. Pressure detail remains inside recent snapshot JSON in this phase. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
 
 ## Operational Notes
+
+Stop every TinyTop writer before starting a populated-v0 migration, including
+the Rust daemon and the legacy Bun collector. The migration deliberately has no
+cross-process lock spanning `VACUUM INTO` and the following schema transaction;
+allowing another writer in that interval could make the pre-image and migrated
+database describe different points in time. Normal single-owner runtime rules
+prevent this after startup, but migration remains an operator-controlled
+maintenance boundary.
 
 SQLite may create sidecar files beside the database:
 

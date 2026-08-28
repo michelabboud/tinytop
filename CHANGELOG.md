@@ -1,10 +1,17 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.2.7 - 2026-08-28
 
 - Added SQLite schema v1: nullable `metric_samples.snapshot_json`, minimum/root-maximum columns on one-minute rollups, five-minute and hourly rollup tables, migration state, and typed filesystem/process detail tables.
-- Added fail-closed populated-v0 migration in the Rust store. Startup now requires 1.2× database-size free space, creates a complete non-overwriting `<database>.pre-v0.sqlite` with `VACUUM INTO` before touching rows, rebuilds the schema in one transaction, retains JSON for the latest 60 minutes, runs the one automatic post-migration `VACUUM`, and records `schemaMigration` state plus a `schemaMigrated` marker. Fresh databases are created directly at v1.
+- Added fail-closed populated-v0 migration in the Rust store. Only this migration requires free space of at least 1.2× the database size; it creates a complete non-overwriting `<database>.pre-v0.sqlite` with `VACUUM INTO` before touching rows, rebuilds the schema in one transaction, retains JSON for the latest 60 minutes, runs the one automatic post-migration `VACUUM`, and records `schemaMigration` state plus a `schemaMigrated` marker. Fresh databases are created directly at v1 without the populated-v0 free-space check.
 - Added reusable longest-mount-prefix free-space detection and JSON `history_state_get`/`history_state_set` store interfaces, with migration, refusal, headroom-boundary, and mount-selection tests using temp-directory databases only.
+- Fixed Rust and Bun raw history reads to exclude rows whose retained `snapshot_json` is `NULL`, so `/api/history` and legacy `/history` expose the JSON keep-window horizon and `latestSnapshot` always returns a complete snapshot.
+- Fixed Windows free-space lookup by canonicalizing both the database directory and each `sysinfo` mount point before component-aware longest-prefix matching; mounts that cannot be canonicalized are skipped.
+- Expanded migration coverage to use the complete populated v0 schema, preserving a seeded one-minute rollup and app event while asserting all six additive rollup columns and every v1 index.
+- Made post-schema migration completion crash-recoverable: the schema transaction records a pending `schemaMigration`, and later v1 connections idempotently finish the VACUUM, audit fields, and single migration marker when `vacuumedAtMs` is still `null`.
+- Strengthened fail-closed pre-image refusal coverage to prove the existing pre-image's byte length and modification time remain unchanged and `user_version` stays 0.
+- Improved undeterminable-free-space migration errors to name both the database byte count and required pre-image bytes.
+- Corrected the architecture and release documentation for JSON-only raw reads, retryable VACUUM completion, the all-writers-stopped migration boundary, and the populated-v0-only 1.2× free-space rule.
 
 ## 0.2.6 - 2026-08-28
 

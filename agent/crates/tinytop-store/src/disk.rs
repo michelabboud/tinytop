@@ -7,10 +7,14 @@ use sysinfo::Disks;
 
 /// Return the available bytes on the filesystem that contains `path`.
 ///
-/// `sysinfo` exposes mounted disks rather than a direct path lookup, so the
-/// containing filesystem is the longest mount-point prefix of the canonical
-/// path. An indeterminate result is an error because schema migration must
-/// fail closed before creating its pre-image.
+/// `path` must exist; the migration passes the database's parent directory.
+/// `sysinfo` exposes mounted disks rather than a direct path lookup, so both
+/// `path` and each mount point are canonicalized before selecting the longest
+/// prefix. Canonicalizing both sides matters on Windows, where `path` may use a
+/// verbatim `\\?\` prefix while `sysinfo` reports the same mount without it.
+/// Mounts that cannot be canonicalized are skipped. An indeterminate result is
+/// an error because schema migration must fail closed before creating its
+/// pre-image.
 pub fn free_bytes_at(path: &Path) -> io::Result<u64> {
     let canonical_path = path.canonicalize().map_err(|error| {
         io::Error::new(
@@ -22,7 +26,12 @@ pub fn free_bytes_at(path: &Path) -> io::Result<u64> {
     let mounts = disks
         .list()
         .iter()
-        .map(|disk| (disk.mount_point().to_path_buf(), disk.available_space()))
+        .filter_map(|disk| {
+            disk.mount_point()
+                .canonicalize()
+                .ok()
+                .map(|mount_point| (mount_point, disk.available_space()))
+        })
         .collect::<Vec<_>>();
     free_bytes_from_mounts(&canonical_path, &mounts)
 }
@@ -65,6 +74,17 @@ mod tests {
             free_bytes_from_mounts(Path::new("root/data/history/db.sqlite"), &mounts)
                 .expect("matching mount"),
             200
+        );
+    }
+
+    #[test]
+    fn mount_prefix_matching_respects_component_boundaries() {
+        let mounts = vec![(PathBuf::from("/home"), 200), (PathBuf::from("/"), 100)];
+
+        assert_eq!(
+            free_bytes_from_mounts(Path::new("/homeless/x/db"), &mounts)
+                .expect("root mount should contain the path"),
+            100
         );
     }
 
