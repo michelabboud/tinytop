@@ -10,6 +10,7 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
+sysinfo.workspace = true
 tinytop-types = { path = "../tinytop-types" }
 
 [dev-dependencies]
