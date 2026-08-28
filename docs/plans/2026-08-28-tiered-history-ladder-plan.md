@@ -192,10 +192,11 @@ fn b(start: i64, count: i64, avg: f64, min: f64, max: f64) -> TierBucket {
 - [ ] **Step 4: run** both test files → PASS; whole crate → PASS; `cargo test --workspace` under `agent/` → PASS.
 - [ ] **Step 5: docs** — §Rollups And Coverage rewritten around `fold` and the freeze rule; §Retention rewritten around promote-before-prune and the watermarks; `CHANGELOG.md` entry that names the decimation bug and the RED→GREEN test.
 - [ ] **Acceptance:** `bun run check:rust` green; the decimation test's RED output on old code and GREEN on new code both pasted.
+- [x] **Landed** as run 544 (`ari-sol-deep`), branch commit `80ff897`: ladder_fold 4/4, ladder_maintenance 11/11, decimation RED (40 → 16 with the old prune call in place) then GREEN; full gate green outside the sandbox. Plan corrections it surfaced: `maintain` must be `pub` (the agent crate calls it); the prescribed fixture leaves 16 survivors, not 1–2; `maintain_with_config` (doc-hidden) is the test entry; `Tier::resolution_ms()` returns 0 for L1 (call sites pass the poll interval). **Fix-lane T2-fix1** (after luna review run 545): F1 the insert path must fold, not rebuild, a minute whose raw rows are partial (late write into a pruned/boundary minute turned a frozen 40-count bucket into 1/17). Brief `briefs/T2-fix1.md`. The P2 (tier-enabled flags stale for one tick after a save) is assigned to T3.
 
 ### Task 3: `retentionLadder` settings, validation, legacy aliases
 
-**Files:** Create `agent/crates/tinytop-store/src/retention_ladder.rs`; Modify `lib.rs` (`DashboardSettings` :30-45 and `Default` :54-70, `validate` :120-200, `put_settings`/`get_settings`), `maintenance.rs` (replace `LadderConfig` constructor); `writer.rs` (`changed_setting_keys` :546-600, `update_settings` :244-264); Tests `tests/retention_settings.rs`; Docs `README.md` (settings table), `docs/sqlite-history-architecture.md` (§Retention), `CHANGELOG.md`.
+**Files:** Create `agent/crates/tinytop-store/src/retention_ladder.rs`; Modify `lib.rs` (post-T2 lines: `DashboardSettings` :38-51 and `Default` :85-101, `validate` :133-225, `put_settings` :452-473, `get_settings` :392-411), `maintenance.rs` (replace the `LadderConfig` legacy constructor at :13-24); `writer.rs` (`changed_setting_keys` :554-593, `update_settings` :244-263); Tests `tests/retention_settings.rs`; Docs `README.md` (settings table), `docs/sqlite-history-architecture.md` (§Retention), `CHANGELOG.md`.
 
 **Interfaces — Produces:**
 ```rust
