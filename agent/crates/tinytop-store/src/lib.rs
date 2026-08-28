@@ -1,9 +1,12 @@
+pub mod disk;
+pub mod migration;
+
 use std::{
     str::FromStr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value as JsonValue;
 use sqlx::{
     Row, SqlitePool,
@@ -307,6 +310,7 @@ pub enum HistoryMarkerType {
     DaemonStart,
     SettingsChange,
     CoverageGap,
+    SchemaMigrated,
 }
 
 impl HistoryMarkerType {
@@ -315,6 +319,7 @@ impl HistoryMarkerType {
             Self::DaemonStart => "daemonStart",
             Self::SettingsChange => "settingsChange",
             Self::CoverageGap => "coverageGap",
+            Self::SchemaMigrated => "schemaMigrated",
         }
     }
 
@@ -323,6 +328,7 @@ impl HistoryMarkerType {
             "daemonStart" => Ok(Self::DaemonStart),
             "settingsChange" => Ok(Self::SettingsChange),
             "coverageGap" => Ok(Self::CoverageGap),
+            "schemaMigrated" => Ok(Self::SchemaMigrated),
             other => Err(StoreError::Validation(format!(
                 "unknown history marker type {other}"
             ))),
@@ -347,12 +353,21 @@ pub struct SqliteHistoryStore {
 impl SqliteHistoryStore {
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
         let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+        let db_path = options.get_filename().to_path_buf();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(options)
             .await?;
         let store = Self { pool };
-        store.apply_schema().await?;
+        store.apply_pragmas().await?;
+        let _migration_report = migration::ensure_schema(
+            &store.pool,
+            &db_path,
+            now_ms(),
+            migration::DEFAULT_SNAPSHOT_JSON_KEEP_MS,
+        )
+        .await?;
+        store.migrate_runtime_kind_to_canonical().await?;
         Ok(store)
     }
 
@@ -375,6 +390,45 @@ impl SqliteHistoryStore {
         let settings: DashboardSettings = serde_json::from_str(&value_json)?;
         settings.validate()?;
         Ok(settings)
+    }
+
+    pub async fn history_state_get<T: DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, StoreError> {
+        let value_json: Option<String> =
+            sqlx::query_scalar("SELECT value_json FROM history_state WHERE state_key = ?")
+                .bind(key)
+                .fetch_optional(&self.pool)
+                .await?;
+        value_json
+            .map(|value| serde_json::from_str(&value))
+            .transpose()
+            .map_err(StoreError::from)
+    }
+
+    pub async fn history_state_set<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+        now_ms: i64,
+    ) -> Result<(), StoreError> {
+        let value_json = serde_json::to_string(value)?;
+        sqlx::query(
+            r#"
+            INSERT INTO history_state (state_key, value_json, updated_at_ms)
+            VALUES (?, ?, ?)
+            ON CONFLICT(state_key) DO UPDATE SET
+              value_json = excluded.value_json,
+              updated_at_ms = excluded.updated_at_ms
+            "#,
+        )
+        .bind(key)
+        .bind(value_json)
+        .bind(now_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn put_settings(
@@ -1003,7 +1057,7 @@ impl SqliteHistoryStore {
         Ok(())
     }
 
-    async fn apply_schema(&self) -> Result<(), StoreError> {
+    async fn apply_pragmas(&self) -> Result<(), StoreError> {
         sqlx::query("PRAGMA journal_mode = WAL")
             .execute(&self.pool)
             .await?;
@@ -1017,122 +1071,6 @@ impl SqliteHistoryStore {
             .execute(&self.pool)
             .await?;
 
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS metric_samples (
-              sample_id INTEGER PRIMARY KEY,
-              captured_at_ms INTEGER NOT NULL UNIQUE,
-              snapshot_timestamp TEXT NOT NULL,
-              hostname TEXT NOT NULL,
-              runtime_kind TEXT NOT NULL,
-              cpu_usage_percent REAL NOT NULL,
-              cpu_cores INTEGER NOT NULL,
-              memory_used_percent REAL NOT NULL,
-              memory_used_bytes INTEGER NOT NULL,
-              memory_total_bytes INTEGER NOT NULL,
-              swap_used_percent REAL NOT NULL,
-              swap_used_bytes INTEGER NOT NULL,
-              swap_total_bytes INTEGER NOT NULL,
-              load_one REAL NOT NULL,
-              load_five REAL NOT NULL,
-              load_fifteen REAL NOT NULL,
-              load_percent REAL NOT NULL,
-              runnable_threads INTEGER NOT NULL,
-              total_threads INTEGER NOT NULL,
-              root_used_percent REAL,
-              snapshot_json TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
-              ON metric_samples (captured_at_ms DESC)
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
-              ON metric_samples (runtime_kind, captured_at_ms DESC)
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        self.migrate_runtime_kind_to_canonical().await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS app_settings (
-              setting_key TEXT PRIMARY KEY,
-              value_json TEXT NOT NULL,
-              updated_at_ms INTEGER NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS metric_rollups_1m (
-              bucket_start_ms INTEGER PRIMARY KEY,
-              first_captured_at_ms INTEGER NOT NULL,
-              newest_captured_at_ms INTEGER NOT NULL,
-              sample_count INTEGER NOT NULL,
-              avg_cpu_usage_percent REAL NOT NULL,
-              max_cpu_usage_percent REAL NOT NULL,
-              avg_memory_used_percent REAL NOT NULL,
-              max_memory_used_percent REAL NOT NULL,
-              avg_swap_used_percent REAL NOT NULL,
-              max_swap_used_percent REAL NOT NULL,
-              avg_load_percent REAL NOT NULL,
-              max_load_percent REAL NOT NULL,
-              avg_root_used_percent REAL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
-              ON metric_rollups_1m (newest_captured_at_ms DESC)
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS app_events (
-              event_id INTEGER PRIMARY KEY,
-              occurred_at_ms INTEGER NOT NULL,
-              marker_type TEXT NOT NULL,
-              label TEXT NOT NULL,
-              details_json TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        sqlx::query(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
-              ON app_events (occurred_at_ms DESC, marker_type)
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
         Ok(())
     }
 }
@@ -1142,6 +1080,7 @@ pub enum StoreError {
     Sqlx(sqlx::Error),
     Json(serde_json::Error),
     IntegerOverflow { field: &'static str },
+    Migration { reason: String, remedy: String },
     Validation(String),
 }
 
@@ -1153,6 +1092,9 @@ impl std::fmt::Display for StoreError {
             Self::IntegerOverflow { field } => {
                 write!(formatter, "{field} does not fit in SQLite INTEGER")
             }
+            Self::Migration { reason, remedy } => {
+                write!(formatter, "migration refused: {reason}; remedy: {remedy}")
+            }
             Self::Validation(message) => write!(formatter, "{message}"),
         }
     }
@@ -1163,7 +1105,7 @@ impl std::error::Error for StoreError {
         match self {
             Self::Sqlx(error) => Some(error),
             Self::Json(error) => Some(error),
-            Self::IntegerOverflow { .. } | Self::Validation(_) => None,
+            Self::IntegerOverflow { .. } | Self::Migration { .. } | Self::Validation(_) => None,
         }
     }
 }

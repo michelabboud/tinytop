@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+- Added SQLite schema v1: nullable `metric_samples.snapshot_json`, minimum/root-maximum columns on one-minute rollups, five-minute and hourly rollup tables, migration state, and typed filesystem/process detail tables.
+- Added fail-closed populated-v0 migration in the Rust store. Startup now requires 1.2× database-size free space, creates a complete non-overwriting `<database>.pre-v0.sqlite` with `VACUUM INTO` before touching rows, rebuilds the schema in one transaction, retains JSON for the latest 60 minutes, runs the one automatic post-migration `VACUUM`, and records `schemaMigration` state plus a `schemaMigrated` marker. Fresh databases are created directly at v1.
+- Added reusable longest-mount-prefix free-space detection and JSON `history_state_get`/`history_state_set` store interfaces, with migration, refusal, headroom-boundary, and mount-selection tests using temp-directory databases only.
+
 ## 0.2.6 - 2026-08-28
 
 - Planning only, no runtime change: the **tiered history ladder** is designed and at Michel's gate.

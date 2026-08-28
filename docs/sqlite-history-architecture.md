@@ -11,8 +11,8 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current history shape: `metric_samples` with indexed metric columns and full snapshot JSON, Rust-maintained one-minute rollups in `metric_rollups_1m`, and daemon timeline events in `app_events`
-- Current retention: Rust daemon prunes raw rows by `retentionHours` and rollups by `rollupRetentionDays`; legacy Bun split mode remains manual archive/reset
+- Current schema version: v1, with nullable recent-window `snapshot_json`, one-minute/five-minute/hourly rollup tables, typed filesystem/process detail tables, migration/disk/fold state, and daemon timeline events
+- Current retention behavior: Rust daemon still prunes raw rows by `retentionHours` and one-minute rollups by `rollupRetentionDays`; the v1 migration strips legacy JSON older than 60 minutes, while population and maintenance of the new ladder tables land in the subsequent ladder tasks
 
 ## Process Boundary
 
@@ -78,6 +78,11 @@ PRAGMA foreign_keys = ON;
 
 ## Current Schema
 
+Fresh databases are created directly at schema v1. The DDL below is also the
+post-migration shape; the six minimum/root-maximum columns appear at the end of
+`metric_rollups_1m` because SQLite appends them when upgrading a populated v0
+database.
+
 ```sql
 CREATE TABLE IF NOT EXISTS metric_samples (
   sample_id INTEGER PRIMARY KEY,
@@ -100,7 +105,7 @@ CREATE TABLE IF NOT EXISTS metric_samples (
   runnable_threads INTEGER NOT NULL,
   total_threads INTEGER NOT NULL,
   root_used_percent REAL,
-  snapshot_json TEXT NOT NULL
+  snapshot_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
@@ -108,6 +113,12 @@ CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
   ON metric_samples (runtime_kind, captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  setting_key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS metric_rollups_1m (
   bucket_start_ms INTEGER PRIMARY KEY,
@@ -122,11 +133,107 @@ CREATE TABLE IF NOT EXISTS metric_rollups_1m (
   max_swap_used_percent REAL NOT NULL,
   avg_load_percent REAL NOT NULL,
   max_load_percent REAL NOT NULL,
-  avg_root_used_percent REAL
+  avg_root_used_percent REAL,
+  min_cpu_usage_percent REAL,
+  min_memory_used_percent REAL,
+  min_swap_used_percent REAL,
+  min_load_percent REAL,
+  min_root_used_percent REAL,
+  max_root_used_percent REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
   ON metric_rollups_1m (newest_captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS metric_rollups_5m (
+  bucket_start_ms INTEGER PRIMARY KEY,
+  first_captured_at_ms INTEGER NOT NULL,
+  newest_captured_at_ms INTEGER NOT NULL,
+  sample_count INTEGER NOT NULL,
+  avg_cpu_usage_percent REAL NOT NULL,
+  min_cpu_usage_percent REAL NOT NULL,
+  max_cpu_usage_percent REAL NOT NULL,
+  avg_memory_used_percent REAL NOT NULL,
+  min_memory_used_percent REAL NOT NULL,
+  max_memory_used_percent REAL NOT NULL,
+  avg_swap_used_percent REAL NOT NULL,
+  min_swap_used_percent REAL NOT NULL,
+  max_swap_used_percent REAL NOT NULL,
+  avg_load_percent REAL NOT NULL,
+  min_load_percent REAL NOT NULL,
+  max_load_percent REAL NOT NULL,
+  avg_root_used_percent REAL,
+  min_root_used_percent REAL,
+  max_root_used_percent REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_rollups_5m_newest
+  ON metric_rollups_5m (newest_captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS metric_rollups_1h (
+  bucket_start_ms INTEGER PRIMARY KEY,
+  first_captured_at_ms INTEGER NOT NULL,
+  newest_captured_at_ms INTEGER NOT NULL,
+  sample_count INTEGER NOT NULL,
+  avg_cpu_usage_percent REAL NOT NULL,
+  min_cpu_usage_percent REAL NOT NULL,
+  max_cpu_usage_percent REAL NOT NULL,
+  avg_memory_used_percent REAL NOT NULL,
+  min_memory_used_percent REAL NOT NULL,
+  max_memory_used_percent REAL NOT NULL,
+  avg_swap_used_percent REAL NOT NULL,
+  min_swap_used_percent REAL NOT NULL,
+  max_swap_used_percent REAL NOT NULL,
+  avg_load_percent REAL NOT NULL,
+  min_load_percent REAL NOT NULL,
+  max_load_percent REAL NOT NULL,
+  avg_root_used_percent REAL,
+  min_root_used_percent REAL,
+  max_root_used_percent REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_metric_rollups_1h_newest
+  ON metric_rollups_1h (newest_captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS history_state (
+  state_key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fs_samples (
+  captured_at_ms INTEGER NOT NULL,
+  mount TEXT NOT NULL,
+  filesystem TEXT NOT NULL,
+  fs_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  used_bytes INTEGER NOT NULL,
+  available_bytes INTEGER NOT NULL,
+  used_percent REAL NOT NULL,
+  inode_used_percent REAL,
+  inode_used INTEGER,
+  inode_total INTEGER,
+  PRIMARY KEY (captured_at_ms, mount)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fs_samples_mount_time
+  ON fs_samples (mount, captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS process_samples (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  command TEXT NOT NULL,
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at TEXT,
+  PRIMARY KEY (captured_at_ms, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_time
+  ON process_samples (captured_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS app_events (
   event_id INTEGER PRIMARY KEY,
@@ -138,11 +245,41 @@ CREATE TABLE IF NOT EXISTS app_events (
 
 CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
+
+PRAGMA user_version = 1;
 ```
+
+## Schema Versions And Migration
+
+`SqliteHistoryStore::connect` applies the SQLite pragmas, reads
+`PRAGMA user_version`, and ensures schema v1 before it runs the older runtime
+name canonicalization. A new or empty database is built directly at v1. A v1
+database only receives idempotent `CREATE ... IF NOT EXISTS` checks.
+
+A populated v0 database is migrated fail-closed:
+
+1. The store resolves the database directory to its longest matching mounted
+   filesystem and requires free bytes greater than or equal to
+   `database_bytes + database_bytes / 5`.
+2. It refuses if `<database>.pre-v0.sqlite` already exists. Otherwise
+   `VACUUM INTO` creates that complete pre-image before any row is changed.
+3. One SQLite transaction rebuilds `metric_samples` with nullable
+   `snapshot_json`, retains JSON only for rows within the last 60 minutes,
+   preserves every typed row and `sample_id`, adds the v1 rollup columns and
+   tables, and sets `user_version = 1`. A failed transaction leaves v0 in
+   place.
+4. The store runs the product's one automatic post-migration `VACUUM`, writes
+   `history_state.schemaMigration`, and records a `schemaMigrated` event with
+   the pre-image path, row counts, duration, and before/after file sizes.
+
+The pre-image is never overwritten, replaced, or deleted automatically. Until
+the explicit `db pre-image` operator commands land in the later CLI task, an
+operator must move a pre-existing pre-image aside manually before retrying a
+refused migration.
 
 ## Why Store Snapshot JSON
 
-The UI does not only need graph values. Timeline browsing needs the full selected sample so gauges, filesystem cards, pressure panels, and process rows can render the selected point in time. Storing `snapshot_json` lets refresh hydration restore the same UI state without re-collecting fake or partial data.
+The UI does not only need graph values. Timeline browsing needs the full selected sample so gauges, filesystem cards, pressure panels, and process rows can render the selected point in time. Storing recent `snapshot_json` lets refresh hydration restore the same UI state without re-collecting fake or partial data. Schema v1 makes the column nullable so older raw rows can retain their compact typed metrics without retaining the dominant JSON payload indefinitely.
 
 Typed columns are still stored for graph values and future rollups, so history is not trapped inside JSON.
 
@@ -211,7 +348,7 @@ Timeline markers:
 /api/history/markers?since_ms=<range-start>&until_ms=<range-end>&expected_gap_ms=<gap>
 ```
 
-The Rust daemon returns persisted `daemonStart` and `settingsChange` events from `app_events`, plus computed `coverageGap` markers inferred from raw sample spacing.
+The Rust daemon returns persisted `daemonStart`, `settingsChange`, and one-time `schemaMigrated` events from `app_events`, plus computed `coverageGap` markers inferred from raw sample spacing.
 
 ## Rollups And Coverage
 
@@ -235,8 +372,10 @@ The Rust daemon rebuilds the affected one-minute rollup bucket after each sample
 Current behavior:
 
 - Every successful scheduled or manual Rust collection writes one raw row into `metric_samples`.
+- On the one-time populated-v0 migration, JSON is retained for the most recent 60 minutes and set to `NULL` on older rows; all typed columns and rows are preserved. Fresh and post-migration inserts still include JSON until the subsequent ladder-maintenance task adds ongoing window stripping.
 - The Rust daemon deletes raw rows older than the configured `retentionHours` cutoff.
 - The Rust daemon deletes rollup buckets older than the configured `rollupRetentionDays` cutoff.
+- `metric_rollups_5m`, `metric_rollups_1h`, `fs_samples`, and `process_samples` exist in v1 but are not populated or used for reads by this schema-only task.
 - `/api/history` and `/history` select bounded windows for callers; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
 - The dashboard hydrates the browser-selected timestamp window. Live, 15m, and 1h use `/api/history`; 6h, 24h, 7d, and 30d use `/api/history/points` backed by one-minute rollups. Raw windows may be paged and downsampled only for browser rendering; that is a rendering limit, not a storage limit.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
@@ -246,19 +385,16 @@ Current defaults:
 
 - Raw samples: configurable, default 72 hours.
 - One-minute rollups: 30 days.
+- Migrated v0 JSON window: 60 minutes.
 - Target database budget: 128 MiB.
-
-Future child tables should use cascading foreign keys if normalized process/filesystem/pressure tables land.
 
 ## Future Tables
 
 Potential future normalized tables:
 
 - `pressure_samples`
-- `filesystem_samples`
-- `process_samples`
 
-These were deliberately not implemented in the first persistence slice because the current UI hydrates full snapshots. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
+Schema v1 now reserves `fs_samples` and `process_samples` for typed detail rows; their cadence and retention maintenance are implemented by later ladder tasks. Pressure detail remains inside recent snapshot JSON in this phase. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
 
 ## Operational Notes
 
