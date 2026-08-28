@@ -37,10 +37,10 @@ Fable's decision on the open question (Q1): **L1 keeps typed columns at the poll
 
 | tier | table | resolution | default keep | min | toggle | source of truth for |
 |---|---|---|---|---|---|---|
-| L1 | `metric_samples` | `pollIntervalMs` (1.5 s) | 3 d | 3 d | always on | `live · 15m · 1h · 6h · 24h` |
-| L2 | `metric_rollups_1m` | 1 min | 30 d | 7 d | always on | `7d` |
-| L3 | `metric_rollups_5m` | 5 min | 90 d | ≥ L2 keep | on/off | `90d` |
-| L4 | `metric_rollups_1h` | 1 h | 730 d | ≥ L3 keep (or ≥ L2 if L3 off) | on/off; `0` = forever | `1y · all` |
+| L1 | `metric_samples` | `pollIntervalMs` (1.5 s) | 3 d | 3 d | always on | `live · 15m · 1h` (raw, paged) |
+| L2 | `metric_rollups_1m` | 1 min | 30 d | 7 d | always on | `6h · 24h` (via `auto`, §11 amended) |
+| L3 | `metric_rollups_5m` | 5 min | 90 d | ≥ L2 keep | on/off | `7d · 30d` (via `auto`) |
+| L4 | `metric_rollups_1h` | 1 h | 730 d | ≥ L3 keep (or ≥ L2 if L3 off) | on/off; `0` = forever | `90d · 1y · all` (via `auto`) |
 | archive (queryable) | `history-archive.sqlite` → `metric_rollups_1h` | 1 h | forever | — | `retentionLadder.archive.queryable` | `all` beyond L4 |
 | archive (cold) | `<dir>/tinytop-1h-YYYY-MM.csv.gz` + `.sha256` | 1 h | forever | — | `retentionLadder.archive.cold` | external tools |
 
@@ -192,7 +192,7 @@ expire L4 (if enabled and keepDays > 0): rows with bucket_start_ms + 3_600_000 �
 
 ## 11. Dashboard (single source `agent/assets/dashboard/`, both runtimes)
 
-- `HISTORY_WINDOWS` gains `"90d"` (source `"5m"`), `"1y"` (source `"1h"`), `"all"` (source `"auto"`, `durationMs` = coverage's oldest across tiers/archive). Presets whose tier is disabled or holds no data are shown disabled with a tooltip naming the setting.
+- `HISTORY_WINDOWS` gains `"90d"`, `"1y"`, `"all"` (`durationMs` = coverage's oldest across tiers/archive). **Sources (amended 2026-08-28 — T5 built this section's original `90d→"5m"`, `1y→"1h"` and the arithmetic fails: a page is ≤ 10,000 buckets, `30d` at 1 m is 43,200 so the chart silently showed 6.9 d, `90d` at 5 m is 25,920 → 34.7 d):** `live`/`15m`/`1h` stay `raw` (paged); **every preset from `6h` up requests `source=auto&limit=10000`** and renders by the returned `source`/`resolutionMs` — §10's rule (c) picks the finest tier whose whole range fits one page (at the defaults: 6h → 1 m 360 · 24h → 1 m 1,440 · 7d → 5 m 2,016 · 30d → 5 m 8,640 · 90d → 1 h 2,160 · 1y → 1 h 8,760 · all → the coarsest tier holding the oldest data, newest ≤ 10,000 buckets ≈ 416 d at 1 h; the archive holds the rest) and degrades to a coarser tier when a finer one is disabled instead of greying the button. A preset is disabled (tooltip naming the setting) only when NO enabled tier holds its start and the archive is not queryable — reason = `retentionLadder.<coarsest disabled tier>.enabled`, or `retentionLadder.<coarsest enabled tier>.keepDays` when every tier is enabled but too short; raw presets are disabled when `snapshotJsonOldestMs` is null. Fix = T5-fix1 F5.
 - Settings dialog gains a **History ladder** group: L1 days (min 3), L2 days (min 7), L3 enabled + days, L4 enabled + days + "keep forever" (writes 0), snapshot JSON minutes, detail interval seconds, Archive (queryable, cold, cold-after months, directory), Disk check (interval, min free GiB). The legacy "History hours" / "Rollup days" inputs become read-only mirrors with a hint "derived from L1/L2".
 - Validation mirrors §5 exactly (same messages). **Shrink confirmation:** if a save would shrink any horizon, disable a tier, or disable an archive, a confirm dialog lists what will be deleted, using `/api/settings/import?dryRun=true` on the candidate document (so the numbers come from the server, not the client).
 - Coverage card shows the ladder (per-tier oldest/newest/count), disk pressure banner, archive status. Export/Import buttons in the settings dialog (download JSON; upload → dry-run diff → confirm → import).
@@ -207,7 +207,7 @@ Exporter: `opentelemetry` / `opentelemetry_sdk` / `opentelemetry-otlp` at the sa
 
 ## 13. Two-runtime invariant — what stays identical
 
-Retention, folding, migration, archive, disk check, OTel and config import are **Rust-daemon-only** (as maintenance already is; ADR 0005/0009 pattern). The dashboard is single-source and identical. Bun's `history-store.ts` changes in exactly one way (found by the T1 review, 2026-08-28): its two raw `SELECT`s filter `snapshot_json IS NOT NULL`, so the raw endpoint's horizon is the JSON window on both runtimes (§10) instead of a `JSON.parse(null)` crash on migrated rows. Its `INSERT` still supplies every column including `snapshot_json`; the legacy settings keys remain present and derived. `bun run check` must stay green after every lane.
+Retention, folding, migration, archive, disk check, OTel and config import are **Rust-daemon-only** (as maintenance already is; ADR 0005/0009 pattern). The dashboard is single-source and identical. Bun's `history-store.ts` changes in exactly one way (found by the T1 review, 2026-08-28): its two raw `SELECT`s filter `snapshot_json IS NOT NULL`, so the raw endpoint's horizon is the JSON window on both runtimes (§10) instead of a `JSON.parse(null)` crash on migrated rows. Its `INSERT` still supplies every column including `snapshot_json`; the legacy settings keys remain present and derived. `bun run check` must stay green after every lane. **Amended 2026-08-28 (T5 lane finding, run 555):** Bun's `src/settings.ts` changes in exactly one way too — `allowedHistoryWindows` gains `7d, 30d, 90d, 1y, all`, the same ten as `DashboardSettings` (`lib.rs:181`), so a dashboard preference validates identically on both runtimes. Bun has no ladder: the dashboard hides the History ladder group and the ladder coverage card when `GET /api/settings` lacks `retentionLadder`, and never sends that key to a runtime that did not return it (T5-fix1 F4).
 
 ## 14. CLI additions (`tinytop-agent`)
 
