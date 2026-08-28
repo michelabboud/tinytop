@@ -13,7 +13,7 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value as JsonValue, json};
 use tinytop_collectors::NativeCollector;
 use tinytop_store::{
     DashboardSettings, HistoryMarker, HistoryMarkerType, HistoryPoint, HistoryPointMode,
@@ -243,9 +243,10 @@ async fn get_settings(State(state): State<AppState>) -> Result<Response, ServeEr
 
 async fn update_settings(
     State(state): State<AppState>,
-    Json(settings): Json<DashboardSettings>,
+    Json(payload): Json<JsonValue>,
 ) -> Result<Response, ServeError> {
     let previous = state.store.get_settings().await?;
+    let settings = DashboardSettings::from_document(payload, Some(&previous.retention_ladder))?;
     let saved = state.store.put_settings(&settings).await?;
     maintain_history(&state, &saved).await?;
     state
@@ -568,11 +569,8 @@ fn changed_setting_keys(
     if previous.default_history_window != saved.default_history_window {
         changed.push("defaultHistoryWindow");
     }
-    if previous.retention_hours != saved.retention_hours {
-        changed.push("retentionHours");
-    }
-    if previous.rollup_retention_days != saved.rollup_retention_days {
-        changed.push("rollupRetentionDays");
+    if previous.retention_ladder != saved.retention_ladder {
+        changed.push("retentionLadder");
     }
     if previous.target_database_bytes != saved.target_database_bytes {
         changed.push("targetDatabaseBytes");
@@ -838,5 +836,18 @@ mod tests {
         let mut response = Response::new(Body::empty());
         insert_embed_frame_ancestors(&mut response, "   ");
         assert_eq!(csp(&response), "frame-ancestors 'self'");
+    }
+
+    #[test]
+    fn changed_setting_keys_reports_the_ladder_once_instead_of_derived_aliases() {
+        let previous = DashboardSettings::default();
+        let mut saved = previous.clone();
+        saved.retention_ladder.l1.keep_days = 4;
+        saved.retention_hours = 96;
+
+        assert_eq!(
+            changed_setting_keys(&previous, &saved),
+            vec!["retentionLadder"]
+        );
     }
 }

@@ -2,6 +2,7 @@ pub mod disk;
 pub mod ladder;
 pub mod maintenance;
 pub mod migration;
+pub mod retention_ladder;
 
 use std::{
     str::FromStr,
@@ -17,6 +18,8 @@ use sqlx::{
 use tinytop_types::SystemSnapshot;
 
 use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, fold, raw_is_partial, raw_to_bucket};
+pub use crate::retention_ladder::DiskPressureState;
+use crate::retention_ladder::RetentionLadder;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +45,8 @@ pub struct DashboardSettings {
     pub default_history_window: String,
     pub retention_hours: i64,
     pub rollup_retention_days: i64,
+    #[serde(default = "RetentionLadder::default_for_serde")]
+    pub retention_ladder: RetentionLadder,
     #[serde(default = "default_target_database_bytes")]
     pub target_database_bytes: i64,
     pub top_process_count: i64,
@@ -91,6 +96,7 @@ impl Default for DashboardSettings {
             default_history_window: "live".to_string(),
             retention_hours: 72,
             rollup_retention_days: 30,
+            retention_ladder: RetentionLadder::default(),
             target_database_bytes: default_target_database_bytes(),
             top_process_count: 8,
             redaction_default: false,
@@ -130,6 +136,33 @@ impl Default for DashboardSections {
 }
 
 impl DashboardSettings {
+    pub fn from_document(
+        document: JsonValue,
+        persisted_ladder: Option<&RetentionLadder>,
+    ) -> Result<Self, StoreError> {
+        let has_retention_ladder = document.get("retentionLadder").is_some();
+        let mut settings: Self = serde_json::from_value(document).map_err(|error| {
+            StoreError::Validation(format!("settings document could not be decoded: {error}"))
+        })?;
+        if !has_retention_ladder {
+            settings.retention_ladder = match persisted_ladder {
+                Some(persisted) => {
+                    let mut ladder = persisted.clone();
+                    ladder.apply_legacy_aliases(
+                        settings.retention_hours,
+                        settings.rollup_retention_days,
+                    );
+                    ladder
+                }
+                None => RetentionLadder::from_legacy(
+                    settings.retention_hours,
+                    settings.rollup_retention_days,
+                ),
+            };
+        }
+        Ok(settings)
+    }
+
     pub fn validate(&self) -> Result<(), StoreError> {
         validate_one_of(
             "defaultTheme",
@@ -144,11 +177,11 @@ impl DashboardSettings {
         validate_one_of(
             "defaultHistoryWindow",
             &self.default_history_window,
-            &["live", "15m", "1h", "6h", "24h", "7d", "30d"],
+            &[
+                "live", "15m", "1h", "6h", "24h", "7d", "30d", "90d", "1y", "all",
+            ],
         )?;
         validate_range("pollIntervalMs", self.poll_interval_ms, 250, 60_000)?;
-        validate_range("retentionHours", self.retention_hours, 1, 8_760)?;
-        validate_range("rollupRetentionDays", self.rollup_retention_days, 1, 366)?;
         validate_range(
             "targetDatabaseBytes",
             self.target_database_bytes,
@@ -221,6 +254,7 @@ impl DashboardSettings {
             self.thresholds.pressure_warn,
             self.thresholds.pressure_critical,
         )?;
+        self.retention_ladder.validate(None, None)?;
         Ok(())
     }
 }
@@ -405,7 +439,8 @@ impl SqliteHistoryStore {
         };
 
         let value_json = row.try_get::<String, _>("value_json")?;
-        let settings: DashboardSettings = serde_json::from_str(&value_json)?;
+        let document: JsonValue = serde_json::from_str(&value_json)?;
+        let settings = DashboardSettings::from_document(document, None)?;
         settings.validate()?;
         Ok(settings)
     }
@@ -453,8 +488,23 @@ impl SqliteHistoryStore {
         &self,
         settings: &DashboardSettings,
     ) -> Result<DashboardSettings, StoreError> {
-        settings.validate()?;
-        let value_json = serde_json::to_string(settings)?;
+        let previous = self.get_settings().await?;
+        let mut normalized = settings.clone();
+        normalized.retention_hours = normalized.retention_ladder.l1.keep_days.saturating_mul(24);
+        normalized.rollup_retention_days = normalized.retention_ladder.l2.keep_days;
+        normalized.validate()?;
+
+        let disk_pressure = self
+            .history_state_get::<DiskPressureState>("diskPressure")
+            .await?
+            .unwrap_or_default();
+        normalized
+            .retention_ladder
+            .validate(Some(&disk_pressure), Some(&previous.retention_ladder))?;
+
+        let value_json = serde_json::to_string(&normalized)?;
+        let updated_at_ms = now_ms();
+        let mut transaction = self.pool.begin().await?;
         sqlx::query(
             r#"
             INSERT INTO app_settings (setting_key, value_json, updated_at_ms)
@@ -465,11 +515,33 @@ impl SqliteHistoryStore {
             "#,
         )
         .bind(value_json)
-        .bind(now_ms())
-        .execute(&self.pool)
+        .bind(updated_at_ms)
+        .execute(&mut *transaction)
         .await?;
 
-        Ok(settings.clone())
+        for (key, enabled) in [
+            ("l3Enabled", normalized.retention_ladder.l3.enabled),
+            ("l4Enabled", normalized.retention_ladder.l4.enabled),
+        ] {
+            let enabled_json = serde_json::to_string(&enabled)?;
+            sqlx::query(
+                r#"
+                INSERT INTO history_state (state_key, value_json, updated_at_ms)
+                VALUES (?, ?, ?)
+                ON CONFLICT(state_key) DO UPDATE SET
+                  value_json = excluded.value_json,
+                  updated_at_ms = excluded.updated_at_ms
+                "#,
+            )
+            .bind(key)
+            .bind(enabled_json)
+            .bind(updated_at_ms)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+
+        Ok(normalized)
     }
 
     pub async fn insert_snapshot(
@@ -553,12 +625,14 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
-        self.write_detail_rows_if_due(
-            captured_at_ms,
-            snapshot,
-            maintenance::DEFAULT_DETAIL_INTERVAL_MS,
-        )
-        .await?;
+        let detail_interval_ms = self
+            .get_settings()
+            .await?
+            .retention_ladder
+            .detail_interval_sec
+            .saturating_mul(1_000);
+        self.write_detail_rows_if_due(captured_at_ms, snapshot, detail_interval_ms)
+            .await?;
         let minute_start_ms = bucket_start_ms(captured_at_ms);
         let minute_end_ms = minute_start_ms.saturating_add(Tier::L2.resolution_ms());
         let existing_bucket = self
@@ -1055,17 +1129,17 @@ impl SqliteHistoryStore {
         let l3_enabled = self
             .history_state_get::<bool>("l3Enabled")
             .await?
-            .unwrap_or(true);
+            .unwrap_or(settings.retention_ladder.l3.enabled);
         let l4_enabled = self
             .history_state_get::<bool>("l4Enabled")
             .await?
-            .unwrap_or(true);
+            .unwrap_or(settings.retention_ladder.l4.enabled);
         let mut tiers = Vec::with_capacity(4);
-        for (tier, keep_days) in [
-            (Tier::L1, (settings.retention_hours + 23).saturating_div(24)),
-            (Tier::L2, settings.rollup_retention_days),
-            (Tier::L3, 90),
-            (Tier::L4, 730),
+        for (tier, keep_days, enabled) in [
+            (Tier::L1, settings.retention_ladder.l1.keep_days, true),
+            (Tier::L2, settings.retention_ladder.l2.keep_days, true),
+            (Tier::L3, settings.retention_ladder.l3.keep_days, l3_enabled),
+            (Tier::L4, settings.retention_ladder.l4.keep_days, l4_enabled),
         ] {
             let time_column = if tier == Tier::L1 {
                 "captured_at_ms"
@@ -1087,11 +1161,7 @@ impl SqliteHistoryStore {
                     Tier::L4 => "l4",
                 }
                 .to_string(),
-                enabled: match tier {
-                    Tier::L1 | Tier::L2 => true,
-                    Tier::L3 => l3_enabled,
-                    Tier::L4 => l4_enabled,
-                },
+                enabled,
                 keep_days,
                 resolution_ms: if tier == Tier::L1 {
                     settings.poll_interval_ms

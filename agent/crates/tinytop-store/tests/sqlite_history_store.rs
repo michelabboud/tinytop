@@ -1,3 +1,4 @@
+use tinytop_store::retention_ladder::{RetentionLadder, TierKeep};
 use tinytop_store::{
     DashboardSettings, DashboardThresholds, HistoryMarkerType, HistoryPointMode,
     HistoryPointsQuery, HistoryQuery, SqliteHistoryStore,
@@ -199,7 +200,10 @@ async fn sqlite_store_persists_dashboard_settings() {
         default_graph_mode: "heatmap".to_string(),
         default_history_window: "1h".to_string(),
         poll_interval_ms: 3_000,
-        retention_hours: 96,
+        retention_ladder: RetentionLadder {
+            l1: TierKeep { keep_days: 4 },
+            ..RetentionLadder::default()
+        },
         top_process_count: 12,
         ..DashboardSettings::default()
     };
@@ -222,6 +226,7 @@ async fn sqlite_store_persists_dashboard_settings() {
     assert_eq!(persisted.default_history_window, "1h");
     assert_eq!(persisted.poll_interval_ms, 3_000);
     assert_eq!(persisted.retention_hours, 96);
+    assert_eq!(persisted.retention_ladder.l1.keep_days, 4);
     assert_eq!(persisted.top_process_count, 12);
 
     std::fs::remove_dir_all(dir).ok();

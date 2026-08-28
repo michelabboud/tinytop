@@ -3,11 +3,8 @@ use crate::{
     ladder::{Tier, bucket_start_for, fold, grace_ms, is_complete},
 };
 
-const MINUTE_MS: i64 = 60_000;
-const DAY_MS: i64 = 24 * 60 * MINUTE_MS;
 const MAX_PROMOTIONS_PER_TICK: i64 = 50;
 const JSON_STRIP_BATCH: i64 = 500;
-pub(crate) const DEFAULT_DETAIL_INTERVAL_MS: i64 = MINUTE_MS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LadderConfig {
@@ -18,20 +15,6 @@ pub struct LadderConfig {
     pub snapshot_json_keep_ms: i64,
     pub detail_interval_ms: i64,
     pub poll_interval_ms: i64,
-}
-
-impl LadderConfig {
-    pub fn from_legacy_settings(settings: &DashboardSettings) -> Self {
-        Self {
-            l1_keep_ms: settings.retention_hours.saturating_mul(60 * MINUTE_MS),
-            l2_keep_ms: settings.rollup_retention_days.saturating_mul(DAY_MS),
-            l3: Some(90 * DAY_MS),
-            l4: Some(730 * DAY_MS),
-            snapshot_json_keep_ms: 60 * MINUTE_MS,
-            detail_interval_ms: DEFAULT_DETAIL_INTERVAL_MS,
-            poll_interval_ms: settings.poll_interval_ms,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,7 +33,14 @@ pub async fn maintain(
     now_ms: i64,
 ) -> Result<MaintenanceReport, StoreError> {
     settings.validate()?;
-    maintain_with_config(store, &LadderConfig::from_legacy_settings(settings), now_ms).await
+    maintain_with_config(
+        store,
+        &settings
+            .retention_ladder
+            .to_ladder_config(settings.poll_interval_ms),
+        now_ms,
+    )
+    .await
 }
 
 #[doc(hidden)]

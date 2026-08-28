@@ -13,7 +13,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 - Embeddable dashboard: `http://127.0.0.1:4274/embed?theme=dark` for iframe host panels, gated by `TINYTOP_EMBED_FRAME_ANCESTORS`
 - Legacy collector API: `http://127.0.0.1:4276`
 - Default SQLite database: Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite`
-- SQLite retention: Rust daemon prunes raw samples by the saved retention window and keeps one-minute rollups by the saved rollup window
+- SQLite retention: Rust daemon uses configurable L1 raw → L2 one-minute → L3 five-minute → L4 hourly horizons; L3/L4 are toggleable and L4 may be kept forever
 - History API: raw snapshots remain available through `/api/history`; rollup-backed chart points and timeline markers are available through `/api/history/points` and `/api/history/markers`
 - Runtime identity: `./tinytop status` and `GET /api/version`
 - Settings: browser-local display preferences plus SQLite-backed daemon defaults at `GET`/`PUT /api/settings`
@@ -359,9 +359,20 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API.
 
-In the Rust daemon, raw samples are pruned from `metric_samples` using `retentionHours` from `/api/settings`. One-minute rollup buckets are maintained in `metric_rollups_1m` and pruned using `rollupRetentionDays`. The dashboard settings also store `targetDatabaseBytes`, which is surfaced in history coverage and DB budget UI. Legacy Bun split mode keeps the older manual archive/reset behavior.
+In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder horizon, the recent snapshot-JSON window, and typed filesystem/process sampling cadence. `retentionHours` and `rollupRetentionDays` remain in every saved document as derived compatibility mirrors for the Bun runtime, so a typed save that edits only those mirrors is overwritten from authoritative L1/L2. Legacy Bun split mode keeps the older manual archive/reset behavior.
 
-Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. These include default theme, default graph mode, browser refresh interval, default history window, retention and rollup defaults, top process count, redaction default, warning/critical thresholds, and enabled sections. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
+| Setting | Default | Validation / meaning |
+| --- | ---: | --- |
+| `retentionLadder.l1.keepDays` | `3` | Raw typed samples; 3–3,650 days; always enabled |
+| `retentionLadder.l2.keepDays` | `30` | One-minute rollups and typed detail retention; 7–3,650 days; always enabled |
+| `retentionLadder.l3` | enabled, `90` days | Five-minute rollups; when enabled, retention must be at least L2 and at most 3,650 days |
+| `retentionLadder.l4` | enabled, `730` days | Hourly rollups; `0` means forever, otherwise retention must be at least the nearest enabled finer tier and at most 36,500 days |
+| `retentionLadder.snapshotJsonKeepMinutes` | `60` | Complete raw snapshot JSON; 60–1,440 minutes |
+| `retentionLadder.detailIntervalSec` | `60` | Filesystem/process typed-sample cadence; 15–3,600 seconds |
+| `retentionLadder.archive` | off | `cold` requires `queryable`; cold-after is 1–120 months; directory is empty or absolute. Archive execution lands in the archive phase. |
+| `retentionLadder.diskCheck` | 60 min, 5 GiB | Check interval 5–1,440 minutes; minimum free-space threshold is at least 256 MiB. Disk checking lands in the disk phase. |
+
+Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. A legacy document without `retentionLadder` is derived in memory from `retentionHours` and `rollupRetentionDays` and is not rewritten until an explicit save. While persisted `history_state.diskPressure.active` is true, the server refuses horizon growth or enabling a tier/archive, but still permits shrinking. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
 
 The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. The range presets are Live, 15m, 1h, 6h, 24h, 7d, and 30d. Large raw responses are paged with `/api/history?since_ms=...&until_ms=...`, longer ranges use `/api/history/points`, and browser rendering may downsample loaded points when needed. These query windows do not delete older SQLite rows.
 

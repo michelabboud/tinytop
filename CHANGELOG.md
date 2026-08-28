@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.9 - 2026-08-28
+
+- Added the validated camelCase `retentionLadder` settings block with configurable L1/L2 horizons, L3/L4 toggles and monotonic retention, L4 forever mode, snapshot JSON retention, detail cadence, archive configuration, and disk-check thresholds.
+- Single-sourced external settings decoding in `DashboardSettings::from_document`; legacy-only documents merge onto the persisted ladder, while ladder-authoritative saves overwrite the derived `retentionHours` and `rollupRetentionDays` mirrors.
+- Single-sourced disk-pressure growth refusal in the ladder validator with the exact free/minimum-byte message, while preserving shrink operations.
+- Fixed the one-tick disabled-tier race by saving `l3Enabled`/`l4Enabled` atomically with settings, before a subsequent insert can refold an ancestor. Settings now also drive typed-detail cadence immediately, and settings-change markers report one `retentionLadder` key rather than its derived aliases.
+
 ## 0.2.8 - 2026-08-28
 
 - Added the Rust L1 raw → L2 one-minute → L3 five-minute → L4 hourly history ladder with sample-count-weighted folding, minimum/maximum preservation, nullable root utilization, legacy L2 bound fallback, bounded 50-bucket promotion passes, and persistent fold watermarks.

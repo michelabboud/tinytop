@@ -12,7 +12,7 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
 - Current schema version: v1, with nullable recent-window `snapshot_json`, one-minute/five-minute/hourly rollup tables, typed filesystem/process detail tables, migration/disk/fold state, and daemon timeline events
-- Current retention behavior: Rust daemon still prunes raw rows by `retentionHours` and one-minute rollups by `rollupRetentionDays`; the v1 migration strips legacy JSON older than 60 minutes, while population and maintenance of the new ladder tables land in the subsequent ladder tasks
+- Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, snapshot JSON retention, and detail cadence; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
 
 ## Process Boundary
 
@@ -391,7 +391,7 @@ Rust maintenance runs after each insert in this order:
 - Each successful promotion advances `history_state.l3FoldedUntilMs` or `l4FoldedUntilMs` to the promoted bucket's end. Pruning uses the watermarks visible at the start of the tick, so a newly promoted range becomes deletion authority on the next tick.
 - At most 500 rows per tick have `snapshot_json` stripped when they are outside the recent JSON window; typed L1 metrics remain until the L1 horizon.
 - L1 rows are deleted after their horizon without rebuilding any L2 bucket.
-- Filesystem and process detail rows are written on the 60-second default cadence and deleted after the L2 horizon.
+- Filesystem and process detail rows are written on the configured cadence (60 seconds by default) and deleted after the L2 horizon.
 - An L2 bucket can be deleted only when its end is older than the L2 horizon and no later than the nearest enabled coarser watermark. L3 uses the same rule against L4. L4 expires by its own horizon; `0` means forever.
 - A disabled L3 or L4 table is neither written nor pruned. It is removed from the dependency chain, while its existing rows remain untouched until the tier is re-enabled.
 - `/api/history` and `/history` select bounded windows for callers and return only rows whose `snapshot_json` is present in both runtimes. Their raw-snapshot horizon is the JSON keep window; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
@@ -399,15 +399,19 @@ Rust maintenance runs after each insert in this order:
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 - Legacy Bun split mode keeps the earlier manual archive/reset behavior.
 
-Until the `retentionLadder` settings block lands, the Rust maintenance adapter derives L1 and L2 from the legacy settings and supplies the agreed ladder defaults for the new fields:
+`DashboardSettings.retentionLadder` is the Rust maintenance authority:
 
-- Raw samples: configurable, default 72 hours.
-- One-minute rollups: 30 days.
-- Five-minute rollups: enabled, 90 days.
-- Hourly rollups: enabled, 730 days; the maintenance model also supports `0` for forever.
-- Snapshot JSON window: 60 minutes.
-- Filesystem/process detail cadence: 60 seconds.
-- Target database budget: 128 MiB.
+- L1 defaults to 3 days (range 3–3,650) and L2 to 30 days (range 7–3,650); both are always enabled.
+- L3 defaults to enabled for 90 days and must be at least L2 when enabled. L4 defaults to enabled for 730 days; `0` means forever, otherwise it must be at least L3, or L2 when L3 is disabled.
+- Snapshot JSON defaults to 60 minutes (range 60–1,440). Typed filesystem/process rows default to a 60-second cadence (range 15–3,600 seconds).
+- Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute. The archive phase implements the corresponding storage actions.
+- Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB. The disk phase implements the check itself.
+
+Every explicit settings save validates the complete block and writes `retentionHours = l1.keepDays × 24` plus `rollupRetentionDays = l2.keepDays` for Bun compatibility. These legacy fields are derived mirrors: a typed save that edits only `retentionHours` or `rollupRetentionDays` is overwritten from the authoritative ladder. The save transaction also updates `history_state.l3Enabled` and `l4Enabled`, so a late insert immediately after disabling a tier cannot refold into it before the next maintenance tick.
+
+`DashboardSettings::from_document` is the only decoder for settings documents that may lack `retentionLadder`. It derives a stored pre-ladder document in memory from the legacy fields (`ceil(retentionHours / 24)`, floored at 3 days; rollup days floored at 7) without rewriting it, and merges a legacy-only update onto the persisted ladder. The Task 10 import endpoint must use this decoder.
+
+If `history_state.diskPressure.active` is present, saves that extend a horizon, enable L3/L4, or enable an archive are refused with `disk pressure active: free X < minFreeBytes Y; shrink first or free disk`; shrinking remains allowed. The ladder validator owns this rule for both pure validation and the persisted settings path.
 
 ## Future Tables
 
