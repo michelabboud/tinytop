@@ -9,7 +9,14 @@ const TIER_ORDER = new Map([
   ["l3", 3],
   ["l4", 4],
 ]);
-const WOULD_DELETE_FIELDS = ["l1Rows", "l2Buckets", "l3Buckets", "l4Buckets", "snapshotJsonRows"];
+const WOULD_DELETE_FIELDS = [
+  "l1Rows",
+  "l2Buckets",
+  "l3Buckets",
+  "l4Buckets",
+  "snapshotJsonRows",
+  "processFastRows",
+];
 
 function formatCoverageBytes(bytes) {
   const numeric = Number(bytes);
@@ -397,6 +404,7 @@ export function describeImportPlan(
     candidateLadder?.archive?.queryable ? " (moved to the queryable archive)" : " deleted",
   );
   addCount("snapshotJsonRows", "snapshot JSON blobs", " stripped");
+  addCount("processFastRows", "fast process rows", " deleted");
 
   const previousLadder = previousSettings?.retentionLadder;
   for (const tier of ["l3", "l4"]) {
@@ -457,6 +465,7 @@ function growsFrom(candidate, previous) {
     enabledHorizonGrew(candidate.l3, previous.l3) ||
     enabledHorizonGrew(candidate.l4, previous.l4, true) ||
     candidate.snapshotJsonKeepMinutes > previous.snapshotJsonKeepMinutes ||
+    candidate.processFastKeepHours > previous.processFastKeepHours ||
     (candidate.archive.queryable && !previous.archive.queryable) ||
     (candidate.archive.cold && !previous.archive.cold)
   );
@@ -470,6 +479,7 @@ export function validateRetentionLadder(ladder, previous, diskPressure) {
     ["retentionLadder.l4.keepDays", ladder?.l4?.keepDays, 0, 36_500],
     ["retentionLadder.snapshotJsonKeepMinutes", ladder?.snapshotJsonKeepMinutes, 60, 1_440],
     ["retentionLadder.detailIntervalSec", ladder?.detailIntervalSec, 15, 3_600],
+    ["retentionLadder.processFastKeepHours", ladder?.processFastKeepHours, 1, 72],
     ["retentionLadder.archive.coldAfterMonths", ladder?.archive?.coldAfterMonths, 1, 120],
     ["retentionLadder.diskCheck.intervalMinutes", ladder?.diskCheck?.intervalMinutes, 5, 1_440],
   ];

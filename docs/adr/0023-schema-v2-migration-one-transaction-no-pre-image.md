@@ -77,5 +77,6 @@ string repeated 40 times a minute per process in the fast table) should be norma
   supported.
 - The refusal path for `sqlite_version()` < 3.35 is unit-tested on the comparator only; it cannot
   be exercised against the bundled 3.51.3 — stated honestly in the gate.
+Amendment 2026-08-29 (T13-fix1): the in-transaction rollback is now exercised by `v1_fixture_with_an_index_on_command_refuses_and_leaves_the_file_untouched` (a probe index makes `DROP COLUMN` fail with SQLite's own error, which is reported verbatim; the version refusal stays a pre-write check).
 - If the backfill on a real file exceeds 60 s (plan §4), the fix is batching the `UPDATE` by
   `captured_at_ms` ranges inside the same transaction — never skipping the backfill.

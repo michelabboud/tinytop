@@ -67,6 +67,7 @@ fn config() -> LadderConfig {
         l4: Some(730 * DAY_MS),
         snapshot_json_keep_ms: 365 * DAY_MS,
         detail_interval_ms: MINUTE_MS,
+        process_fast_keep_ms: DAY_MS,
         poll_interval_ms: 1_500,
     }
 }
@@ -1000,6 +1001,54 @@ async fn detail_rows_written_at_detail_interval() {
 }
 
 #[tokio::test]
+async fn maintenance_reports_fast_and_detail_prunes() {
+    // Break caught: maintenance logs process-detail deletion counts without
+    // reporting them, conflates deleted detail rows with rows written, or
+    // leaves the command dictionary orphaned after both process tiers prune.
+    let fixture = TempDatabase::new("reported-process-prunes");
+    let store = fixture.store().await;
+    store
+        .insert_snapshot(0, &snapshot(0, 10.0))
+        .await
+        .expect("aged snapshot should insert");
+    let pool = fixture.pool().await;
+    let mut transaction = pool.begin().await.expect("orphan fixture should begin");
+    for index in 0..1_004_i64 {
+        sqlx::query("INSERT INTO process_commands (command) VALUES (?)")
+            .bind(format!("orphan-command-{index}"))
+            .execute(&mut *transaction)
+            .await
+            .expect("orphan command should insert");
+    }
+    transaction
+        .commit()
+        .await
+        .expect("orphan fixture should commit");
+    pool.close().await;
+    let mut settings = config();
+    settings.l2_keep_ms = 10;
+    settings.process_fast_keep_ms = 10;
+
+    let report = maintain_with_config(&store, &settings, 1_000)
+        .await
+        .expect("maintenance should report process prunes");
+
+    assert_eq!(report.detail_rows, 2);
+    assert_eq!(report.detail_rows_pruned, 2);
+    assert_eq!(report.process_fast_rows, 1);
+    assert_eq!(report.orphan_commands, 1_005);
+    let pool = fixture.pool().await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM process_commands")
+            .fetch_one(&pool)
+            .await
+            .expect("command count should read"),
+        0
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn same_timestamp_detail_replacement_removes_omitted_members() {
     let fixture = TempDatabase::new("detail-replacement-members");
     let store = fixture.store().await;
@@ -1049,9 +1098,9 @@ async fn same_timestamp_detail_replacement_removes_omitted_members() {
 
     assert_eq!(filesystems.len(), 1);
     assert_eq!(filesystems[0].mount, "/");
-    assert_eq!(processes.len(), 1);
-    assert_eq!(processes[0].processes.len(), 1);
-    assert_eq!(processes[0].processes[0].pid, 42);
+    assert_eq!(processes.captures.len(), 1);
+    assert_eq!(processes.captures[0].processes.len(), 1);
+    assert_eq!(processes.captures[0].processes[0].pid, 42);
 }
 
 #[tokio::test]

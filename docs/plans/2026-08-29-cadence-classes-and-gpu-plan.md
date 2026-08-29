@@ -68,7 +68,7 @@ Collect and store each metric at the cadence its physics needs, stop paying ~3.9
 
 ## 4. Contingencies
 
-- **If `ALTER TABLE … DROP COLUMN` fails** (`sqlite_version()` < 3.35, or the column is referenced by an index/trigger) → do NOT fall back to the copy-table dance silently: the migration must refuse with `schema migration requires SQLite ≥ 3.35.0 (linked: <version>)`; report. On this fleet the linked library is 3.51.x (`libsqlite3-sys` bundled), so this should not fire.
+- If `sqlite_version()` < 3.35 → refuse BEFORE any write with `schema migration requires SQLite ≥ 3.35.0 (linked: <version>)`. If `ALTER TABLE … DROP COLUMN` itself fails after that check (an index, trigger or view still references the column — none exist in the shipped schema) → the migration refuses with SQLite's own error text, the transaction rolls back and the file is untouched; never a silent copy-table fallback. On this fleet the linked library is 3.51.x (`libsqlite3-sys` bundled).
 - **If the migration on the live-file copy takes > 60 s or the WAL grows past 1 GB** → stop, report the timing; the fix is batching the backfill `UPDATE` by `captured_at_ms` ranges, not skipping it.
 - **If fdinfo files show engine names other than `drm-engine-<name>`** (e.g. `drm-cycles-*` only, on some i915 versions) → report the real lines and treat busy as `None` for that driver; never estimate from `drm-cycles` without the plan being amended.
 - **If `gpu_busy_percent` exists but reads an error (trashcan's GCN 1 cards: `Operation not supported`)** → this is the expected fdinfo path, not a failure; cache the "unsupported" verdict per adapter and do not re-read the file every tick.

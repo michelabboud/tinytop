@@ -598,6 +598,11 @@
                 <span>Filesystem check seconds</span>
                 <input id="daemon-detail-interval-sec" type="number" min="15" max="3600" step="1" />
               </label>
+              <label>
+                <span>Per-tick process history (hours)</span>
+                <input id="daemon-process-fast-keep-hours" type="number" min="1" max="72" step="1" />
+                <small>Per-tick process rows are kept this long; older windows use the once-a-minute rows.</small>
+              </label>
               <label class="toggle-row">
                 <input id="daemon-archive-queryable" type="checkbox" />
                 <span>Queryable archive</span>

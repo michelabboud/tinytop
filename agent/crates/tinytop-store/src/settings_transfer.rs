@@ -56,6 +56,7 @@ pub struct WouldDelete {
     pub l3_buckets: i64,
     pub l4_buckets: i64,
     pub snapshot_json_rows: i64,
+    pub process_fast_rows: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -281,11 +282,15 @@ async fn would_delete(
     let snapshot_json_rows = store
         .count_snapshot_json_older_than(now_ms.saturating_sub(config.snapshot_json_keep_ms))
         .await?;
+    let process_fast_rows = store
+        .count_process_fast_rows_older_than(now_ms.saturating_sub(config.process_fast_keep_ms))
+        .await?;
     Ok(WouldDelete {
         l1_rows,
         l2_buckets,
         l3_buckets,
         l4_buckets,
         snapshot_json_rows,
+        process_fast_rows,
     })
 }

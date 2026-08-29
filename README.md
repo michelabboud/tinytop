@@ -312,6 +312,7 @@ Implementation notes:
 - The Rust Linux collector uses `procfs` and `sysinfo`; it does not shell out to `df`, `ps`, or `uname`.
 - The live collector keeps a reusable `sysinfo::System` so repeated samples avoid rebuilding all collector state from scratch.
 - Collection has three cadence classes: fast CPU, memory, swap, load, pressure, processes, and uptime refresh on every `pollIntervalMs` tick; slow filesystems refresh every `retentionLadder.detailIntervalSec`, are served from cache between checks, and carry `filesystemsCapturedAtMs`; static hostname, kernel, and distro identity is re-read on the slow tick.
+- Per-tick process history is stored in `process_samples_fast` with a `process_commands` dictionary (schema v2, migrated on first start; `tinytop-agent db stats --json` reports `userVersion`).
 - `/api/snapshot` is answered from the daemon's latest in-memory snapshot. It returns `503 {"error":"no snapshot yet"}` only before the first collection, and the daemon collects once before binding its listener.
 - `topProcessCount` is effective from the next collection tick (default `8`); the previous hard-coded `10` is gone, and `tinytop-agent collect --json` uses the default.
 - Linux is the default supported collector feature. Native macOS and Windows collectors are present as opt-in Rust feature-gated modules for identity, CPU, memory, load equivalent, disks, and processes; Linux remains the reference implementation until those hosts receive full live-machine verification.
@@ -401,6 +402,7 @@ In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder h
 | `retentionLadder.l4` | enabled, `730` days | Hourly rollups; `0` means forever, otherwise retention must be at least the nearest enabled finer tier and at most 36,500 days |
 | `retentionLadder.snapshotJsonKeepMinutes` | `60` | Complete raw snapshot JSON; 60–1,440 minutes |
 | `retentionLadder.detailIntervalSec` | `60` | Filesystem check interval (collector slow class; also the typed detail-row cadence until the typed-history migration); 15–3,600 seconds |
+| `retentionLadder.processFastKeepHours` | `24` | Per-tick process rows kept before falling back to the once-a-minute rows; 1–72 hours |
 | `retentionLadder.archive` | off | `queryable` moves expired L4 rows into `history-archive.sqlite`; `directory` is empty (beside the main DB) or absolute. `cold` requires `queryable` and exports complete eligible UTC months as verified `csv.gz` files plus `sha256sum`-compatible sidecars after 1–120 months. |
 | `retentionLadder.diskCheck` | `intervalMinutes: 60`, `minFreeBytes: 5 GiB` | Interval 5–1,440 minutes; minimum at least 256 MiB. A breach shows a banner and refuses retention growth or tier/archive enables; it never deletes history. |
 
@@ -465,7 +467,7 @@ Resource attributes include `service.name`, `service.version` (the agent version
 | `GET /api/history/points` | Chart points from `auto`, `raw`, `rollup` (1 minute), `5m`, `1h`, or `archive`, plus top-level `source`, `resolutionMs`, and `available`. `archive` returns hourly points with `available:true` when `retentionLadder.archive.queryable` is enabled; an explicit archive request while it is disabled is an empty `available:false` page. |
 | `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, JSON horizon, detail cadence, disk state (`freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, `lastCheckMs`), archive state, migration state, and Rust-daemon OTel status (`enabled`, `endpoint`, `intervalSec`, `lastSuccessMs`, `lastFailureMs`, `lastError`, `failures`). |
 | `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |
-| `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit. |
+| `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit; the response names its `source` (`fast` for windows inside `processFastKeepHours`, else `minute`). |
 | `GET /api/history/markers` | Persisted daemon/settings/migration/disk-pressure/disk-recovery events and computed coverage gaps. |
 | `GET /api/settings/export` | Pretty-printed version-1 settings envelope with an attachment filename and `no-store`; Rust daemon only. |
 | `POST /api/settings/import` | Validate and apply a settings envelope, run daemon maintenance, and record an import marker. `?dryRun=true` returns validation errors, warnings, changed keys, and exact candidate-horizon `wouldDelete` counts without writing; Rust daemon only. |

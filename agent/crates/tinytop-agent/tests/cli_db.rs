@@ -62,13 +62,13 @@ impl TempDatabase {
             .expect("tinytop-agent database command should run")
     }
 
-    fn initialize_v1(&self) {
+    fn initialize_v2(&self) {
         // Inspection commands deliberately refuse missing databases; collection owns creation.
         let output = self.run(&["collect", "--json"]);
         assert_success(&output);
     }
 
-    fn initialize_populated_v1(&self) {
+    fn initialize_populated_v2(&self) {
         let output = self.run(&["collect", "--json"]);
         assert_success(&output);
     }
@@ -176,7 +176,7 @@ fn remove_owned_sqlite_database_and_sidecars(path: &Path) {
 #[test]
 fn db_stats_json_reports_the_ladder() {
     let fixture = TempDatabase::new("stats");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
 
     let output = fixture.run(&["db", "stats", "--json"]);
 
@@ -249,6 +249,25 @@ fn db_stats_json_reports_the_ladder() {
             "fileCount",
         ])
     );
+}
+
+#[tokio::test]
+async fn db_stats_json_reports_user_version_2() {
+    // Break caught: schema migration succeeds but operators cannot observe the
+    // active SQLite schema version through the JSON stats contract.
+    let fixture = TempDatabase::new("stats-user-version-v2");
+    SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fresh database should initialize")
+        .close()
+        .await
+        .expect("fresh database should close");
+
+    let output = fixture.run(&["db", "stats", "--json"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(json["value"]["userVersion"], 2);
 }
 
 #[tokio::test]
@@ -351,7 +370,7 @@ async fn db_stats_shows_disk_pressure_after_a_check() {
 fn db_stats_closes_store_and_checkpoints_wal() {
     // Break caught: process exit drops the runtime before SQLite checkpoints its last WAL.
     let fixture = TempDatabase::new("stats-checkpoint");
-    fixture.initialize_populated_v1();
+    fixture.initialize_populated_v2();
 
     let output = fixture.run(&["db", "stats", "--json"]);
 
@@ -386,10 +405,10 @@ fn db_stats_refuses_a_missing_database() {
 }
 
 #[test]
-fn db_archive_status_on_fresh_v1_is_read_only() {
+fn db_archive_status_on_fresh_v2_is_read_only() {
     // Break caught: status creates an archive or reports stub cold counters.
     let fixture = TempDatabase::new("archive-status-fresh");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
 
     let output = fixture.run(&["db", "archive", "status"]);
 
@@ -557,7 +576,7 @@ async fn db_archive_status_caps_next_exportable_months_to_one_pass() {
 fn db_archive_export_now_refuses_when_cold_is_off() {
     // Break caught: the operator command bypasses its explicit setting gate.
     let fixture = TempDatabase::new("archive-export-refused");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
 
     let output = fixture.run(&["db", "archive", "export-now"]);
 
@@ -670,7 +689,7 @@ async fn db_archive_export_now_writes_seeded_month() {
 #[test]
 fn db_check_never_migrates_a_v0_database() {
     let fixture = TempDatabase::new("check-v0-no-migration");
-    fixture.initialize_populated_v1();
+    fixture.initialize_populated_v2();
     set_sqlite_user_version(&fixture.db_path, 0);
 
     let output = fixture.run(&["db", "check"]);
@@ -686,7 +705,7 @@ fn db_check_never_migrates_a_v0_database() {
 #[test]
 fn db_vacuum_never_migrates_a_v0_database() {
     let fixture = TempDatabase::new("vacuum-v0-no-migration");
-    fixture.initialize_populated_v1();
+    fixture.initialize_populated_v2();
     set_sqlite_user_version(&fixture.db_path, 0);
 
     let output = fixture.run(&["db", "vacuum"]);
@@ -702,7 +721,7 @@ fn db_vacuum_never_migrates_a_v0_database() {
 #[test]
 fn db_stats_refuses_a_v0_database() {
     let fixture = TempDatabase::new("stats-v0-refusal");
-    fixture.initialize_populated_v1();
+    fixture.initialize_populated_v2();
     set_sqlite_user_version(&fixture.db_path, 0);
 
     let output = fixture.run(&["db", "stats", "--json"]);
@@ -718,9 +737,9 @@ fn db_stats_refuses_a_v0_database() {
 }
 
 #[test]
-fn pre_image_status_reports_absence_on_an_existing_v1_database() {
+fn pre_image_status_reports_absence_on_an_existing_v2_database() {
     let fixture = TempDatabase::new("status-absent");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
 
     let output = fixture.run(&["db", "pre-image", "status"]);
 
@@ -734,14 +753,14 @@ fn pre_image_status_reports_absence_on_an_existing_v1_database() {
     assert_eq!(json["value"]["exists"], false);
     assert!(json["value"]["bytes"].is_null());
     assert_eq!(json["value"]["databaseExists"], true);
-    assert_eq!(json["value"]["userVersion"], 1);
+    assert_eq!(json["value"]["userVersion"], 2);
     assert_eq!(json["value"]["integrityCheck"], "ok");
 }
 
 #[test]
 fn pre_image_remove_refuses_when_database_is_missing() {
     let fixture = TempDatabase::new("remove-missing-database");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
     fs::write(&fixture.pre_image_path, b"only copy").expect("pre-image fixture should be written");
     remove_owned_sqlite_database_and_sidecars(&fixture.db_path);
 
@@ -815,7 +834,7 @@ fn pre_image_status_follows_a_symlinked_database_path() {
 #[test]
 fn explicit_sqlite_url_never_touches_the_default_state_directory() {
     let fixture = TempDatabase::new("explicit-sqlite-default-state");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
     let home = fixture.dir.join("home");
     assert!(!home.exists());
 
@@ -859,7 +878,7 @@ fn pre_image_status_without_sqlite_does_not_create_default_directories() {
 #[test]
 fn pre_image_remove_refuses_without_yes() {
     let fixture = TempDatabase::new("remove-no-yes");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
     File::create(&fixture.pre_image_path).expect("pre-image fixture should be created");
 
     let output = fixture.run(&["db", "pre-image", "remove"]);
@@ -879,7 +898,7 @@ fn pre_image_remove_refuses_without_yes() {
 #[test]
 fn pre_image_remove_refuses_when_absent() {
     let fixture = TempDatabase::new("remove-absent");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
 
     let output = fixture.run(&["db", "pre-image", "remove", "--yes"]);
 
@@ -898,7 +917,7 @@ fn pre_image_remove_refuses_when_absent() {
 #[test]
 fn pre_image_remove_refuses_when_user_version_is_below_1() {
     let fixture = TempDatabase::new("remove-v0");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
     set_sqlite_user_version(&fixture.db_path, 0);
     File::create(&fixture.pre_image_path).expect("pre-image fixture should be created");
 
@@ -919,7 +938,7 @@ fn pre_image_remove_refuses_when_user_version_is_below_1() {
 #[test]
 fn pre_image_remove_deletes_after_checks() {
     let fixture = TempDatabase::new("remove-ok");
-    fixture.initialize_v1();
+    fixture.initialize_v2();
     fs::write(&fixture.pre_image_path, b"backup").expect("pre-image fixture should be written");
 
     let output = fixture.run(&["db", "pre-image", "remove", "--yes"]);

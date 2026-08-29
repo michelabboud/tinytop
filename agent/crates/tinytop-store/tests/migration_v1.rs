@@ -162,10 +162,10 @@ struct SeededV0 {
 }
 
 #[tokio::test]
-async fn fresh_database_is_created_at_schema_version_1() {
+async fn fresh_database_is_created_at_schema_version_2() {
     // Break caught: connecting to a new file leaves user_version at 0 or omits
-    // any v1 table, index, additive column, or nullable snapshot_json contract.
-    let fixture = TempDatabase::new("fresh-v1");
+    // any v2 table, index, additive column, or nullable snapshot_json contract.
+    let fixture = TempDatabase::new("fresh-v2");
 
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
@@ -173,13 +173,15 @@ async fn fresh_database_is_created_at_schema_version_1() {
     drop(store);
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 1);
+    assert_eq!(schema_version(&pool).await, 2);
     for table in [
         "metric_rollups_5m",
         "metric_rollups_1h",
         "history_state",
         "fs_samples",
+        "process_commands",
         "process_samples",
+        "process_samples_fast",
     ] {
         assert!(table_exists(&pool, table).await, "missing table {table}");
     }
@@ -187,6 +189,8 @@ async fn fresh_database_is_created_at_schema_version_1() {
         column_exists(&pool, "metric_rollups_1m", "min_cpu_usage_percent").await,
         "metric_rollups_1m should contain min_cpu_usage_percent"
     );
+    assert!(column_exists(&pool, "process_samples", "command_id").await);
+    assert!(!column_exists(&pool, "process_samples", "command").await);
     let snapshot_json_not_null: i64 = sqlx::query(
         "SELECT [notnull] FROM pragma_table_info('metric_samples') WHERE name = 'snapshot_json'",
     )
@@ -360,7 +364,7 @@ async fn reconnect_completes_an_interrupted_post_schema_vacuum() {
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count after resumed completion");
-    assert_eq!(marker_count, 1);
+    assert_eq!(marker_count, 2);
     let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
         .fetch_one(&pool)
         .await
@@ -424,7 +428,7 @@ async fn crash_after_schema_commit_is_recovered_on_next_connect() {
             .fetch_one(&pool)
             .await
             .expect("post-recovery schemaMigrated marker count");
-    assert_eq!(marker_count_after, 1);
+    assert_eq!(marker_count_after, 2);
     let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
         .fetch_one(&pool)
         .await
@@ -707,7 +711,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
     pre_image_pool.close().await;
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 1);
+    assert_eq!(schema_version(&pool).await, 2);
     let cutoff_ms = seeded.now_ms - SNAPSHOT_JSON_KEEP_MS;
     let recent_json_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= ? AND snapshot_json IS NOT NULL",
@@ -751,7 +755,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count");
-    assert_eq!(marker_count, 1);
+    assert_eq!(marker_count, 2);
     pool.close().await;
 
     let bytes_after = std::fs::metadata(&fixture.path)
@@ -765,6 +769,10 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
 }
 
 async fn assert_complete_v0_schema_survived(pool: &SqlitePool, now_ms: i64) {
+    assert!(table_exists(pool, "process_commands").await);
+    assert!(table_exists(pool, "process_samples_fast").await);
+    assert!(column_exists(pool, "process_samples", "command_id").await);
+    assert!(!column_exists(pool, "process_samples", "command").await);
     for column in [
         "min_cpu_usage_percent",
         "min_memory_used_percent",
@@ -844,6 +852,8 @@ async fn assert_complete_v0_schema_survived(pool: &SqlitePool, now_ms: i64) {
         "idx_metric_rollups_1h_newest",
         "idx_fs_samples_mount_time",
         "idx_process_samples_time",
+        "idx_process_samples_command",
+        "idx_process_samples_fast_command",
         "idx_app_events_occurred_type",
     ] {
         assert!(index_exists(pool, index).await, "missing index {index}");

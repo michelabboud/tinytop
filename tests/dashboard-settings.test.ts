@@ -100,6 +100,7 @@ describe("dashboard settings", () => {
       "daemon-l4-forever",
       "daemon-snapshot-json-keep-minutes",
       "daemon-detail-interval-sec",
+      "daemon-process-fast-keep-hours",
       "daemon-archive-queryable",
       "daemon-archive-cold",
       "daemon-archive-cold-after-months",
@@ -112,6 +113,10 @@ describe("dashboard settings", () => {
     expect(html).toContain('id="daemon-retention-hours" type="number" readonly');
     expect(html).toContain('id="daemon-rollup-retention-days" type="number" readonly');
     expect(html).toContain("derived from L1/L2");
+    expect(app).toContain(
+      'daemonProcessFastKeepHours: document.querySelector("#daemon-process-fast-keep-hours")',
+    );
+    expect(app).toContain("processFastKeepHours: numberControlValue(");
   });
 
   test("omits retentionLadder from a Bun runtime PUT payload", () => {

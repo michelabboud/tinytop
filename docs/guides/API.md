@@ -210,6 +210,15 @@ Response:
   "targetDatabaseBytes": 134217728,
   "topProcessCount": 8,
   "redactionDefault": false,
+  "retentionLadder": {
+    "l1": { "keepDays": 3 },
+    "l2": { "keepDays": 30 },
+    "l3": { "enabled": true, "keepDays": 90 },
+    "l4": { "enabled": true, "keepDays": 730 },
+    "snapshotJsonKeepMinutes": 60,
+    "detailIntervalSec": 60,
+    "processFastKeepHours": 24
+  },
   "thresholds": {
     "cpuWarn": 80,
     "cpuCritical": 95,
@@ -343,7 +352,38 @@ Rust daemon endpoint for typed filesystem history. It accepts inclusive `sinceMs
 
 ### GET /api/history/processes
 
-Rust daemon endpoint for typed process history. It accepts inclusive `sinceMs` / `untilMs` and a capture-group `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "captures": [{ "capturedAtMs": ..., "processes": [...] }] }`; each complete capture preserves rank, PID, command, CPU/memory percentages, RSS bytes, and nullable parent/start fields.
+Rust daemon endpoint for typed process history. It accepts inclusive `sinceMs` / `untilMs` and a capture-group `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "source": "fast" | "minute", "captures": [{ "capturedAtMs": ..., "processes": [...] }] }`; each complete capture preserves rank, PID, command, CPU/memory percentages, RSS bytes, and nullable parent/start fields.
+
+```bash
+curl -fsS 'http://127.0.0.1:4274/api/history/processes?sinceMs=1782292546568&limit=1'
+```
+
+Response:
+
+```json
+{
+  "source": "fast",
+  "captures": [
+    {
+      "capturedAtMs": 1782296146568,
+      "processes": [
+        {
+          "rank": 0,
+          "pid": 4242,
+          "command": "tinytop-agent serve",
+          "cpuPercent": 12.5,
+          "memoryPercent": 1.2,
+          "rssBytes": 67108864,
+          "parentPid": 1,
+          "startedAt": "2026-06-24T10:00:00Z"
+        }
+      ]
+    }
+  ]
+}
+```
+
+The response uses `fast` only when `sinceMs` is present and falls within `processFastKeepHours` of the current time; an open-ended or older window uses `minute`.
 
 ### GET /api/history/markers
 

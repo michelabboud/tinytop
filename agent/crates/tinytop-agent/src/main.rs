@@ -78,6 +78,7 @@ struct DbStatus<T: Serialize> {
 struct DbStatsOutput {
     #[serde(flatten)]
     stats: StoreStats,
+    user_version: i64,
     tiers: Vec<HistoryTierCoverage>,
     snapshot_json_sample_count: i64,
     archive: HistoryArchiveCoverage,
@@ -324,6 +325,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     status: "ok",
                     value: DbStatsOutput {
                         stats,
+                        user_version,
                         tiers: coverage.tiers,
                         snapshot_json_sample_count: coverage.snapshot_json_sample_count,
                         archive: coverage.archive,

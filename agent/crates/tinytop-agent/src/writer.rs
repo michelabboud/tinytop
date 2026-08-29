@@ -19,8 +19,8 @@ use tinytop_collectors::{Collector, CollectorConfig, NativeCollector};
 use tinytop_store::{
     DashboardSettings, DiskTransition, FreeBytesProvider, HistoryFilesystemSample, HistoryMarker,
     HistoryMarkerType, HistoryOtelCoverage, HistoryPoint, HistoryPointMode, HistoryPointsQuery,
-    HistoryProcessCapture, HistoryQuery, HistorySample, SqliteHistoryStore, SysinfoFreeBytes,
-    SystemSnapshot, apply_disk_measurement,
+    HistoryProcessCapture, HistoryQuery, HistorySample, ProcessHistorySource, SqliteHistoryStore,
+    SysinfoFreeBytes, SystemSnapshot, apply_disk_measurement,
     otel_settings::{OTEL_INTERVAL_SEC_RANGE, OtelSettings},
     resolve_history_point_source_with_poll,
     settings_transfer::{
@@ -194,6 +194,7 @@ struct HistoryFilesystemsResponse {
 
 #[derive(Debug, Serialize)]
 struct HistoryProcessesResponse {
+    source: ProcessHistorySource,
     captures: Vec<HistoryProcessCapture>,
 }
 
@@ -537,8 +538,12 @@ async fn history_processes(
 ) -> Result<Response, ServeError> {
     let params = parse_history_processes_params(raw_query.as_deref())?;
     let query = detail_history_query(params.since_ms, params.until_ms, params.limit);
-    let captures = state.store.read_history_processes(query).await?;
-    Ok(no_store(Json(HistoryProcessesResponse { captures })).into_response())
+    let history = state.store.read_history_processes(query).await?;
+    Ok(no_store(Json(HistoryProcessesResponse {
+        source: history.source,
+        captures: history.captures,
+    }))
+    .into_response())
 }
 
 async fn static_file(
