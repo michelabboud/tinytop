@@ -1,6 +1,6 @@
 # Plan: Cadence classes, typed history without per-sample JSON, and a GPU collector — Phase 5 (0.6.0)
 
-**Status:** PROPOSED 2026-08-29 (Fable) — waits for Michel's go. **Author:** Fable (design; measured on the live box, sheep, goat, trashcan). **Executors:** hexe lanes — Rust store/collector work on `ari-sol-deep` (unsafe FFI, schema migrations, concurrency), dashboard/JS on `ari-sol`, docs on `ari-spark`; fast blind review (luna) per lane, one deep dual-blind at phase close; Fable validates every finding, gates, merges, releases. **Base:** `main` at `v0.5.0` (`ce848e6`). Version at close: **0.6.0**; per-task tags `0.5.x`.
+**Status:** GO 2026-08-29 ~17:2xZ (Michel: "Go for the optimization plan fully"); execution via hexe lanes T12 → T17. **Author:** Fable (design; measured on the live box, sheep, goat, trashcan). **Executors:** hexe lanes — Rust store/collector work on `ari-sol-deep` (unsafe FFI, schema migrations, concurrency), dashboard/JS on `ari-sol`, docs on `ari-spark`; fast blind review (luna) per lane, one deep dual-blind at phase close; Fable validates every finding, gates, merges, releases. **Base:** `main` at `v0.5.0` (`ce848e6`). Version at close: **0.6.0**; per-task tags `0.5.x`.
 
 This document is self-contained. An executor without the design conversation must be able to run any task from it. Every file:line below was read on `v0.5.0`.
 

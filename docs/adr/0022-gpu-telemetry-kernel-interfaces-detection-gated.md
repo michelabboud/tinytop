@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-29, Fable) — becomes Accepted at Michel's go for plan `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md`. Extends ADR 0012 (no subprocess in collectors).
+Accepted (2026-08-29 — Michel's go: "Go for the optimization plan fully") for plan `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md`. Extends ADR 0012 (no subprocess in collectors).
 
 ## Context
 
