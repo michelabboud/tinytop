@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Export complete UTC archive months only after the configured calendar age, every hour has expired from finite L4 retention, and the prior cold watermark has passed; disabled or forever L4 has no exportable months.
+- Added read-only manifest inspection and one-pass, oldest-first cold export through a standalone archive connection, without attaching it to the main pool or deleting queryable archive rows.
+- Write DDL-ordered RFC 4180 CSV through pure-Rust gzip level 6, fsync and hash the temporary file, decode it again to verify row count and boundary buckets, then atomically publish the file, checksum sidecar, manifest row, and watermark in order.
+- Added step-specific cold-export errors and convergent retry behavior; a failed pass leaves the queryable archive intact and may leave only safe-to-remove temporary or replaceable output files.
+- Run cold export hourly after a one-minute startup delay; errors are logged without stopping collection or the scheduler.
+- Report manifest-backed cold file counts and bytes in history coverage and `db stats`.
+- Added read-only `db archive status` and one-pass `db archive export-now`, with structured refusals for disabled cold/queryable settings and no-create handling for missing databases and archives.
+- Added archive eligibility, verified files and sidecars, corruption recovery, exact CSV round-trip, no-delete, incomplete-month, manifest no-create, CLI, and help-contract coverage.
+- Close every CLI-opened SQLite store so the last connection checkpoints and removes its WAL, including one-shot collection.
+- Refuse `db stats`, `db check`, `db vacuum`, and `db archive` inspection of a missing main database without creating the file, sidecars, or parent directory.
+- Reject `/api/history/points?limit=0` and inverted `sinceMs`/`untilMs` ranges with field- and value-specific HTTP 400 errors.
+- Pinned `flate2` 1.1.10 with its default pure-Rust `miniz_oxide` backend and RustCrypto `sha2` 0.11.0 for gzip and streamed SHA-256 verification; the inert `zlib-rs` 0.6.7 weak-feature lock entry is never compiled.
+
 ## 0.3.1 - 2026-08-29
 
 Phase 2 of the tiered history ladder opens with Task 7, the queryable archive (spec §6/§9/§10; ADRs 0014, 0018 and 0019). Expired hourly (L4) rows now move into `history-archive.sqlite` instead of being deleted when `retentionLadder.archive.queryable` is on, and `source=auto` reads fall through to it for ranges older than L4. The lane that built it (hexe run 573) escalated — correctly — on the move mechanic the plan prescribed: with the main database in WAL mode, SQLite commits attached files one by one, `main` first, so a single cross-file transaction could delete a batch before its copy was durable. ADR 0018 replaced it with copy → commit → verify → delete, and the blind review of that fix (luna, run 576) found the interval-count verify livelocking after a partial batch and the two-column delete match; ADR 0019 settled key-set verification, full-row equality, an fsynced archive commit and a watermark inside the delete transaction. Nothing here touches the on-disk main schema (`user_version` stays 1); the archive file is created only by a move, never by a read or by `db stats`.

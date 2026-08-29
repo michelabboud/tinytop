@@ -367,6 +367,7 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | `HISTORY_POLL_MS` | `1500` | Collector sampling interval |
 | `TINYTOP_RUNTIME` | `auto` | Runtime selection for `./tinytop start`: `auto`, `rust`, `legacy`, or `bun` |
 | `TINYTOP_HISTORY_DB` | Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite` | SQLite database path |
+| `TINYTOP_SYSTEMD_UNIT_DIR` | `~/.config/systemd/user` | Bash command-center systemd user-unit directory override |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
 | `TINYTOP_PUBLIC_DIR` | unset | Optional development override for Rust dashboard assets; unset uses embedded assets |
 | `TINYTOP_EMBED_FRAME_ANCESTORS` | `'self'` | CSP `frame-ancestors` value for `/embed` only, for example `'self' http://127.0.0.1:9323` |
@@ -393,7 +394,7 @@ In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder h
 | `retentionLadder.l4` | enabled, `730` days | Hourly rollups; `0` means forever, otherwise retention must be at least the nearest enabled finer tier and at most 36,500 days |
 | `retentionLadder.snapshotJsonKeepMinutes` | `60` | Complete raw snapshot JSON; 60–1,440 minutes |
 | `retentionLadder.detailIntervalSec` | `60` | Filesystem/process typed-sample cadence; 15–3,600 seconds |
-| `retentionLadder.archive` | off | `queryable` moves expired L4 rows into `history-archive.sqlite`; `directory` is empty (beside the main DB) or absolute. `cold` requires `queryable`; cold-after is 1–120 months, with cold export landing in a later phase. |
+| `retentionLadder.archive` | off | `queryable` moves expired L4 rows into `history-archive.sqlite`; `directory` is empty (beside the main DB) or absolute. `cold` requires `queryable` and exports complete eligible UTC months as verified `csv.gz` files plus `sha256sum`-compatible sidecars after 1–120 months. |
 | `retentionLadder.diskCheck` | 60 min, 5 GiB | Check interval 5–1,440 minutes; minimum free-space threshold is at least 256 MiB. Disk checking lands in the disk phase. |
 
 Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. A legacy document without `retentionLadder` is derived in memory from `retentionHours` and `rollupRetentionDays` and is not rewritten until an explicit save. While persisted `history_state.diskPressure.active` is true, the server refuses horizon growth or enabling a tier/archive, but still permits shrinking. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.

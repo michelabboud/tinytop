@@ -1,11 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::{
+    borrow::Cow,
+    fs::File,
+    io::{BufReader, Read, Write},
+    path::{Path, PathBuf},
+};
 
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{Connection, Row, SqliteConnection, sqlite::SqliteConnectOptions};
+use time::{Date, Month, OffsetDateTime, Time};
 
 use crate::{
     ArchiveErrorSource, SqliteHistoryStore, StoreError,
     ladder::{Tier, TierBucket},
-    retention_ladder::ArchiveSettings,
+    retention_ladder::{ArchiveSettings, RetentionLadder},
     tier_bucket_from_row,
 };
 
@@ -63,6 +72,8 @@ const ARCHIVE_COLUMNS: &str = r#"
   avg_root_used_percent, min_root_used_percent, max_root_used_percent
 "#;
 
+const DAY_MS: i64 = 86_400_000;
+
 const ARCHIVE_ROW_MATCH: &str = r#"
   a.first_captured_at_ms = metric_rollups_1h.first_captured_at_ms
   AND a.newest_captured_at_ms = metric_rollups_1h.newest_captured_at_ms
@@ -90,6 +101,27 @@ pub struct ArchivePaths {
     pub directory: PathBuf,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveManifestRow {
+    pub month: String,
+    pub exported_at_ms: i64,
+    pub file: String,
+    pub sha256: String,
+    pub row_count: i64,
+    pub bytes: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchiveSchemaState {
+    Absent,
+    Incomplete {
+        user_version: i64,
+        required_objects: i64,
+    },
+    Current,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArchiveBatch {
     pub min_ms: i64,
@@ -102,9 +134,13 @@ enum ArchivePhase {
     BeforeCopyCommit,
     BetweenCommits,
     AfterDeleteCommit,
+    ColdExport,
 }
 
 fn archive_phase(step: &'static str) -> ArchivePhase {
+    if step.starts_with("cold ") {
+        return ArchivePhase::ColdExport;
+    }
     match step {
         "create directory" | "open" | "schema" | "close" | "acquire" | "attach" | "begin copy"
         | "select" | "select decode" | "insert" | "commit copy" => ArchivePhase::BeforeCopyCommit,
@@ -126,6 +162,9 @@ pub(crate) fn archive_remedy(step: &'static str) -> &'static str {
         }
         ArchivePhase::AfterDeleteCommit => {
             "the batch is committed in history-archive.sqlite and removed from the main database; only the detach bookkeeping failed — retrying is safe, nothing is duplicated or lost"
+        }
+        ArchivePhase::ColdExport => {
+            "the queryable archive is untouched; a `.tmp` file may remain in the archive directory and is safe to delete; retrying re-exports the month"
         }
     }
 }
@@ -189,6 +228,24 @@ async fn inspect_archive_schema(
         object_count,
         required_object_count,
     })
+}
+
+pub async fn archive_schema_state(paths: &ArchivePaths) -> Result<ArchiveSchemaState, StoreError> {
+    let Some(mut connection) = open_archive_read_only(paths, "schema").await? else {
+        return Ok(ArchiveSchemaState::Absent);
+    };
+    let inspection = inspect_archive_schema(&mut connection).await?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(error);
+    }
+    if inspection.current() {
+        Ok(ArchiveSchemaState::Current)
+    } else {
+        Ok(ArchiveSchemaState::Incomplete {
+            user_version: inspection.user_version,
+            required_objects: inspection.required_object_count,
+        })
+    }
 }
 
 fn archive_schema_refusal(
@@ -339,12 +396,586 @@ pub async fn read_archive_points(
     Ok(buckets)
 }
 
+pub async fn read_archive_manifest(
+    paths: &ArchivePaths,
+) -> Result<Vec<ArchiveManifestRow>, StoreError> {
+    let Some(mut connection) = open_archive_read_only(paths, "cold read").await? else {
+        return Ok(Vec::new());
+    };
+    let inspection = inspect_archive_schema(&mut connection)
+        .await
+        .map_err(|error| archive_store_error("cold read", error))?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(archive_store_error("cold read", error));
+    }
+    if !inspection.current() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as::<_, (String, i64, String, String, i64, i64)>(
+        r#"
+        SELECT month, exported_at_ms, file, sha256, row_count, bytes
+        FROM archive_manifest
+        ORDER BY month
+        "#,
+    )
+    .fetch_all(&mut connection)
+    .await
+    .map_err(|source| archive_sqlx("cold read", source))
+    .map(|rows| {
+        rows.into_iter()
+            .map(
+                |(month, exported_at_ms, file, sha256, row_count, bytes)| ArchiveManifestRow {
+                    month,
+                    exported_at_ms,
+                    file,
+                    sha256,
+                    row_count,
+                    bytes,
+                },
+            )
+            .collect()
+    })
+}
+
+pub async fn archive_months_present(paths: &ArchivePaths) -> Result<Vec<String>, StoreError> {
+    let Some(mut connection) = open_archive_read_only(paths, "cold months").await? else {
+        return Ok(Vec::new());
+    };
+    let inspection = inspect_archive_schema(&mut connection)
+        .await
+        .map_err(|error| archive_store_error("cold months", error))?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(archive_store_error("cold months", error));
+    }
+    if !inspection.current() {
+        return Ok(Vec::new());
+    }
+    read_months_on(&mut connection).await
+}
+
+pub fn exportable_months(
+    months_present: &[String],
+    ladder: &RetentionLadder,
+    exported_until: Option<&str>,
+    now_ms: i64,
+) -> Vec<String> {
+    if !ladder.l4.enabled || ladder.l4.keep_days == 0 {
+        return Vec::new();
+    }
+    let Some(age_cutoff) = calendar_month_before(now_ms, ladder.archive.cold_after_months) else {
+        return Vec::new();
+    };
+    let l4_keep_ms = ladder.l4.keep_days.saturating_mul(DAY_MS);
+    let mut months = months_present
+        .iter()
+        .filter(|month| month.as_str() <= age_cutoff.as_str())
+        .filter(|month| exported_until.is_none_or(|watermark| month.as_str() > watermark))
+        .filter(|month| {
+            month_bounds(month).is_some_and(|(_, next_start_ms)| {
+                next_start_ms
+                    .saturating_sub(1)
+                    .saturating_add(l4_keep_ms)
+                    .saturating_add(DAY_MS)
+                    <= now_ms
+            })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    months.sort();
+    months.dedup();
+    months
+}
+
+pub async fn export_cold_months(
+    store: &SqliteHistoryStore,
+    paths: &ArchivePaths,
+    ladder: &RetentionLadder,
+    now_ms: i64,
+) -> Result<Vec<ArchiveManifestRow>, StoreError> {
+    if !paths
+        .db
+        .try_exists()
+        .map_err(|source| StoreError::Archive {
+            step: "cold read",
+            source: ArchiveErrorSource::Io(source),
+        })?
+    {
+        return Ok(Vec::new());
+    }
+    let options = SqliteConnectOptions::new()
+        .filename(&paths.db)
+        .create_if_missing(false);
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(|source| archive_sqlx("cold read", source))?;
+    let inspection = inspect_archive_schema(&mut connection)
+        .await
+        .map_err(|error| archive_store_error("cold read", error))?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(archive_store_error("cold read", error));
+    }
+    if !inspection.current() {
+        return Err(StoreError::Archive {
+            step: "cold read",
+            source: ArchiveErrorSource::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "history-archive.sqlite at {} is incomplete; expected metric_rollups_1h, its newest index, archive_manifest, and user_version 1",
+                    paths.db.display()
+                ),
+            )),
+        });
+    }
+    let months_present = read_months_on(&mut connection).await?;
+    let exported_until = store
+        .history_state_get::<String>("coldExportedUntilMonth")
+        .await
+        .map_err(|error| archive_store_error("cold watermark", error))?;
+    let months = exportable_months(&months_present, ladder, exported_until.as_deref(), now_ms);
+    let mut written = Vec::with_capacity(months.len());
+    for month in months {
+        let (start_ms, next_start_ms) =
+            month_bounds(&month).ok_or_else(|| StoreError::Archive {
+                step: "cold months",
+                source: ArchiveErrorSource::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("archive month {month:?} is not UTC YYYY-MM"),
+                )),
+            })?;
+        let sql = format!(
+            "SELECT {ARCHIVE_COLUMNS} FROM metric_rollups_1h WHERE bucket_start_ms >= ?1 AND bucket_start_ms < ?2 ORDER BY bucket_start_ms"
+        );
+        let rows = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(start_ms)
+            .bind(next_start_ms)
+            .fetch_all(&mut connection)
+            .await
+            .map_err(|source| archive_sqlx("cold read", source))?;
+        if rows.is_empty() {
+            continue;
+        }
+        let expected_first_ms = rows[0]
+            .try_get("bucket_start_ms")
+            .map_err(|source| archive_sqlx("cold read", source))?;
+        let expected_last_ms = rows[rows.len() - 1]
+            .try_get("bucket_start_ms")
+            .map_err(|source| archive_sqlx("cold read", source))?;
+        let row_count = i64::try_from(rows.len()).map_err(|_| StoreError::Archive {
+            step: "cold read",
+            source: ArchiveErrorSource::Io(std::io::Error::other(
+                "cold month row count does not fit SQLite INTEGER",
+            )),
+        })?;
+        let file_name = format!("tinytop-1h-{month}.csv.gz");
+        let target = paths.directory.join(&file_name);
+        let temporary = suffixed_path(&target, ".tmp");
+        write_cold_file(&temporary, &rows)?;
+        let sha256 = sha256_file(&temporary)?;
+        verify_cold_file(&temporary, row_count, expected_first_ms, expected_last_ms)?;
+        std::fs::rename(&temporary, &target).map_err(|source| StoreError::Archive {
+            step: "cold rename",
+            source: ArchiveErrorSource::Io(source),
+        })?;
+        sync_directory(&paths.directory)?;
+        let sidecar = suffixed_path(&target, ".sha256");
+        let mut sidecar_file = File::create(&sidecar).map_err(|source| StoreError::Archive {
+            step: "cold sidecar",
+            source: ArchiveErrorSource::Io(source),
+        })?;
+        sidecar_file
+            .write_all(format!("{sha256}  {file_name}\n").as_bytes())
+            .and_then(|()| sidecar_file.sync_all())
+            .map_err(|source| StoreError::Archive {
+                step: "cold sidecar",
+                source: ArchiveErrorSource::Io(source),
+            })?;
+        let bytes = i64::try_from(
+            std::fs::metadata(&target)
+                .map_err(|source| StoreError::Archive {
+                    step: "cold manifest",
+                    source: ArchiveErrorSource::Io(source),
+                })?
+                .len(),
+        )
+        .map_err(|_| StoreError::Archive {
+            step: "cold manifest",
+            source: ArchiveErrorSource::Io(std::io::Error::other(
+                "cold file byte count does not fit SQLite INTEGER",
+            )),
+        })?;
+        let manifest = ArchiveManifestRow {
+            month: month.clone(),
+            exported_at_ms: now_ms,
+            file: file_name,
+            sha256,
+            row_count,
+            bytes,
+        };
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO archive_manifest
+              (month, exported_at_ms, file, sha256, row_count, bytes)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(&manifest.month)
+        .bind(manifest.exported_at_ms)
+        .bind(&manifest.file)
+        .bind(&manifest.sha256)
+        .bind(manifest.row_count)
+        .bind(manifest.bytes)
+        .execute(&mut connection)
+        .await
+        .map_err(|source| archive_sqlx("cold manifest", source))?;
+        store
+            .history_state_set("coldExportedUntilMonth", &month, now_ms)
+            .await
+            .map_err(|error| archive_store_error("cold watermark", error))?;
+        written.push(manifest);
+    }
+    Ok(written)
+}
+
+pub(crate) fn csv_field(raw: &str) -> Cow<'_, str> {
+    if raw
+        .as_bytes()
+        .iter()
+        .any(|byte| matches!(byte, b',' | b'"' | b'\r' | b'\n'))
+    {
+        Cow::Owned(format!("\"{}\"", raw.replace('"', "\"\"")))
+    } else {
+        Cow::Borrowed(raw)
+    }
+}
+
+#[doc(hidden)]
+pub fn verify_cold_file(
+    path: &Path,
+    expected_rows: i64,
+    expected_first_ms: i64,
+    expected_last_ms: i64,
+) -> Result<(), StoreError> {
+    let file = File::open(path).map_err(cold_verify_io)?;
+    let mut decoder = GzDecoder::new(file);
+    let mut csv = String::new();
+    decoder.read_to_string(&mut csv).map_err(cold_verify_io)?;
+    let records = parse_rfc4180(&csv).map_err(cold_verify_io)?;
+    let expected_header = archive_column_names().join(",");
+    let header = records.first().ok_or_else(|| {
+        cold_verify_io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "cold CSV has no header",
+        ))
+    })?;
+    if header.join(",") != expected_header {
+        return Err(cold_verify_io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "cold CSV header does not match archive DDL column order",
+        )));
+    }
+    let data = &records[1..];
+    let header_width = header.len();
+    for (index, record) in data.iter().enumerate() {
+        if record.len() != header_width {
+            return Err(cold_verify_io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "cold CSV data record {} has {} fields; expected {header_width} from header",
+                    index + 1,
+                    record.len()
+                ),
+            )));
+        }
+    }
+    let observed_rows = i64::try_from(data.len()).unwrap_or(i64::MAX);
+    if observed_rows != expected_rows {
+        return Err(cold_verify_io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("cold CSV row count {observed_rows} did not equal expected {expected_rows}"),
+        )));
+    }
+    let first_ms = parse_first_bucket(data.first(), "first")?;
+    let last_ms = parse_first_bucket(data.last(), "last")?;
+    if first_ms != expected_first_ms || last_ms != expected_last_ms {
+        return Err(cold_verify_io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "cold CSV first/last bucket {first_ms}/{last_ms} did not equal expected {expected_first_ms}/{expected_last_ms}"
+            ),
+        )));
+    }
+    Ok(())
+}
+
+async fn read_months_on(connection: &mut SqliteConnection) -> Result<Vec<String>, StoreError> {
+    sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT strftime('%Y-%m', bucket_start_ms / 1000.0, 'unixepoch')
+        FROM metric_rollups_1h
+        WHERE strftime('%Y-%m', bucket_start_ms / 1000.0, 'unixepoch') IS NOT NULL
+        ORDER BY 1
+        "#,
+    )
+    .fetch_all(connection)
+    .await
+    .map_err(|source| archive_sqlx("cold months", source))
+}
+
+fn calendar_month_before(now_ms: i64, months: i64) -> Option<String> {
+    let now = OffsetDateTime::from_unix_timestamp(now_ms.div_euclid(1_000)).ok()?;
+    let month_index = now
+        .year()
+        .checked_mul(12)?
+        .checked_add(now.month() as i32 - 1)?
+        .checked_sub(i32::try_from(months).ok()?)?;
+    let year = month_index.div_euclid(12);
+    let month = month_index.rem_euclid(12) + 1;
+    Some(format!("{year:04}-{month:02}"))
+}
+
+fn month_bounds(month: &str) -> Option<(i64, i64)> {
+    let (year, month_number) = month.split_once('-')?;
+    if year.len() != 4 || month_number.len() != 2 {
+        return None;
+    }
+    let year = year.parse::<i32>().ok()?;
+    let month_number = month_number.parse::<u8>().ok()?;
+    let month = Month::try_from(month_number).ok()?;
+    let start = utc_date_ms(year, month)?;
+    let (next_year, next_month) = if month == Month::December {
+        (year.checked_add(1)?, Month::January)
+    } else {
+        (year, Month::try_from(month_number.checked_add(1)?).ok()?)
+    };
+    Some((start, utc_date_ms(next_year, next_month)?))
+}
+
+fn utc_date_ms(year: i32, month: Month) -> Option<i64> {
+    let date = Date::from_calendar_date(year, month, 1).ok()?;
+    let nanos = date
+        .with_time(Time::MIDNIGHT)
+        .assume_utc()
+        .unix_timestamp_nanos();
+    i64::try_from(nanos.div_euclid(1_000_000)).ok()
+}
+
+fn suffixed_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
+fn archive_column_names() -> Vec<&'static str> {
+    ARCHIVE_COLUMNS.split(',').map(str::trim).collect()
+}
+
+fn write_cold_file(path: &Path, rows: &[sqlx::sqlite::SqliteRow]) -> Result<(), StoreError> {
+    let file = File::create(path).map_err(|source| StoreError::Archive {
+        step: "cold write",
+        source: ArchiveErrorSource::Io(source),
+    })?;
+    let mut encoder = GzEncoder::new(file, Compression::new(6));
+    let column_names = archive_column_names();
+    write_csv_record(&mut encoder, column_names.iter().copied()).map_err(|source| {
+        StoreError::Archive {
+            step: "cold write",
+            source: ArchiveErrorSource::Io(source),
+        }
+    })?;
+    for row in rows {
+        let fields = archive_csv_fields(row)?;
+        write_csv_record(&mut encoder, fields.iter().map(String::as_str)).map_err(|source| {
+            StoreError::Archive {
+                step: "cold write",
+                source: ArchiveErrorSource::Io(source),
+            }
+        })?;
+    }
+    let file = encoder.finish().map_err(|source| StoreError::Archive {
+        step: "cold write",
+        source: ArchiveErrorSource::Io(source),
+    })?;
+    file.sync_all().map_err(|source| StoreError::Archive {
+        step: "cold fsync",
+        source: ArchiveErrorSource::Io(source),
+    })
+}
+
+fn archive_csv_fields(row: &sqlx::sqlite::SqliteRow) -> Result<Vec<String>, StoreError> {
+    let column_names = archive_column_names();
+    let mut fields = Vec::with_capacity(column_names.len());
+    for column in &column_names[..4] {
+        let value: i64 = row
+            .try_get(*column)
+            .map_err(|source| archive_sqlx("cold read", source))?;
+        fields.push(value.to_string());
+    }
+    for column in &column_names[4..16] {
+        let value: f64 = row
+            .try_get(*column)
+            .map_err(|source| archive_sqlx("cold read", source))?;
+        fields.push(value.to_string());
+    }
+    for column in &column_names[16..] {
+        let value: Option<f64> = row
+            .try_get(*column)
+            .map_err(|source| archive_sqlx("cold read", source))?;
+        fields.push(value.map_or_else(String::new, |value| value.to_string()));
+    }
+    Ok(fields)
+}
+
+fn write_csv_record<'a>(
+    writer: &mut impl Write,
+    fields: impl IntoIterator<Item = &'a str>,
+) -> std::io::Result<()> {
+    let mut first = true;
+    for field in fields {
+        if !first {
+            writer.write_all(b",")?;
+        }
+        first = false;
+        writer.write_all(csv_field(field).as_bytes())?;
+    }
+    writer.write_all(b"\r\n")
+}
+
+fn sha256_file(path: &Path) -> Result<String, StoreError> {
+    let file = File::open(path).map_err(|source| StoreError::Archive {
+        step: "cold hash",
+        source: ArchiveErrorSource::Io(source),
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|source| StoreError::Archive {
+                step: "cold hash",
+                source: ArchiveErrorSource::Io(source),
+            })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        hex.push(HEX[(byte >> 4) as usize] as char);
+        hex.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(hex)
+}
+
+#[cfg(unix)]
+fn sync_directory(directory: &Path) -> Result<(), StoreError> {
+    File::open(directory)
+        .and_then(|file| file.sync_all())
+        .map_err(|source| StoreError::Archive {
+            step: "cold directory fsync",
+            source: ArchiveErrorSource::Io(source),
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path) -> Result<(), StoreError> {
+    Ok(())
+}
+
+fn parse_rfc4180(csv: &str) -> std::io::Result<Vec<Vec<String>>> {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field = String::new();
+    let mut chars = csv.chars().peekable();
+    let mut quoted = false;
+    while let Some(ch) = chars.next() {
+        if quoted {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    quoted = false;
+                }
+            } else {
+                field.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' if field.is_empty() => quoted = true,
+            ',' => row.push(std::mem::take(&mut field)),
+            '\r' => {
+                if chars.next() != Some('\n') {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "cold CSV record has CR without LF",
+                    ));
+                }
+                row.push(std::mem::take(&mut field));
+                rows.push(std::mem::take(&mut row));
+            }
+            '\n' => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "cold CSV record has bare LF",
+                ));
+            }
+            _ => field.push(ch),
+        }
+    }
+    if quoted || !field.is_empty() || !row.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "cold CSV final record is incomplete",
+        ));
+    }
+    Ok(rows)
+}
+
+fn parse_first_bucket(record: Option<&Vec<String>>, position: &str) -> Result<i64, StoreError> {
+    record
+        .and_then(|record| record.first())
+        .ok_or_else(|| {
+            cold_verify_io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("cold CSV has no {position} data record"),
+            ))
+        })?
+        .parse::<i64>()
+        .map_err(|error| {
+            cold_verify_io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("cold CSV {position} bucket is not an integer: {error}"),
+            ))
+        })
+}
+
+fn cold_verify_io(source: std::io::Error) -> StoreError {
+    StoreError::Archive {
+        step: "cold verify",
+        source: ArchiveErrorSource::Io(source),
+    }
+}
+
 pub(super) async fn archive_coverage(
     paths: &ArchivePaths,
 ) -> Result<(i64, Option<i64>, Option<i64>), StoreError> {
     let Some(mut connection) = open_archive_read_only(paths, "coverage open").await? else {
         return Ok((0, None, None));
     };
+    let inspection = inspect_archive_schema(&mut connection)
+        .await
+        .map_err(|error| archive_store_error("coverage", error))?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(archive_store_error("coverage", error));
+    }
+    if !inspection.current() {
+        return Ok((0, None, None));
+    }
     let row = sqlx::query(
         r#"
         SELECT COUNT(*) AS bucket_count,
@@ -634,6 +1265,7 @@ async fn rollback<T>(
 fn archive_store_error(step: &'static str, error: StoreError) -> StoreError {
     match error {
         StoreError::Sqlx(source) => archive_sqlx(step, source),
+        StoreError::Archive { source, .. } => StoreError::Archive { step, source },
         other => StoreError::Archive {
             step,
             source: ArchiveErrorSource::Io(std::io::Error::other(other.to_string())),
@@ -645,5 +1277,115 @@ fn archive_sqlx(step: &'static str, source: sqlx::Error) -> StoreError {
     StoreError::Archive {
         step,
         source: ArchiveErrorSource::Sqlx(source),
+    }
+}
+
+#[cfg(test)]
+mod cold_export_tests {
+    use super::{csv_field, exportable_months};
+    use crate::retention_ladder::RetentionLadder;
+
+    const AUG_29_2026_MS: i64 = 1_787_961_600_000;
+
+    #[test]
+    fn exportable_months_apply_age_expiry_and_watermark_rules() {
+        // Break caught: age alone exports a month while L4 can still feed later hours into it.
+        struct Case {
+            name: &'static str,
+            configure: fn(&mut RetentionLadder),
+            exported_until: Option<&'static str>,
+            months: &'static [&'static str],
+            expected: &'static [&'static str],
+        }
+
+        fn defaults(_: &mut RetentionLadder) {}
+        fn one_month(ladder: &mut RetentionLadder) {
+            ladder.archive.cold_after_months = 1;
+            ladder.l4.keep_days = 30;
+        }
+        fn forever(ladder: &mut RetentionLadder) {
+            ladder.l4.keep_days = 0;
+        }
+        fn disabled(ladder: &mut RetentionLadder) {
+            ladder.l4.enabled = false;
+        }
+
+        let cases = [
+            Case {
+                name: "defaults",
+                configure: defaults,
+                exported_until: None,
+                months: &["2024-01", "2024-02", "2026-07"],
+                expected: &["2024-01", "2024-02"],
+            },
+            Case {
+                name: "cold after one month",
+                configure: one_month,
+                exported_until: None,
+                months: &["2026-05", "2026-06"],
+                expected: &["2026-05", "2026-06"],
+            },
+            Case {
+                name: "L4 forever",
+                configure: forever,
+                exported_until: None,
+                months: &["2023-01"],
+                expected: &[],
+            },
+            Case {
+                name: "L4 disabled",
+                configure: disabled,
+                exported_until: None,
+                months: &["2023-01"],
+                expected: &[],
+            },
+            Case {
+                name: "month partially expired",
+                configure: one_month,
+                exported_until: None,
+                months: &["2026-07"],
+                expected: &[],
+            },
+            Case {
+                name: "watermark equal",
+                configure: one_month,
+                exported_until: Some("2026-05"),
+                months: &["2026-05", "2026-06"],
+                expected: &["2026-06"],
+            },
+            Case {
+                name: "watermark greater",
+                configure: one_month,
+                exported_until: Some("2026-07"),
+                months: &["2026-05", "2026-06"],
+                expected: &[],
+            },
+        ];
+
+        for case in cases {
+            let mut ladder = RetentionLadder::default();
+            (case.configure)(&mut ladder);
+            let present = case
+                .months
+                .iter()
+                .map(|month| (*month).to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                exportable_months(&present, &ladder, case.exported_until, AUG_29_2026_MS),
+                case.expected,
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn csv_field_quotes_rfc4180_special_characters() {
+        // Break caught: commas, quotes, CR, or LF escape the field boundary.
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(
+            csv_field("comma, quote\" and\r\nline"),
+            "\"comma, quote\"\" and\r\nline\""
+        );
     }
 }

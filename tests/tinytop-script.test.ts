@@ -21,6 +21,7 @@ async function runTinytop(args: string[], env: Record<string, string | undefined
     env: {
       ...process.env,
       NO_COLOR: "1",
+      TINYTOP_SYSTEMD_UNIT_DIR: mkdtempSync(join(tmpdir(), "tinytop-systemd-units-")),
       ...env,
     },
   });
@@ -271,5 +272,35 @@ describe("tinytop command center", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("no foreground TinyTop runtime was detected");
     expect(result.stdout).not.toContain("Stopping foreground TinyTop runtime");
+  });
+
+  test("stop with an installed unit under the override runs systemctl on that unit only", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
+    const home = mkdtempSync(join(tmpdir(), "tinytop-home-"));
+    const unitDir = mkdtempSync(join(tmpdir(), "tinytop-systemd-units-"));
+    const callsPath = join(dir, "systemctl-calls.txt");
+    const systemctlPath = join(dir, "systemctl");
+    writeFileSync(
+      systemctlPath,
+      [
+        "#!/usr/bin/env bash",
+        "printf '%s\\n' \"$*\" >> \"$TINYTOP_SYSTEMCTL_CALLS\"",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(systemctlPath, 0o755);
+    writeFileSync(join(unitDir, "tinytop.service"), "[Unit]\nDescription=TinyTop test unit\n");
+
+    const result = await runTinytop(["stop"], {
+      HOME: home,
+      PATH: `${dir}:/usr/bin:/bin`,
+      TINYTOP_SYSTEMD_UNIT_DIR: unitDir,
+      TINYTOP_SYSTEMCTL_CALLS: callsPath,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(existsSync(callsPath)).toBe(true);
+    expect(readFileSync(callsPath, "utf8").trim()).toBe("--user stop tinytop.service");
+    expect(result.stdout).not.toContain("foreground");
   });
 });

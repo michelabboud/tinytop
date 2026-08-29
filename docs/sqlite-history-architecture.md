@@ -489,6 +489,59 @@ archive; an existing archive reports its real count and minimum/maximum hourly
 bucket starts. Archive points reuse the L4 bucket-to-history-point mapping and
 are returned oldest first with one-hour resolution.
 
+### Cold export
+
+When `retentionLadder.archive.cold` and `queryable` are enabled, the daemon
+checks once an hour for complete UTC calendar months in the queryable archive.
+A month is exportable only when it is at least `coldAfterMonths` old, every hour
+in it has expired from main (`end_of_month_ms + l4_keep_ms + one day <= now`),
+and it is later than `coldExportedUntilMonth`. The extra day lets the bounded
+archive move catch up before the monotone watermark seals the month. Disabled
+L4 and `l4.keepDays: 0` (forever) therefore have no exportable months. Eligible
+months are exported oldest first in one pass. A row that arrives late for an
+already exported month remains queryable in `history-archive.sqlite`; the
+sealed CSV is not silently rewritten on a later pass.
+A month with no archived rows is not exportable and is skipped; because L4
+hours expire and move in ascending order and eligibility requires the month's
+last hour to have expired at least a day earlier, a later month cannot become
+exportable while an earlier one still has unmoved rows — a row that appears for
+a skipped month afterwards is a late row and stays queryable-only.
+
+Each month produces `tinytop-1h-YYYY-MM.csv.gz` and
+`tinytop-1h-YYYY-MM.csv.gz.sha256` in the archive directory. The gzip level is
+6. The CSV header is the archive DDL column order, data rows are ordered by
+`bucket_start_ms`, records use RFC 4180 CRLF endings, numbers use their Rust
+decimal representation, and SQL `NULL` is an empty field. The export is first
+written to `.csv.gz.tmp`, fsynced, streamed through SHA-256, and then decoded
+again. That verification must reproduce the selected row count and the first
+and last bucket timestamps before the file is atomically renamed. The daemon
+then fsyncs the directory on Unix and, in order, writes the checksum sidecar as
+`<hex>  <filename>`, records the file in `archive_manifest`, and advances the
+main-database watermark. The manifest, rather than an unrecorded stale file, is
+the committed cold-export record.
+
+Every failure leaves the queryable archive untouched and is safe to retry:
+
+- `cold months` or `cold read` leaves no new file or state.
+- `cold write`, `cold fsync`, `cold hash`, or `cold verify` may leave a `.tmp`;
+  it is safe to delete, and neither manifest nor watermark advances.
+- `cold rename` leaves either the `.tmp` or the previous target in place, with
+  no new manifest or watermark.
+- `cold directory fsync` leaves the verified target in place with no sidecar,
+  manifest row, or watermark; retrying re-exports and replaces it.
+- `cold sidecar` may leave the verified target without a matching sidecar.
+- `cold manifest` may leave the target and sidecar without a manifest row.
+- `cold watermark` may leave a manifest row with the older main watermark.
+
+The last four cases are convergent: retrying re-exports and replaces the
+month before continuing. Cold export never deletes rows from
+`history-archive.sqlite`. To verify a file independently, run this in the
+archive directory:
+
+```bash
+sha256sum -c tinytop-1h-YYYY-MM.csv.gz.sha256
+```
+
 ## Future Tables
 
 Potential future normalized tables:

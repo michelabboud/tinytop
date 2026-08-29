@@ -604,6 +604,11 @@ impl SqliteHistoryStore {
         &self.database_path
     }
 
+    pub async fn close(self) -> Result<(), StoreError> {
+        self.pool.close().await;
+        Ok(())
+    }
+
     pub async fn user_version(&self) -> Result<i64, StoreError> {
         Ok(sqlx::query_scalar("PRAGMA user_version")
             .fetch_one(&self.pool)
@@ -1565,6 +1570,11 @@ impl SqliteHistoryStore {
             archive::archive_paths(self.database_path(), &settings.retention_ladder.archive);
         let (archive_bucket_count, archive_oldest_ms, archive_newest_ms) =
             archive::archive_coverage(&archive_paths).await?;
+        let archive_manifest = archive::read_archive_manifest(&archive_paths).await?;
+        let cold_file_count = i64::try_from(archive_manifest.len()).unwrap_or(i64::MAX);
+        let cold_bytes = archive_manifest
+            .iter()
+            .fold(0_i64, |total, row| total.saturating_add(row.bytes));
 
         Ok(HistoryCoverage {
             sample_count: stats.sample_count,
@@ -1602,8 +1612,8 @@ impl SqliteHistoryStore {
                     enabled: settings.retention_ladder.archive.cold,
                     directory: archive_paths.directory.display().to_string(),
                     exported_until_month,
-                    file_count: 0,
-                    bytes: 0,
+                    file_count: cold_file_count,
+                    bytes: cold_bytes,
                 },
             },
             migration,
