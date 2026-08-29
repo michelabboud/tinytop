@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Added the queryable hourly archive at `history-archive.sqlite`, relocated by `retentionLadder.archive.directory` when configured. Per ADRs 0018 and 0019, expired L4 rows move by committing and fsyncing an `INSERT OR REPLACE` archive copy with `archive.synchronous = FULL`, verifying every selected key exists in that committed copy, and only then committing a full-row-equality main deletion with `archiveMovedUntilMs` in the same transaction; maintenance work remains bounded per tick.
+- Made archive schema creation transactional across all three objects and `PRAGMA user_version`, preventing a stopped initialization from leaving a partial `user_version = 0` archive that later runs refuse.
+- Implemented read-only, no-create archive point and coverage reads. `source=auto` can now return archived hourly points with `available:true`, while explicit archive reads remain empty and unavailable when the queryable archive is disabled.
+- Added archive failure/convergence, relocation, auto-read, idle-detach, delete-mode, coverage/no-create, and in-process HTTP regression coverage using temp-directory databases only.
+- Restored the seven-column rollup history-point read path so migrated v0 one-minute rows remain readable without decoding migration-added nullable minimum/maximum columns.
+- Refused archive schema setup for newer `user_version` files and unrelated `user_version = 0` SQLite databases without writing to or restamping them.
+
 ## 0.3.0 - 2026-08-29
 
 Phase 1 of the tiered history ladder (spec `docs/superpowers/specs/2026-08-28-tiered-history-ladder-design.md`; ADRs 0013 and 0017). This release consolidates the per-lane versions **0.2.7** (T1 — schema v1 and the fail-closed, pre-imaged migration), **0.2.8** (T2 — count-weighted fold, frozen buckets, promote-before-prune; the rollup decimation defect is fixed going forward, already-decimated rows are not repaired), **0.2.9** (T3 — `retentionLadder` settings with legacy aliases and disk-pressure rules), **0.2.10** (T5 — dashboard ladder group, coverage card, long-range presets, shrink confirmation) and **0.2.11** (T4 — `source=auto` four-tier reads, coverage, filesystem/process detail APIs), plus the T6 CLI and documentation work listed below. Upgrading migrates the database on the first daemon start: a complete `<db>.pre-v0.sqlite` pre-image is taken before any row is touched (needs free space ≥ 1.2 × the database size; minutes on a large file) and is never deleted automatically — see INSTALL.md. Reviewed by six per-lane blind reviews and one deep dual-blind review over `v0.2.6..v0.3.0` (Fabulous `docs/fleet/tinytop/`).

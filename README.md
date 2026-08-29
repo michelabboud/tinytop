@@ -217,6 +217,14 @@ automatically for long-range reads. See
 [SQLite History Architecture](docs/sqlite-history-architecture.md) for the schema,
 retention, migration, and read-path contract.
 
+When `retentionLadder.archive.queryable` is enabled, hourly L4 buckets that pass
+their configured horizon are verified in a separate `history-archive.sqlite`
+before being removed from the main database, and remain available to
+`source=archive` and long-range `source=auto` reads. The archive lives beside the
+main database by default; an absolute `retentionLadder.archive.directory` moves
+it to that directory. Coverage and point reads open it read-only and never
+create a missing archive file.
+
 For persistent background collection, install user-space systemd services:
 
 ```bash
@@ -385,7 +393,7 @@ In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder h
 | `retentionLadder.l4` | enabled, `730` days | Hourly rollups; `0` means forever, otherwise retention must be at least the nearest enabled finer tier and at most 36,500 days |
 | `retentionLadder.snapshotJsonKeepMinutes` | `60` | Complete raw snapshot JSON; 60–1,440 minutes |
 | `retentionLadder.detailIntervalSec` | `60` | Filesystem/process typed-sample cadence; 15–3,600 seconds |
-| `retentionLadder.archive` | off | `cold` requires `queryable`; cold-after is 1–120 months; directory is empty or absolute. Archive execution lands in the archive phase. |
+| `retentionLadder.archive` | off | `queryable` moves expired L4 rows into `history-archive.sqlite`; `directory` is empty (beside the main DB) or absolute. `cold` requires `queryable`; cold-after is 1–120 months, with cold export landing in a later phase. |
 | `retentionLadder.diskCheck` | 60 min, 5 GiB | Check interval 5–1,440 minutes; minimum free-space threshold is at least 256 MiB. Disk checking lands in the disk phase. |
 
 Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. A legacy document without `retentionLadder` is derived in memory from `retentionHours` and `rollupRetentionDays` and is not rewritten until an explicit save. While persisted `history_state.diskPressure.active` is true, the server refuses horizon growth or enabling a tier/archive, but still permits shrinking. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
@@ -395,7 +403,7 @@ Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /a
 | Endpoint | Rust response |
 | --- | --- |
 | `GET /api/history` | Complete raw snapshots whose `snapshot_json` is still retained; `limit` is clamped to 1–10,000. |
-| `GET /api/history/points` | Chart points from `auto`, `raw`, `rollup` (1 minute), `5m`, `1h`, or `archive`, plus top-level `source`, `resolutionMs`, and `available`. Archive is an empty unavailable page until the archive phase. |
+| `GET /api/history/points` | Chart points from `auto`, `raw`, `rollup` (1 minute), `5m`, `1h`, or `archive`, plus top-level `source`, `resolutionMs`, and `available`. `archive` returns hourly points with `available:true` when `retentionLadder.archive.queryable` is enabled; an explicit archive request while it is disabled is an empty `available:false` page. |
 | `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, JSON horizon, detail cadence, disk state, archive state, and migration state. |
 | `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |
 | `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit. |

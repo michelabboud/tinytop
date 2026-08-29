@@ -9,7 +9,9 @@ use sqlx::{
     Row, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
-use tinytop_store::{HistoryQuery, SqliteHistoryStore, StoreError};
+use tinytop_store::{
+    HistoryPointMode, HistoryPointsQuery, HistoryQuery, SqliteHistoryStore, StoreError,
+};
 use tinytop_types::{
     CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
     PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
@@ -264,6 +266,35 @@ async fn complete_v0_schema_preserves_rollup_data_and_recreates_indexes() {
     let pool = verification_pool(&fixture.url).await;
     assert_complete_v0_schema_survived(&pool, seeded.now_ms).await;
     pool.close().await;
+}
+
+#[tokio::test]
+async fn migrated_legacy_rollup_rows_remain_readable_as_history_points() {
+    // Break caught: migrated v0 rollup rows disappear or their seven point fields decode wrongly.
+    let fixture = TempDatabase::new("migrated-legacy-rollup-points");
+    let seeded = seed_v0_database(&fixture, RUST_V0_METRIC_SAMPLES_DDL).await;
+
+    let store = SqliteHistoryStore::connect(&fixture.url)
+        .await
+        .expect("complete v0 database should migrate");
+    let points = store
+        .read_history_points(HistoryPointsQuery {
+            since_ms: None,
+            until_ms: None,
+            limit: Some(100),
+            source: HistoryPointMode::Rollup,
+        })
+        .await
+        .expect("legacy rollup rows should remain readable after migration");
+
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].captured_at_ms, seeded.now_ms - 29 * 60_000 - 1);
+    assert_eq!(points[0].sample_count, 40);
+    assert_eq!(points[0].cpu_usage_percent, 10.5);
+    assert_eq!(points[0].memory_used_percent, 50.5);
+    assert_eq!(points[0].swap_used_percent, 25.5);
+    assert_eq!(points[0].load_percent, 30.5);
+    assert_eq!(points[0].root_used_percent, Some(40.5));
 }
 
 #[tokio::test]

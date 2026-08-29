@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod disk;
 pub mod ladder;
 pub mod maintenance;
@@ -13,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value as JsonValue;
 use sqlx::{
-    AssertSqlSafe, Row, SqlitePool,
+    AssertSqlSafe, Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use tinytop_types::SystemSnapshot;
@@ -520,6 +521,30 @@ pub struct SqliteHistoryStore {
     database_path: PathBuf,
 }
 
+pub(crate) async fn history_state_set_on<T: Serialize>(
+    connection: &mut SqliteConnection,
+    key: &str,
+    value: &T,
+    now_ms: i64,
+) -> Result<(), StoreError> {
+    let value_json = serde_json::to_string(value)?;
+    sqlx::query(
+        r#"
+        INSERT INTO history_state (state_key, value_json, updated_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(state_key) DO UPDATE SET
+          value_json = excluded.value_json,
+          updated_at_ms = excluded.updated_at_ms
+        "#,
+    )
+    .bind(key)
+    .bind(value_json)
+    .bind(now_ms)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
 impl SqliteHistoryStore {
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
         let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
@@ -585,6 +610,17 @@ impl SqliteHistoryStore {
             .await?)
     }
 
+    #[doc(hidden)]
+    pub async fn attached_database_names(&self) -> Result<Vec<String>, StoreError> {
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query("PRAGMA database_list")
+            .fetch_all(&mut *connection)
+            .await?
+            .into_iter()
+            .map(|row| row.try_get("name").map_err(StoreError::from))
+            .collect()
+    }
+
     pub async fn get_settings(&self) -> Result<DashboardSettings, StoreError> {
         let row = sqlx::query(
             r#"
@@ -628,22 +664,8 @@ impl SqliteHistoryStore {
         value: &T,
         now_ms: i64,
     ) -> Result<(), StoreError> {
-        let value_json = serde_json::to_string(value)?;
-        sqlx::query(
-            r#"
-            INSERT INTO history_state (state_key, value_json, updated_at_ms)
-            VALUES (?, ?, ?)
-            ON CONFLICT(state_key) DO UPDATE SET
-              value_json = excluded.value_json,
-              updated_at_ms = excluded.updated_at_ms
-            "#,
-        )
-        .bind(key)
-        .bind(value_json)
-        .bind(now_ms)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        let mut connection = self.pool.acquire().await?;
+        history_state_set_on(&mut connection, key, value, now_ms).await
     }
 
     pub async fn put_settings(
@@ -1204,9 +1226,19 @@ impl SqliteHistoryStore {
         &self,
         query: HistoryPointsQuery,
     ) -> Result<Vec<HistoryPoint>, StoreError> {
+        let settings = if matches!(
+            query.source,
+            HistoryPointMode::Auto | HistoryPointMode::Archive
+        ) {
+            Some(self.get_settings().await?)
+        } else {
+            None
+        };
         let source = match query.source {
             HistoryPointMode::Auto => {
-                let settings = self.get_settings().await?;
+                let settings = settings
+                    .as_ref()
+                    .expect("auto history point reads fetch settings above");
                 resolve_history_point_source_with_poll(
                     &settings.retention_ladder,
                     settings.poll_interval_ms,
@@ -1221,7 +1253,29 @@ impl SqliteHistoryStore {
             HistoryPointMode::Rollup => self.read_tier_history_points(Tier::L2, query).await,
             HistoryPointMode::Rollup5m => self.read_tier_history_points(Tier::L3, query).await,
             HistoryPointMode::Rollup1h => self.read_tier_history_points(Tier::L4, query).await,
-            HistoryPointMode::Archive => Ok(Vec::new()),
+            HistoryPointMode::Archive => {
+                let settings = settings
+                    .as_ref()
+                    .expect("archive history point reads fetch settings above");
+                if !settings.retention_ladder.archive.queryable {
+                    return Ok(Vec::new());
+                }
+                let paths = archive::archive_paths(
+                    self.database_path(),
+                    &settings.retention_ladder.archive,
+                );
+                let buckets = archive::read_archive_points(
+                    &paths,
+                    query.since_ms.unwrap_or(i64::MIN),
+                    query.until_ms.unwrap_or(i64::MAX),
+                    effective_points_limit(&query),
+                )
+                .await?;
+                Ok(buckets
+                    .into_iter()
+                    .map(|bucket| history_point_from_bucket(bucket, HistoryPointSource::Archive))
+                    .collect())
+            }
             HistoryPointMode::Auto => unreachable!("history point source is resolved above"),
         }
     }
@@ -1507,15 +1561,10 @@ impl SqliteHistoryStore {
         let exported_until_month = self
             .history_state_get::<String>("coldExportedUntilMonth")
             .await?;
-        let archive_directory = if settings.retention_ladder.archive.directory.is_empty() {
-            self.database_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf()
-        } else {
-            PathBuf::from(&settings.retention_ladder.archive.directory)
-        };
-        let archive_path = archive_directory.join("history-archive.sqlite");
+        let archive_paths =
+            archive::archive_paths(self.database_path(), &settings.retention_ladder.archive);
+        let (archive_bucket_count, archive_oldest_ms, archive_newest_ms) =
+            archive::archive_coverage(&archive_paths).await?;
 
         Ok(HistoryCoverage {
             sample_count: stats.sample_count,
@@ -1544,14 +1593,14 @@ impl SqliteHistoryStore {
             archive: HistoryArchiveCoverage {
                 queryable: HistoryQueryableArchiveCoverage {
                     enabled: settings.retention_ladder.archive.queryable,
-                    path: archive_path.display().to_string(),
-                    bucket_count: 0,
-                    oldest_ms: None,
-                    newest_ms: None,
+                    path: archive_paths.db.display().to_string(),
+                    bucket_count: archive_bucket_count,
+                    oldest_ms: archive_oldest_ms,
+                    newest_ms: archive_newest_ms,
                 },
                 cold: HistoryColdArchiveCoverage {
                     enabled: settings.retention_ladder.archive.cold,
-                    directory: archive_directory.display().to_string(),
+                    directory: archive_paths.directory.display().to_string(),
                     exported_until_month,
                     file_count: 0,
                     bytes: 0,
@@ -2081,9 +2130,42 @@ pub fn resolve_history_point_source_with_poll(
 pub enum StoreError {
     Sqlx(sqlx::Error),
     Json(serde_json::Error),
-    IntegerOverflow { field: &'static str },
-    Migration { reason: String, remedy: String },
+    IntegerOverflow {
+        field: &'static str,
+    },
+    Migration {
+        reason: String,
+        remedy: String,
+    },
+    Archive {
+        step: &'static str,
+        source: ArchiveErrorSource,
+    },
     Validation(String),
+}
+
+#[derive(Debug)]
+pub enum ArchiveErrorSource {
+    Sqlx(sqlx::Error),
+    Io(std::io::Error),
+}
+
+impl std::fmt::Display for ArchiveErrorSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlx(error) => error.fmt(formatter),
+            Self::Io(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for ArchiveErrorSource {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Sqlx(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
 }
 
 impl std::fmt::Display for StoreError {
@@ -2097,6 +2179,11 @@ impl std::fmt::Display for StoreError {
             Self::Migration { reason, remedy } => {
                 write!(formatter, "migration refused: {reason}; remedy: {remedy}")
             }
+            Self::Archive { step, source } => write!(
+                formatter,
+                "archive step {step} failed: {source}; remedy: {}",
+                archive::archive_remedy(step)
+            ),
             Self::Validation(message) => write!(formatter, "{message}"),
         }
     }
@@ -2107,6 +2194,10 @@ impl std::error::Error for StoreError {
         match self {
             Self::Sqlx(error) => Some(error),
             Self::Json(error) => Some(error),
+            Self::Archive { source, .. } => match source {
+                ArchiveErrorSource::Sqlx(error) => Some(error),
+                ArchiveErrorSource::Io(error) => Some(error),
+            },
             Self::IntegerOverflow { .. } | Self::Migration { .. } | Self::Validation(_) => None,
         }
     }
@@ -2186,6 +2277,19 @@ fn tier_bucket_from_row(row: sqlx::sqlite::SqliteRow) -> Result<TierBucket, Stor
         load: stat("avg_load_percent", "min_load_percent", "max_load_percent")?,
         root_used,
     })
+}
+
+fn history_point_from_bucket(bucket: TierBucket, source: HistoryPointSource) -> HistoryPoint {
+    HistoryPoint {
+        captured_at_ms: bucket.newest_captured_at_ms,
+        source,
+        sample_count: bucket.sample_count,
+        cpu_usage_percent: bucket.cpu.avg,
+        memory_used_percent: bucket.memory.avg,
+        swap_used_percent: bucket.swap.avg,
+        load_percent: bucket.load.avg,
+        root_used_percent: bucket.root_used.map(|stat| stat.avg),
+    }
 }
 
 fn row_to_marker(row: sqlx::sqlite::SqliteRow) -> Result<HistoryMarker, StoreError> {

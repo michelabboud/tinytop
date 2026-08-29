@@ -350,7 +350,7 @@ Chart-ready ladder points:
 /api/history/points?source=auto&sinceMs=<range-start>&untilMs=<range-end>&limit=<page-size>
 ```
 
-The Rust daemon accepts `auto`, `raw`, `rollup` (the unchanged one-minute name), `5m`, `1h`, and `archive`. The response keeps `points` and adds top-level `source`, `resolutionMs`, and `available`. Archive reads intentionally return `{source:"archive", resolutionMs:3600000, available:false, points:[]}` until the queryable archive implementation lands in Task 7.
+The Rust daemon accepts `auto`, `raw`, `rollup` (the unchanged one-minute name), `5m`, `1h`, and `archive`. The response keeps `points` and adds top-level `source`, `resolutionMs`, and `available`. A queryable archive returns hourly points with `{source:"archive", resolutionMs:3600000, available:true}`. An explicit archive request while `retentionLadder.archive.queryable` is false remains an empty `{available:false, points:[]}` page.
 
 `auto` uses the HTTP-clamped limit (1–10,000, default 120), `untilMs` or the current time, and the configured L1 poll interval rather than `Tier::L1`'s zero sentinel. In finest-to-coarsest order it selects the first enabled tier that retains the range start and satisfies `rangeMs / resolutionMs <= limit` using integer division. When retaining tiers exist but none fits, it selects the coarsest retaining tier so the caller gets the newest bounded page rather than a fine-tier sliver. When no tier retains the start, it selects archive if queryable archive is enabled, otherwise the coarsest enabled tier. L4 `keepDays: 0` always retains the start.
 
@@ -397,7 +397,7 @@ Each insert compares the affected L2 minute's existing `sample_count` with the n
 - the oldest raw timestamp that still carries `snapshot_json`
 - configured detail sampling interval
 - last persisted disk free-space/check/pressure state and configured minimum free bytes
-- queryable/cold archive configuration and state (zero counts until their implementation phases)
+- queryable archive configuration plus real bucket count/range, and cold archive configuration/state
 - the persisted schema-migration document, or `null` on a fresh v1 database
 
 ## Retention
@@ -414,7 +414,7 @@ Rust maintenance runs after each insert in this order:
 - An L2 bucket can be deleted only when its end is older than the L2 horizon and no later than the nearest enabled coarser watermark. L3 uses the same rule against L4. L4 expires by its own horizon; `0` means forever.
 - A disabled L3 or L4 table is neither written nor pruned. It is removed from the dependency chain, while its existing rows remain untouched until the tier is re-enabled.
 - `/api/history` and `/history` select bounded windows for callers and return only rows whose `snapshot_json` is present in both runtimes. Their raw-snapshot horizon is the JSON keep window; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
-- The dashboard hydrates the browser-selected timestamp window. Live, 15m, and 1h use paged `/api/history`; every preset from 6h through All makes one `/api/history/points?source=auto&limit=10000` request. The response reports `source` (`raw`, `rollup`, `5m`, `1h`, or `archive`) and `resolutionMs`; non-raw points retain their `sampleCount`. At the default ladder the server returns 6h → 1 minute (360 points), 24h → 1 minute (1,440), 7d → 5 minutes (2,016), 30d → 5 minutes (8,640), 90d → 1 hour (2,160), and 1y → 1 hour (8,760). All starts at the oldest retained data and uses the coarsest tier that holds it; the newest 10,000 hourly buckets cover about 416 days, while the queryable archive holds the rest. A long preset is disabled only when no enabled tier holds its start and the archive is not queryable; a missing tier record does not count as coverage. If the active preset becomes unavailable, the browser refetches the nearest finer preset without persisting the fallback. An archive response with `available:false` is an intentional empty page until 0.4.0. On Bun, missing coverage disables 6h and longer with a Rust-daemon tooltip while raw presets remain available. Raw windows and browser rendering may still be paged/downsampled; those are transport/rendering limits, not storage limits.
+- The dashboard hydrates the browser-selected timestamp window. Live, 15m, and 1h use paged `/api/history`; every preset from 6h through All makes one `/api/history/points?source=auto&limit=10000` request. The response reports `source` (`raw`, `rollup`, `5m`, `1h`, or `archive`) and `resolutionMs`; non-raw points retain their `sampleCount`. At the default ladder the server returns 6h → 1 minute (360 points), 24h → 1 minute (1,440), 7d → 5 minutes (2,016), 30d → 5 minutes (8,640), 90d → 1 hour (2,160), and 1y → 1 hour (8,760). All starts at the oldest retained data and uses the coarsest tier that holds it; the newest 10,000 hourly buckets cover about 416 days, while the queryable archive holds the rest. A long preset is disabled only when no enabled tier holds its start and the archive is not queryable; a missing tier record does not count as coverage. If the active preset becomes unavailable, the browser refetches the nearest finer preset without persisting the fallback. On Bun, missing coverage disables 6h and longer with a Rust-daemon tooltip while raw presets remain available. Raw windows and browser rendering may still be paged/downsampled; those are transport/rendering limits, not storage limits.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 - Legacy Bun split mode keeps the earlier manual archive/reset behavior.
 
@@ -423,7 +423,7 @@ Rust maintenance runs after each insert in this order:
 - L1 defaults to 3 days (range 3–3,650) and L2 to 30 days (range 7–3,650); both are always enabled.
 - L3 defaults to enabled for 90 days and must be at least L2 when enabled. L4 defaults to enabled for 730 days; `0` means forever, otherwise it must be at least L3, or L2 when L3 is disabled.
 - Snapshot JSON defaults to 60 minutes (range 60–1,440). Typed filesystem/process rows default to a 60-second cadence (range 15–3,600 seconds).
-- Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute. The archive phase implements the corresponding storage actions.
+- Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute. Queryable moves and reads are implemented; cold file export remains a later phase.
 - Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB. The disk phase implements the check itself.
 
 Every explicit settings save validates the complete block and writes `retentionHours = l1.keepDays × 24` plus `rollupRetentionDays = l2.keepDays` for Bun compatibility. These legacy fields are derived mirrors: a typed save that edits only `retentionHours` or `rollupRetentionDays` is overwritten from the authoritative ladder. The save transaction also updates `history_state.l3Enabled` and `l4Enabled`, so a late insert immediately after disabling a tier cannot refold into it before the next maintenance tick.
@@ -431,6 +431,63 @@ Every explicit settings save validates the complete block and writes `retentionH
 `DashboardSettings::from_document` is the only decoder for settings documents that may lack `retentionLadder`. It derives a stored pre-ladder document in memory from the legacy fields (`ceil(retentionHours / 24)`, floored at 3 days; rollup days floored at 7) without rewriting it, and merges a legacy-only update onto the persisted ladder. The Task 10 import endpoint must use this decoder.
 
 If `history_state.diskPressure.active` is present, saves that extend a horizon, enable L3/L4, or enable an archive are refused with `disk pressure active: free X < minFreeBytes Y; shrink first or free disk`; shrinking remains allowed. The ladder validator owns this rule for both pure validation and the persisted settings path.
+
+## Archive
+
+The Rust daemon's queryable archive is `history-archive.sqlite`. With an empty
+`retentionLadder.archive.directory` it lives in the main database's directory;
+otherwise the validated absolute directory is used. The archive has
+`user_version = 1`, an hourly `metric_rollups_1h` table identical to the main
+L4 table (including the newest-time index), and `archive_manifest` for the later
+cold-export phase. The tables, index, and `PRAGMA user_version = 1` are created
+inside one SQLite transaction, so interrupted initialization leaves no partial
+schema for the foreign-file guard to refuse on retry.
+
+When queryable archiving is enabled and L4 has a finite horizon, maintenance
+moves at most ten batches of 1,000 expired rows per tick. Each batch uses one
+main-pool connection: schema setup uses a standalone archive connection, then
+the main connection attaches the archive only for the move. Immediately after
+ATTACH it sets `PRAGMA archive.synchronous = FULL` and reads the value back;
+moving refuses unless SQLite reports `2` (`FULL`), while `main` remains at
+`NORMAL`. Phase A uses a deferred `BEGIN`, selects the oldest expired range,
+copies it with `INSERT OR REPLACE`, and commits the archive-only write. Outside
+a transaction, verification counts selected main keys that exist in the
+committed archive; extra archive keys inside the numeric interval do not count.
+Phase B uses `BEGIN IMMEDIATE` and deletes a main row only when all 18 non-key
+columns equal its archive copy (`IS` for the three nullable root-used columns).
+When every selected row was deleted, the same transaction writes
+`history_state.archiveMovedUntilMs`; a partial batch leaves the advisory
+watermark unchanged. DETACH brackets every attached operation, and a failed
+DETACH discards the connection rather than returning it attached to the pool.
+With queryable archiving disabled, finite-horizon L4 expiry remains a direct
+main-table deletion and does not create an archive file.
+
+ADRs 0018 and 0019 record the two-commit order and its durability boundary: with
+`main` in WAL, SQLite uses no super-journal and commits attached files in ATTACH
+order, so one cross-file transaction would make main's DELETE durable before
+the archive's INSERT; `archive.synchronous = FULL` additionally fsyncs phase A
+before phase B can commit. The crash matrix is therefore: before phase A
+commits, nothing changes; between the commits, the batch is in both files and
+the archive copy is fsynced, so the next call converges through `OR REPLACE`;
+after phase B commits, the move and its watermark are done. A batch absent from
+both files is unreachable after either a process kill or a power cut. Failures
+through `commit copy` remove nothing from main. A `verify`, `begin delete`,
+`delete`, `watermark`, or `commit delete` failure leaves the committed archive
+copy in place while phase B is absent or rolled back, so nothing is deleted
+from main and retry refreshes the copy. A content mismatch is not an error: the
+changed main row stays, successfully matched rows may be deleted, and the
+partial batch does not advance the watermark; the next copy refreshes it. A
+`detach` failure after a successful phase B leaves both data commits and the
+watermark complete, with the connection discarded. If an earlier operation and
+DETACH both fail, the earlier actionable error is returned and the detach
+failure is logged with its step.
+
+Archive point reads and coverage never attach and never create. They first
+check for the file, then use a dedicated `read_only(true)`,
+`create_if_missing(false)` SQLite connection. A missing file is an empty
+archive; an existing archive reports its real count and minimum/maximum hourly
+bucket starts. Archive points reuse the L4 bucket-to-history-point mapping and
+are returned oldest first with one-hour resolution.
 
 ## Future Tables
 
