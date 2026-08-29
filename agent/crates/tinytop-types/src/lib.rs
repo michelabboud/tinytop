@@ -81,7 +81,8 @@ pub struct CpuTimes {
 pub struct CpuSnapshot {
     pub usage_percent: f64,
     pub cores: usize,
-    pub times: CpuTimes,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub times: Option<CpuTimes>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -109,6 +110,9 @@ pub struct LoadSnapshot {
     pub five: f64,
     pub fifteen: f64,
     pub runnable: u64,
+    /// Kernel task total on Linux (`/proc/loadavg`); process count on the
+    /// sysinfo-based macOS/Windows collectors, where no thread total exists.
+    /// Schema v3 makes this optional.
     pub total_threads: u64,
     pub last_pid: u64,
 }
@@ -173,6 +177,8 @@ pub struct ProcessSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct SystemSnapshot {
     pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystems_captured_at_ms: Option<i64>,
     pub identity: IdentitySnapshot,
     pub cpu: CpuSnapshot,
     pub memory: MemorySnapshot,
@@ -185,7 +191,8 @@ pub struct SystemSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::RuntimeKind;
+    use super::{RuntimeKind, SystemSnapshot};
+    use serde_json::json;
 
     /// Every `RuntimeKind` variant's canonical `as_str()` must equal its serde
     /// JSON serialization, so persisted text and the JSON contract never diverge
@@ -206,5 +213,84 @@ mod tests {
                 "as_str() must match serde serialization for {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn cpu_times_and_filesystems_captured_at_are_optional_and_additive() {
+        let without_optional_fields = json!({
+            "timestamp": "2026-08-29T12:00:00Z",
+            "identity": {
+                "hostname": "fixture-host",
+                "platform": "linux",
+                "arch": "x86_64",
+                "distro": "Fixture Linux",
+                "kernel": "6.8.0",
+                "runtime": {
+                    "kind": "Linux",
+                    "confidence": "high",
+                    "reason": "fixture"
+                },
+                "uptimeSeconds": 60
+            },
+            "cpu": { "usagePercent": 12.5, "cores": 4 },
+            "memory": {
+                "totalBytes": 100,
+                "availableBytes": 40,
+                "usedBytes": 60,
+                "usedPercent": 60.0
+            },
+            "swap": {
+                "totalBytes": 20,
+                "freeBytes": 15,
+                "usedBytes": 5,
+                "usedPercent": 25.0
+            },
+            "load": {
+                "one": 0.1,
+                "five": 0.2,
+                "fifteen": 0.3,
+                "runnable": 1,
+                "totalThreads": 2,
+                "lastPid": 3
+            },
+            "pressure": { "cpu": {}, "memory": {}, "io": {} },
+            "filesystems": [],
+            "processes": []
+        });
+
+        let snapshot: SystemSnapshot = serde_json::from_value(without_optional_fields.clone())
+            .expect("optional fields may be absent");
+        assert_eq!(snapshot.cpu.times, None);
+        assert_eq!(snapshot.filesystems_captured_at_ms, None);
+        assert_eq!(
+            serde_json::to_value(&snapshot).expect("serialize snapshot"),
+            without_optional_fields
+        );
+
+        let mut with_optional_fields = without_optional_fields;
+        with_optional_fields["cpu"]["times"] = json!({
+            "user": 1,
+            "nice": 2,
+            "system": 3,
+            "idle": 4,
+            "iowait": 5,
+            "irq": 6,
+            "softirq": 7,
+            "steal": 8,
+            "guest": 9,
+            "guestNice": 10,
+            "total": 55,
+            "idleTotal": 9
+        });
+        with_optional_fields["filesystemsCapturedAtMs"] = json!(1_777_777_777_777_i64);
+
+        let snapshot: SystemSnapshot = serde_json::from_value(with_optional_fields.clone())
+            .expect("optional fields may be present");
+        assert!(snapshot.cpu.times.is_some());
+        assert_eq!(snapshot.filesystems_captured_at_ms, Some(1_777_777_777_777));
+        assert_eq!(
+            serde_json::to_value(snapshot).expect("serialize additive snapshot"),
+            with_optional_fields
+        );
     }
 }

@@ -90,7 +90,7 @@ The Settings dialog opens from the left rail and is split by scope:
 
 - `This Browser` controls the active theme, graph mode, and history window for the current browser profile. Additional browser-local state includes visible chart series, process table filter/sort/density, filesystem system-mount toggle, and last-used section.
 - `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, target DB budget, top process count, redaction default, warning/critical thresholds, and enabled dashboard sections.
-- On the Rust daemon, `History ladder` controls L1 raw and L2 one-minute retention, optional L3 five-minute and L4 hourly tiers, the recent snapshot-JSON window, typed detail cadence, archive options, and disk-check thresholds. L4 can be kept forever, and `History hours` / `Rollup days` are read-only compatibility mirrors derived from L1/L2. Bun has no ladder: the group is replaced by `History ladder — Rust daemon only`, the coverage card is hidden, the legacy retention inputs remain editable, and saves omit `retentionLadder`.
+- On the Rust daemon, `History ladder` controls L1 raw and L2 one-minute retention, optional L3 five-minute and L4 hourly tiers, the recent snapshot-JSON window, the filesystem check interval (`Filesystem check seconds`, also the typed detail cadence), archive options, and disk-check thresholds. L4 can be kept forever, and `History hours` / `Rollup days` are read-only compatibility mirrors derived from L1/L2. Bun has no ladder: the group is replaced by `History ladder — Rust daemon only`, the coverage card is hidden, the legacy retention inputs remain editable, and saves omit `retentionLadder`.
 
 The dialog validates ranges before saving, including the ladder's monotonic tier rules, with the same field-specific messages as the Rust server. It warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Boolean daemon options, including redaction and enabled dashboard sections, render as compact responsive toggle controls so several options can fit per row on desktop while remaining touch-friendly on narrow screens. Saving daemon defaults uses `PUT /api/settings`. If a save shrinks a horizon or disables a tier/archive, the dialog asks the Rust server for a dry-run first and shows the rows, buckets, or snapshot JSON blobs older than the candidate horizons. Disabled tier tables and archive files are reported as retained, not deleted. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
 
@@ -214,6 +214,8 @@ On page load:
 4. It fills the chart and timeline from SQLite-backed samples or rollup points in the selected timestamp range.
 5. It requests the latest snapshot from `/api/snapshot`.
 6. It starts polling every 1500 ms.
+
+The daemon's own collection tick is `pollIntervalMs`; filesystems are re-checked every `detailIntervalSec` (default 60 seconds), and the Filesystem panel shows `as of hh:mm:ss` when its rows are older than one poll. A saved `Top processes` count applies on the daemon's next collection tick.
 
 If history is unavailable, the dashboard still works from live polling, but the chart starts with newly collected samples.
 

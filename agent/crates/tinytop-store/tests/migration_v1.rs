@@ -624,6 +624,7 @@ async fn seed_v0_database(fixture: &TempDatabase, metric_samples_ddl: &'static s
 fn fixture_snapshot() -> SystemSnapshot {
     SystemSnapshot {
         timestamp: "2026-08-28T00:00:00Z".to_string(),
+        filesystems_captured_at_ms: None,
         identity: IdentitySnapshot {
             hostname: "fixture".to_string(),
             platform: "linux".to_string(),
@@ -640,7 +641,7 @@ fn fixture_snapshot() -> SystemSnapshot {
         cpu: CpuSnapshot {
             usage_percent: 10.0,
             cores: 4,
-            times: CpuTimes::default(),
+            times: Some(CpuTimes::default()),
         },
         memory: MemorySnapshot {
             total_bytes: 1_000,

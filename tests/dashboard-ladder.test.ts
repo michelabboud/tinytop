@@ -4,6 +4,7 @@ import * as ladderRules from "../agent/assets/dashboard/ladder-rules.js";
 import {
   HISTORY_WINDOWS,
   describeDiskCoverage,
+  describeFilesystemFreshness,
   describeImportPlan,
   exportFilenameFrom,
   fallbackWindowKey,
@@ -20,6 +21,49 @@ import {
 } from "../agent/assets/dashboard/ladder-rules.js";
 
 const MIB = 1024 * 1024;
+
+describe("filesystem freshness", () => {
+  const snapshotMs = Date.parse("2026-08-29T12:00:00.000Z");
+  const pollMs = 1_500;
+
+  test("is hidden when the filesystem capture time is absent", () => {
+    expect(describeFilesystemFreshness({ timestamp: "2026-08-29T12:00:00.000Z" }, pollMs)).toBeNull();
+  });
+
+  test("is hidden when filesystems were captured with the snapshot", () => {
+    expect(
+      describeFilesystemFreshness(
+        { timestamp: "2026-08-29T12:00:00.000Z", filesystemsCapturedAtMs: snapshotMs },
+        pollMs,
+      ),
+    ).toBeNull();
+  });
+
+  test("is hidden at exactly one poll old", () => {
+    expect(
+      describeFilesystemFreshness(
+        { timestamp: "2026-08-29T12:00:00.000Z", filesystemsCapturedAtMs: snapshotMs - pollMs },
+        pollMs,
+      ),
+    ).toBeNull();
+  });
+
+  test("shows the capture time when older than one poll", () => {
+    const capturedAtMs = snapshotMs - pollMs - 1;
+    const formatted = new Date(capturedAtMs).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    expect(
+      describeFilesystemFreshness(
+        { timestamp: "2026-08-29T12:00:00.000Z", filesystemsCapturedAtMs: capturedAtMs },
+        pollMs,
+      ),
+    ).toBe(`as of ${formatted}`);
+  });
+});
 
 describe("history coverage polling", () => {
   test("skips a request while another coverage request is in flight", () => {

@@ -15,7 +15,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
-use tinytop_collectors::NativeCollector;
+use tinytop_collectors::{Collector, CollectorConfig, NativeCollector};
 use tinytop_store::{
     DashboardSettings, DiskTransition, FreeBytesProvider, HistoryFilesystemSample, HistoryMarker,
     HistoryMarkerType, HistoryOtelCoverage, HistoryPoint, HistoryPointMode, HistoryPointsQuery,
@@ -104,6 +104,7 @@ pub enum DashboardAssets {
 #[derive(Clone)]
 pub(crate) struct AppState {
     collector: Arc<Mutex<NativeCollector>>,
+    collector_config: Arc<Mutex<Option<CollectorConfig>>>,
     store: SqliteHistoryStore,
     dashboard_assets: DashboardAssets,
     daemon: DaemonMetadata,
@@ -279,6 +280,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
     let (latest_snapshot, _) = watch::channel(None);
     let state = AppState {
         collector: Arc::new(Mutex::new(NativeCollector::default())),
+        collector_config: Arc::new(Mutex::new(None)),
         store,
         dashboard_assets: options.dashboard_assets.clone(),
         daemon: daemon_metadata(&options),
@@ -287,6 +289,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
         latest_snapshot: Arc::new(latest_snapshot),
     };
 
+    configure_collector_if_changed(&state, &settings).await;
     collect_and_store(&state).await?;
     state
         .store
@@ -440,12 +443,11 @@ async fn update_settings(
 }
 
 async fn latest_snapshot(State(state): State<AppState>) -> Result<Response, ServeError> {
-    let sample = match state.store.latest_snapshot().await? {
-        Some(sample) => sample,
-        None => collect_and_store(&state).await?,
-    };
-
-    Ok(no_store(Json(sample.snapshot)).into_response())
+    // `serve` collects once before binding, so this is normally populated for
+    // every production request; the 503 covers only a pre-collection state.
+    let snapshot = state.latest_snapshot.borrow().clone();
+    let snapshot = snapshot.ok_or(ServeError::NoSnapshotYet)?;
+    Ok(no_store(Json(snapshot.as_ref())).into_response())
 }
 
 async fn collect_snapshot(State(state): State<AppState>) -> Result<Response, ServeError> {
@@ -682,7 +684,38 @@ pub(crate) async fn collect_and_store(state: &AppState) -> Result<HistorySample,
         .map_err(ServeError::from)?;
     let settings = state.store.get_settings().await?;
     maintain_history(state, &settings).await?;
+    configure_collector_if_changed(state, &settings).await;
     Ok(sample)
+}
+
+fn collector_config_from(settings: &DashboardSettings) -> CollectorConfig {
+    // Store reads validate both settings; these fallbacks preserve safe
+    // invariants if a future caller bypasses that validated-read boundary.
+    let top_process_count = usize::try_from(settings.top_process_count)
+        .unwrap_or(1)
+        .max(1);
+    let filesystems_interval = Duration::from_secs(
+        u64::try_from(settings.retention_ladder.detail_interval_sec)
+            .unwrap_or(60)
+            .max(1),
+    );
+    CollectorConfig {
+        top_process_count,
+        filesystems_interval,
+    }
+}
+
+async fn configure_collector_if_changed(state: &AppState, settings: &DashboardSettings) {
+    let desired = collector_config_from(settings);
+    // Lock order is collector_config -> collector. Collection takes only the
+    // collector lock, so no reverse acquisition path exists.
+    let mut applied = state.collector_config.lock().await;
+    if applied.as_ref() == Some(&desired) {
+        return;
+    }
+    let mut collector = state.collector.lock().await;
+    collector.configure(desired.clone());
+    *applied = Some(desired);
 }
 
 pub(crate) fn spawn_otel_export_loop(state: AppState, tick: Duration) -> JoinHandle<()> {
@@ -1343,6 +1376,7 @@ pub enum ServeError {
     AddrParse(std::net::AddrParseError),
     Time(std::time::SystemTimeError),
     TimeOverflow,
+    NoSnapshotYet,
     NotFound(String),
 }
 
@@ -1353,6 +1387,7 @@ impl ServeError {
 
     fn status_code(&self) -> StatusCode {
         match self {
+            Self::NoSnapshotYet => StatusCode::SERVICE_UNAVAILABLE,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
             Self::Store(tinytop_store::StoreError::Validation(_)) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -1369,6 +1404,7 @@ impl std::fmt::Display for ServeError {
             Self::AddrParse(error) => write!(formatter, "{error}"),
             Self::Time(error) => write!(formatter, "{error}"),
             Self::TimeOverflow => write!(formatter, "current time does not fit in milliseconds"),
+            Self::NoSnapshotYet => write!(formatter, "no snapshot yet"),
             Self::NotFound(message) => write!(formatter, "{message}"),
         }
     }
@@ -1382,7 +1418,7 @@ impl std::error::Error for ServeError {
             Self::Io(error) => Some(error),
             Self::AddrParse(error) => Some(error),
             Self::Time(error) => Some(error),
-            Self::TimeOverflow | Self::NotFound(_) => None,
+            Self::TimeOverflow | Self::NoSnapshotYet | Self::NotFound(_) => None,
         }
     }
 }
@@ -1498,6 +1534,7 @@ pub(crate) mod tests {
         let (latest_snapshot, _) = watch::channel(None);
         let state = AppState {
             collector: Arc::new(Mutex::new(NativeCollector::default())),
+            collector_config: Arc::new(Mutex::new(None)),
             store,
             dashboard_assets: DashboardAssets::Disabled,
             daemon: DaemonMetadata {
@@ -2179,6 +2216,90 @@ pub(crate) mod tests {
             .clone()
             .expect("collector success should publish a snapshot");
         assert_eq!(*published, sample.snapshot);
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_answers_503_before_the_first_collection() {
+        let (_fixture, state) = test_state("snapshot-before-collection").await;
+
+        let (status, body) = request_json(router(state), "/api/snapshot").await;
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body, json!({ "error": "no snapshot yet" }));
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_answers_from_memory_with_the_store_closed() {
+        let (_fixture, state) = test_state("snapshot-memory-closed-store").await;
+        let sample = collect_and_store(&state)
+            .await
+            .expect("initial collection should succeed");
+        state
+            .store
+            .clone()
+            .close()
+            .await
+            .expect("store should close");
+
+        let (coverage_status, _) =
+            request_json(router(state.clone()), "/api/history/coverage").await;
+        assert_eq!(coverage_status, StatusCode::INTERNAL_SERVER_ERROR);
+
+        let (api_status, api_body) = request_json(router(state.clone()), "/api/snapshot").await;
+        assert_eq!(api_status, StatusCode::OK, "{api_body}");
+        assert_eq!(api_body["timestamp"], sample.snapshot.timestamp);
+        assert!(api_body["filesystemsCapturedAtMs"].is_number());
+
+        let (legacy_status, legacy_body) = request_json(router(state), "/snapshot/latest").await;
+        assert_eq!(legacy_status, StatusCode::OK, "{legacy_body}");
+        assert_eq!(legacy_body, api_body);
+    }
+
+    #[tokio::test]
+    async fn collector_is_configured_from_settings_before_the_first_collection() {
+        let (_fixture, state) = test_state("collector-first-config").await;
+        let mut settings = state.store.get_settings().await.expect("default settings");
+        settings.top_process_count = 3;
+        let settings = state
+            .store
+            .put_settings(&settings)
+            .await
+            .expect("settings should persist");
+
+        configure_collector_if_changed(&state, &settings).await;
+        let sample = collect_and_store(&state)
+            .await
+            .expect("configured collection should succeed");
+
+        assert_eq!(sample.snapshot.processes.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn collect_and_store_reconfigures_only_when_the_settings_changed() {
+        let (_fixture, state) = test_state("collector-config-change").await;
+        let settings = state.store.get_settings().await.expect("default settings");
+        configure_collector_if_changed(&state, &settings).await;
+        assert_eq!(state.collector.lock().await.configure_calls(), 1);
+
+        collect_and_store(&state).await.expect("first tick");
+        collect_and_store(&state).await.expect("second tick");
+        assert_eq!(state.collector.lock().await.configure_calls(), 1);
+
+        let mut changed = settings;
+        changed.top_process_count = 3;
+        state
+            .store
+            .put_settings(&changed)
+            .await
+            .expect("changed settings should persist");
+
+        let third = collect_and_store(&state).await.expect("third tick");
+        assert_eq!(third.snapshot.processes.len(), 8);
+        assert_eq!(state.collector.lock().await.configure_calls(), 2);
+
+        let fourth = collect_and_store(&state).await.expect("fourth tick");
+        assert_eq!(fourth.snapshot.processes.len(), 3);
+        assert_eq!(state.collector.lock().await.configure_calls(), 2);
     }
 
     #[tokio::test]

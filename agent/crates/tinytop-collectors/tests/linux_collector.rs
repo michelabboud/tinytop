@@ -1,9 +1,17 @@
 #![cfg(all(feature = "linux-collector", target_os = "linux"))]
 
-use tinytop_collectors::linux::{
-    LinuxCollector, build_linux_snapshot_from_sources, calculate_cpu_usage,
-    decode_proc_mount_escape, detect_linux_runtime, parse_df_blocks, parse_loadavg, parse_meminfo,
-    parse_pressure, parse_proc_stat,
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
+
+use tinytop_collectors::{
+    Collector, CollectorConfig,
+    linux::{
+        LinuxCollector, build_linux_snapshot_from_sources, calculate_cpu_usage,
+        decode_proc_mount_escape, detect_linux_runtime, parse_df_blocks, parse_loadavg,
+        parse_meminfo, parse_pressure, parse_proc_stat,
+    },
 };
 use tinytop_types::{RuntimeConfidence, RuntimeKind};
 
@@ -50,6 +58,7 @@ tmpfs          tmpfs 50 1 49 2% /run
         ps_text: r#"101 12.5 1.2 120117 bun
 202 3.1 5.4 445313 postgres
 "#.to_string(),
+        filesystems_captured_at_ms: 1_777_777_777_777,
     }
 }
 
@@ -209,4 +218,112 @@ fn linux_collector_does_not_shell_out_for_host_metrics() {
             "linux collector source must not contain external command path: {forbidden}"
         );
     }
+}
+
+fn clocked_collector() -> (LinuxCollector, Arc<Mutex<Duration>>) {
+    let base = Instant::now();
+    let offset = Arc::new(Mutex::new(Duration::ZERO));
+    let clock_offset = Arc::clone(&offset);
+    let collector =
+        LinuxCollector::with_clock(move || base + *clock_offset.lock().expect("test clock mutex"));
+    (collector, offset)
+}
+
+#[test]
+fn filesystems_are_served_from_cache_between_slow_ticks() {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+
+    let (mut collector, offset) = clocked_collector();
+    let first = collector.collect().expect("first collection");
+    let first_captured_at = first.filesystems_captured_at_ms;
+    assert_eq!(collector.slow_enumerations(), 1);
+
+    *offset.lock().expect("test clock mutex") = Duration::from_secs(30);
+    let second = collector.collect().expect("second collection");
+
+    assert_eq!(second.filesystems, first.filesystems);
+    assert_eq!(second.filesystems_captured_at_ms, first_captured_at);
+    assert_eq!(collector.slow_enumerations(), 1);
+    assert_ne!(second.timestamp, first.timestamp);
+}
+
+#[test]
+fn slow_tick_re_enumerates_after_the_interval() {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+
+    let (mut collector, offset) = clocked_collector();
+    let first = collector.collect().expect("first collection");
+    let first_captured_at = first.filesystems_captured_at_ms;
+
+    *offset.lock().expect("test clock mutex") = Duration::from_secs(61);
+    let second = collector.collect().expect("second collection");
+
+    assert_eq!(collector.slow_enumerations(), 2);
+    assert!(second.filesystems_captured_at_ms > first_captured_at);
+}
+
+#[test]
+fn configure_changes_the_interval_without_resetting_the_cache() {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+
+    let (mut collector, offset) = clocked_collector();
+    collector.collect().expect("first collection");
+    collector.configure(CollectorConfig::default());
+
+    *offset.lock().expect("test clock mutex") = Duration::from_secs(30);
+    collector.collect().expect("cached collection");
+    assert_eq!(collector.slow_enumerations(), 1);
+
+    collector.configure(CollectorConfig {
+        filesystems_interval: Duration::from_secs(10),
+        ..CollectorConfig::default()
+    });
+    collector.collect().expect("shortened-interval collection");
+    assert_eq!(collector.slow_enumerations(), 2);
+}
+
+#[test]
+fn top_process_count_is_honoured() {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+
+    let mut collector = LinuxCollector::default();
+    collector.configure(CollectorConfig {
+        top_process_count: 1,
+        ..CollectorConfig::default()
+    });
+    assert_eq!(collector.collect().expect("one process").processes.len(), 1);
+
+    collector.configure(CollectorConfig {
+        top_process_count: 8,
+        ..CollectorConfig::default()
+    });
+    assert!(
+        collector
+            .collect()
+            .expect("eight processes")
+            .processes
+            .len()
+            <= 8
+    );
+
+    collector.configure(CollectorConfig {
+        top_process_count: 50,
+        ..CollectorConfig::default()
+    });
+    assert!(
+        collector
+            .collect()
+            .expect("fifty processes")
+            .processes
+            .len()
+            <= 50
+    );
 }

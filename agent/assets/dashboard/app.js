@@ -1,6 +1,7 @@
 import {
   HISTORY_WINDOWS,
   describeDiskCoverage,
+  describeFilesystemFreshness,
   describeImportPlan,
   describeOtelCoverage,
   exportFilenameFrom,
@@ -313,6 +314,7 @@ const elements = {
   runtimeKind: document.querySelector("#runtime-kind"),
   runtimeConfidence: document.querySelector("#runtime-confidence"),
   filesystemCount: document.querySelector("#filesystem-count"),
+  filesystemCapturedAt: document.querySelector("#filesystem-captured-at"),
   filesystemList: document.querySelector("#filesystem-list"),
   filesystemShowSystem: document.querySelector("#filesystem-show-system"),
   rootFilesystemCard: document.querySelector("#root-filesystem-card"),
@@ -1926,6 +1928,12 @@ function renderFilesystems(filesystems) {
   );
 }
 
+function renderFilesystemFreshness(snapshot) {
+  const description = describeFilesystemFreshness(snapshot, state.pollMs);
+  setText(elements.filesystemCapturedAt, description ?? "");
+  setHidden(elements.filesystemCapturedAt, description === null);
+}
+
 function renderPressure(snapshot) {
   const items = [
     ["CPU", pressureValue(snapshot, "cpu"), "Scheduler contention"],
@@ -2352,6 +2360,7 @@ function renderSnapshotDetails(snapshot) {
   applyMetricStatuses(snapshot);
   renderRootFilesystem(rootFs);
   renderFilesystems(snapshot.filesystems);
+  renderFilesystemFreshness(snapshot);
   renderPressure(snapshot);
   renderProcesses(snapshot.processes);
 }
