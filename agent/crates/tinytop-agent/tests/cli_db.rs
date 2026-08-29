@@ -369,12 +369,36 @@ async fn db_archive_export_now_writes_seeded_month() {
     );
     let status_json = stdout_json(&status);
     assert_eq!(status_json["value"]["cold"]["fileCount"], 1);
+    let manifest = status_json["value"]["cold"]["manifest"]
+        .as_array()
+        .expect("status manifest should be an array");
+    assert_eq!(manifest.len(), 1);
+    let row = &manifest[0];
+    assert_eq!(row["month"], "2023-01");
+    assert_eq!(row["file"], "tinytop-1h-2023-01.csv.gz");
+    assert_eq!(row["rowCount"], 1);
+    let bytes = row["bytes"]
+        .as_u64()
+        .expect("manifest bytes should be a non-negative integer");
+    assert!(bytes > 0);
     assert_eq!(
-        status_json["value"]["cold"]["manifest"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
+        bytes,
+        fs::metadata(fixture.dir.join("tinytop-1h-2023-01.csv.gz"))
+            .expect("cold export should exist")
+            .len()
+    );
+    let sha256 = row["sha256"]
+        .as_str()
+        .expect("manifest sha256 should be a string");
+    assert_eq!(sha256.len(), 64);
+    assert!(
+        sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    );
+    assert_eq!(
+        status_json["value"]["cold"]["exportedUntilMonth"],
+        "2023-01"
     );
 }
 

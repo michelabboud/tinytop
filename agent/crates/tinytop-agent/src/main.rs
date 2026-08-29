@@ -9,8 +9,8 @@ use tinytop_store::{
     HistoryArchiveCoverage, HistoryColdArchiveCoverage, HistoryDiskCoverage,
     HistoryQueryableArchiveCoverage, HistoryTierCoverage, SqliteHistoryStore, StoreStats,
     archive::{
-        ArchiveManifestRow, archive_months_present, archive_paths, export_cold_months,
-        exportable_months, read_archive_manifest,
+        ArchiveManifestRow, ArchiveSchemaState, archive_months_present, archive_paths,
+        archive_schema_state, export_cold_months, exportable_months, read_archive_manifest,
     },
     database_path_from_url, inspect_database_path, pre_image_path,
 };
@@ -257,7 +257,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     match subcommand {
         "stats" => {
-            let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
+            let store = connect_for_db_diagnostic(&sqlite_url).await?;
             let operation: Result<String, Box<dyn std::error::Error>> = async {
                 let user_version = store.user_version().await?;
                 if user_version < 1 {
@@ -293,7 +293,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             println!("{output}");
         }
         "check" => {
-            let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
+            let store = connect_for_db_diagnostic(&sqlite_url).await?;
             let operation: Result<String, Box<dyn std::error::Error>> = async {
                 Ok(serde_json::to_string_pretty(&DbStatus {
                     status: "ok",
@@ -309,7 +309,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             println!("{output}");
         }
         "vacuum" => {
-            let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
+            let store = connect_for_db_diagnostic(&sqlite_url).await?;
             let operation: Result<String, Box<dyn std::error::Error>> = async {
                 store.vacuum().await?;
                 Ok(serde_json::to_string_pretty(&DbStatus {
@@ -342,7 +342,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let (store, _) = connect_for_db_diagnostic(sqlite_url).await?;
+    let store = connect_for_db_diagnostic(sqlite_url).await?;
     let operation: Result<String, Box<dyn std::error::Error>> = async {
         let user_version = store.user_version().await?;
         if user_version < 1 {
@@ -357,9 +357,22 @@ async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::e
         let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
         match action {
             "status" => {
+                let schema_state = archive_schema_state(&paths).await?;
                 let coverage = store.history_coverage(&settings).await?;
                 let manifest = read_archive_manifest(&paths).await?;
-                let (next_exportable_months, reason) = if !settings.retention_ladder.l4.enabled {
+                let (next_exportable_months, reason) = if let ArchiveSchemaState::Incomplete {
+                    user_version,
+                    required_objects,
+                } = schema_state
+                {
+                    (
+                        None,
+                        Some(format!(
+                            "history-archive.sqlite at {} has user_version {user_version} but {required_objects} of 3 required objects; the next L4 move completes the schema; cold export refuses until then",
+                            paths.db.display()
+                        )),
+                    )
+                } else if !settings.retention_ladder.l4.enabled {
                     (
                         None,
                         Some(
@@ -714,12 +727,9 @@ fn normalize_sqlite_url(value: &str) -> Result<String, Box<dyn std::error::Error
 
 async fn connect_for_db_diagnostic(
     sqlite_url: &str,
-) -> Result<(SqliteHistoryStore, bool), Box<dyn std::error::Error>> {
+) -> Result<SqliteHistoryStore, Box<dyn std::error::Error>> {
     if inspect_database_path(sqlite_url)?.is_some() {
-        return Ok((
-            SqliteHistoryStore::connect_for_inspection(sqlite_url).await?,
-            true,
-        ));
+        return Ok(SqliteHistoryStore::connect_for_inspection(sqlite_url).await?);
     }
     let database_path = database_path_from_url(sqlite_url)?;
     Err(Refused {

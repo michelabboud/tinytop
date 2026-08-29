@@ -13,7 +13,7 @@
 - Close every CLI-opened SQLite store so the last connection checkpoints and removes its WAL, including one-shot collection.
 - Refuse `db stats`, `db check`, `db vacuum`, and `db archive` inspection of a missing main database without creating the file, sidecars, or parent directory.
 - Reject `/api/history/points?limit=0` and inverted `sinceMs`/`untilMs` ranges with field- and value-specific HTTP 400 errors.
-- Pinned `flate2` 1.1.9 with its default pure-Rust `miniz_oxide` backend and RustCrypto `sha2` 0.11.0 for gzip and streamed SHA-256 verification.
+- Pinned `flate2` 1.1.10 with its default pure-Rust `miniz_oxide` backend and RustCrypto `sha2` 0.11.0 for gzip and streamed SHA-256 verification; the inert `zlib-rs` 0.6.7 weak-feature lock entry is never compiled.
 
 ## 0.3.1 - 2026-08-29
 

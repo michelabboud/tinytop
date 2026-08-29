@@ -113,6 +113,16 @@ pub struct ArchiveManifestRow {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArchiveSchemaState {
+    Absent,
+    Incomplete {
+        user_version: i64,
+        required_objects: i64,
+    },
+    Current,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArchiveBatch {
     pub min_ms: i64,
     pub max_ms: i64,
@@ -218,6 +228,24 @@ async fn inspect_archive_schema(
         object_count,
         required_object_count,
     })
+}
+
+pub async fn archive_schema_state(paths: &ArchivePaths) -> Result<ArchiveSchemaState, StoreError> {
+    let Some(mut connection) = open_archive_read_only(paths, "schema").await? else {
+        return Ok(ArchiveSchemaState::Absent);
+    };
+    let inspection = inspect_archive_schema(&mut connection).await?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(error);
+    }
+    if inspection.current() {
+        Ok(ArchiveSchemaState::Current)
+    } else {
+        Ok(ArchiveSchemaState::Incomplete {
+            user_version: inspection.user_version,
+            required_objects: inspection.required_object_count,
+        })
+    }
 }
 
 fn archive_schema_refusal(
@@ -646,6 +674,19 @@ pub fn verify_cold_file(
         )));
     }
     let data = &records[1..];
+    let header_width = header.len();
+    for (index, record) in data.iter().enumerate() {
+        if record.len() != header_width {
+            return Err(cold_verify_io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "cold CSV data record {} has {} fields; expected {header_width} from header",
+                    index + 1,
+                    record.len()
+                ),
+            )));
+        }
+    }
     let observed_rows = i64::try_from(data.len()).unwrap_or(i64::MAX);
     if observed_rows != expected_rows {
         return Err(cold_verify_io(std::io::Error::new(
@@ -669,9 +710,9 @@ pub fn verify_cold_file(
 async fn read_months_on(connection: &mut SqliteConnection) -> Result<Vec<String>, StoreError> {
     sqlx::query_scalar::<_, String>(
         r#"
-        SELECT DISTINCT strftime('%Y-%m', bucket_start_ms / 1000, 'unixepoch')
+        SELECT DISTINCT strftime('%Y-%m', bucket_start_ms / 1000.0, 'unixepoch')
         FROM metric_rollups_1h
-        WHERE strftime('%Y-%m', bucket_start_ms / 1000, 'unixepoch') IS NOT NULL
+        WHERE strftime('%Y-%m', bucket_start_ms / 1000.0, 'unixepoch') IS NOT NULL
         ORDER BY 1
         "#,
     )
@@ -834,7 +875,7 @@ fn sync_directory(directory: &Path) -> Result<(), StoreError> {
     File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|source| StoreError::Archive {
-            step: "cold fsync",
+            step: "cold directory fsync",
             source: ArchiveErrorSource::Io(source),
         })
 }
@@ -926,6 +967,15 @@ pub(super) async fn archive_coverage(
     let Some(mut connection) = open_archive_read_only(paths, "coverage open").await? else {
         return Ok((0, None, None));
     };
+    let inspection = inspect_archive_schema(&mut connection)
+        .await
+        .map_err(|error| archive_store_error("coverage", error))?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(archive_store_error("coverage", error));
+    }
+    if !inspection.current() {
+        return Ok((0, None, None));
+    }
     let row = sqlx::query(
         r#"
         SELECT COUNT(*) AS bucket_count,

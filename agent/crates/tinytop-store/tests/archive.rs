@@ -1,12 +1,12 @@
 use std::{
     fs::OpenOptions,
-    io::Read,
+    io::{Read, Write},
     path::PathBuf,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use flate2::read::GzDecoder;
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 use sqlx::{
     Connection, Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -15,8 +15,9 @@ use tinytop_store::{
     ArchiveErrorSource, DashboardSettings, HistoryPointMode, HistoryPointSource,
     HistoryPointsQuery, SqliteHistoryStore, StoreError,
     archive::{
-        archive_paths, copy_expired_l4_batch, export_cold_months, move_expired_l4,
-        read_archive_manifest, read_archive_points, verify_cold_file,
+        ArchiveSchemaState, archive_paths, archive_schema_state, copy_expired_l4_batch,
+        export_cold_months, move_expired_l4, read_archive_manifest, read_archive_points,
+        verify_cold_file,
     },
     ladder::{Stat, Tier, TierBucket},
     maintenance::maintain,
@@ -897,6 +898,103 @@ async fn coverage_reports_archive_counts_and_reads_never_create_the_file() {
     );
 }
 
+// cold_requires_queryable: covered by tests/retention_settings.rs::retention_ladder_validation_rejects_every_invalid_shape_with_exact_error (cold=true, queryable=false).
+
+#[tokio::test]
+async fn cold_export_month_listing_agrees_with_month_bounds() {
+    // Break caught: SQLite truncates negative millisecond timestamps into the wrong UTC month.
+    let fixture = TempDatabase::new("cold-month-boundaries");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_archive(
+        &store,
+        &paths,
+        &[-1, 0, 1_706_745_599_999, 1_706_745_600_000],
+    )
+    .await;
+
+    let written = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("all four boundary months should export");
+    assert_eq!(
+        written
+            .iter()
+            .map(|row| (row.month.as_str(), row.row_count))
+            .collect::<Vec<_>>(),
+        [
+            ("1969-12", 1),
+            ("1970-01", 1),
+            ("2024-01", 1),
+            ("2024-02", 1),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn incomplete_archive_schema_is_reported_while_reads_stay_lenient() {
+    // Break caught: status cannot distinguish an incomplete v1 archive from an empty current one.
+    let fixture = TempDatabase::new("incomplete-schema-state");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_archive(&store, &paths, &[JAN_2023_MS]).await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&paths.db)
+            .create_if_missing(false),
+    )
+    .await
+    .expect("archive fixture should open read-write");
+    sqlx::query("DROP TABLE archive_manifest")
+        .execute(&mut connection)
+        .await
+        .expect("fixture manifest should drop");
+    connection
+        .close()
+        .await
+        .expect("archive fixture should close");
+
+    assert_eq!(
+        archive_schema_state(&paths).await.unwrap(),
+        ArchiveSchemaState::Incomplete {
+            user_version: 1,
+            required_objects: 2,
+        }
+    );
+    assert!(read_archive_manifest(&paths).await.unwrap().is_empty());
+    assert!(matches!(
+        export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS).await,
+        Err(StoreError::Archive {
+            step: "cold read",
+            ..
+        })
+    ));
+
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&paths.db)
+            .create_if_missing(false),
+    )
+    .await
+    .expect("archive fixture should reopen read-write");
+    sqlx::query("DROP TABLE metric_rollups_1h")
+        .execute(&mut connection)
+        .await
+        .expect("fixture hourly table should drop");
+    connection
+        .close()
+        .await
+        .expect("archive fixture should close again");
+    let mut settings = DashboardSettings::default();
+    settings.retention_ladder = ladder;
+    let coverage = store
+        .history_coverage(&settings)
+        .await
+        .expect("coverage should stay lenient for every incomplete archive shape");
+    assert_eq!(coverage.archive.queryable.bucket_count, 0);
+}
+
 #[tokio::test]
 async fn cold_export_writes_verified_month_files() {
     // Break caught: a pass omits an eligible month, publishes an unverifiable file, or advances twice.
@@ -917,6 +1015,10 @@ async fn cold_export_writes_verified_month_files() {
     let written = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
         .await
         .expect("all three old months should export in one pass");
+    assert_eq!(
+        store.attached_database_names().await.unwrap(),
+        ["main".to_string()]
+    );
     assert_eq!(
         written
             .iter()
@@ -1048,6 +1150,54 @@ async fn corrupted_tmp_does_not_advance_month() {
 }
 
 #[tokio::test]
+async fn corrupted_record_width_fails_verification() {
+    // Break caught: verification accepts a data record wider than its DDL-derived header.
+    let fixture = TempDatabase::new("cold-record-width");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_archive(&store, &paths, &[JAN_2023_MS]).await;
+    let written = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("fixture month should export");
+    let target = paths.directory.join(&written[0].file);
+    let csv = read_csv_gz(&target);
+    let mut records = csv
+        .strip_suffix("\r\n")
+        .expect("cold CSV should end in CRLF")
+        .split("\r\n")
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    records[1].push_str(",1");
+    let corrupted = format!("{}\r\n", records.join("\r\n"));
+    let file = std::fs::File::create(&target).expect("cold file should reopen for corruption");
+    let mut encoder = GzEncoder::new(file, Compression::new(6));
+    encoder
+        .write_all(corrupted.as_bytes())
+        .expect("corrupted CSV should recompress");
+    encoder
+        .finish()
+        .expect("corrupted gzip should finish")
+        .sync_all()
+        .expect("corrupted gzip should sync");
+
+    let error = verify_cold_file(&target, 1, JAN_2023_MS, JAN_2023_MS)
+        .expect_err("a 20-field data record under a 19-field header must fail");
+    assert!(matches!(
+        &error,
+        StoreError::Archive {
+            step: "cold verify",
+            ..
+        }
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("cold CSV data record 1 has 20 fields; expected 19 from header")
+    );
+}
+
+#[tokio::test]
 async fn csv_round_trip_is_row_exact() {
     // Break caught: CSV column order, numeric formatting, NULL encoding, or row order drifts.
     let fixture = TempDatabase::new("cold-row-exact");
@@ -1069,7 +1219,11 @@ async fn csv_round_trip_is_row_exact() {
         .expect("fixture month should export");
     let csv = read_csv_gz(&paths.directory.join(&written[0].file));
     let records = parse_rfc4180(&csv);
-    assert_eq!(records.len(), 3, "header plus two rows expected");
+    let archived = read_archive_points(&paths, i64::MIN, i64::MAX, 10)
+        .await
+        .expect("archive rows should read");
+    assert_eq!(records.len(), archived.len() + 1);
+    assert!(records.iter().all(|record| record.len() == 19));
     assert_eq!(
         records[0],
         [
@@ -1094,9 +1248,6 @@ async fn csv_round_trip_is_row_exact() {
             "max_root_used_percent",
         ]
     );
-    let archived = read_archive_points(&paths, i64::MIN, i64::MAX, 10)
-        .await
-        .expect("archive rows should read");
     for (record, bucket) in records[1..].iter().zip(&archived) {
         let expected = bucket_fields(bucket);
         assert_eq!(&record[..4], &expected[..4]);

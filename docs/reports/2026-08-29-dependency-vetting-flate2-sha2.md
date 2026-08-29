@@ -4,19 +4,20 @@ Date: 2026-08-29
 
 ## Decision
 
-TinyTop pins `flate2 = "=1.1.9"` and `sha2 = "=0.11.0"` in workspace
-dependencies and consumes both from `tinytop-store`. These are the current
-stable releases verified from their published documentation and upstream
-release history. The requested `cargo search flate2 --limit 1` and
-`cargo search sha2 --limit 1` checks were attempted first, but this lane's
-network could not resolve `crates.io`; no cached-version hint was treated as
-authority.
+TinyTop pins `flate2 = "=1.1.10"` and `sha2 = "=0.11.0"` in workspace
+dependencies and consumes both from `tinytop-store`. `flate2` 1.1.10 was
+released on 2026-08-28. It fixes an infinite loop while writing a gzip
+header/footer ([rust-lang/flate2-rs#547](https://github.com/rust-lang/flate2-rs/pull/547)),
+which is on TinyTop's `GzEncoder` writer path, and rejects incomplete deflate
+streams at EOF ([#556](https://github.com/rust-lang/flate2-rs/pull/556)), which
+strengthens TinyTop's `GzDecoder` verification path.
 
 `cargo tree -p tinytop-store -e features --offline` confirms that `flate2`'s
-default `rust_backend` selects `miniz_oxide` and does not select `zlib`,
-`zlib-ng`, or another C backend. `sha2` 0.11 uses the current RustCrypto
-`digest` API needed for incremental, streamed SHA-256. Its finalized byte array
-is encoded explicitly as lowercase hexadecimal for the `sha256sum` sidecar.
+default `rust_backend` selects `miniz_oxide` 0.9.1 with its `simd` feature and
+does not select `zlib`, `zlib-ng`, or another C backend. `sha2` 0.11 uses the
+current RustCrypto `digest` API needed for incremental, streamed SHA-256. Its
+finalized byte array is encoded explicitly as lowercase hexadecimal for the
+`sha256sum` sidecar.
 
 ## Security advisories
 
@@ -49,21 +50,44 @@ stale-database scan and must not be represented as a live RustSec refresh.
 
 ## Maintenance and adoption
 
-### `flate2` 1.1.9
+### `flate2` 1.1.10
 
 - Upstream: the `rust-lang/flate2-rs` repository; maintainers shown by the
   ecosystem index include Josh Triplett, Alex Crichton, Sebastian Thiel, and
   the Rust project owner group.
-- Cadence: 1.1.0 shipped in February 2025 and 1.1.9 in February 2026, with
+- Cadence: 1.1.0 shipped in February 2025 and 1.1.10 on 2026-08-28, with
   regular patch releases between them. The project has published releases
   across the 1.x line since 2017.
 - Adoption: the retrieved Lib.rs snapshot reports about 10.7 million downloads
   per month and use in more than 13,000 crates. Download counters include CI
   and automated traffic, so they are evidence of broad distribution rather
   than a unique-user count.
-- Backend: the published 1.1.9 manifest defines `default = ["rust_backend"]`
-  and routes that feature to `miniz_oxide`; all C-backed implementations are
+- Backend: the published 1.1.10 manifest defines the default `rust_backend`
+  through `miniz_oxide` 0.9.1 (`simd`); all C-backed implementations are
   optional.
+
+### Lock-only entry: `zlib-rs` 0.6.7
+
+`zlib-rs` is an optional `flate2` dependency behind its `zlib-rs` backend
+feature, which TinyTop does not enable. `flate2` 1.1.10's new default
+`runtime_detection = ["zlib-rs?/std", "crc32fast?/std"]` uses Cargo's weak
+`?/` feature syntax: it records `zlib-rs` in the lock without activating the
+dependency or its `std` feature. The all-target inverse tree proves it is never
+compiled on any target:
+
+```text
+$ cargo tree --manifest-path agent/Cargo.toml --target all -p tinytop-store -e features -i zlib-rs --offline
+warning: nothing to print.
+
+To find dependencies that require specific target platforms, try to use option `--target all` first, and then narrow your search scope accordingly.
+```
+
+Vetted regardless so this record remains useful if a future backend feature
+activates it: `zlib-rs` is a pure-Rust zlib port maintained by the Trifecta Tech
+Foundation, licensed Zlib, with MSRV 1.75 and no non-optional dependencies.
+Crates.io 0.6.7 was published 2026-08-03 and reports about 119.7 million
+downloads. The `trifectatechfoundation/zlib-rs` repository was pushed
+2026-08-23 and is not archived.
 
 ### `sha2` 0.11.0
 
@@ -79,6 +103,19 @@ stale-database scan and must not be represented as a live RustSec refresh.
   incremental `Digest`/`Sha256` usage. Keeping 0.10.9 only because SQLx already
   uses it transitively would pin TinyTop's direct API to the older digest line
   without reducing the current lockfile to one SHA implementation.
+
+## Outside-sandbox verification (Fable, 2026-08-29)
+
+Fable verified crates.io `max_stable_version` as `flate2` 1.1.10 (published
+2026-08-28) and `sha2` 0.11.0 (published 2026-03-25); the `sha2` 0.11.0-rc.x
+line ended on 2026-02-02. A live `cargo audit` on the final lock reported zero
+vulnerabilities and three pre-existing allowed warnings: `event-listener`
+5.4.1 (`RUSTSEC-2026-0221`, unsound), yanked `chacha20` 0.10.1, and yanked
+`spin` 0.9.8. None is on the `flate2` or `sha2` path.
+
+The one transitive addition attributable to TinyTop's direct `sha2` 0.11.0
+use is `const-oid` 0.10.2, selected through `digest`'s default `oid` feature.
+SQLx already carried `sha2` 0.11.0 without that feature.
 
 ## Alternatives considered
 
@@ -101,9 +138,11 @@ native dependency.
 
 ## Sources
 
-- <https://docs.rs/crate/flate2/1.1.9>
+- <https://docs.rs/crate/flate2/1.1.10>
 - <https://github.com/rust-lang/flate2-rs/releases>
-- <https://raw.githubusercontent.com/rust-lang/flate2-rs/1.1.9/Cargo.toml>
+- <https://raw.githubusercontent.com/rust-lang/flate2-rs/1.1.10/Cargo.toml>
+- <https://crates.io/crates/zlib-rs/0.6.7>
+- <https://github.com/trifectatechfoundation/zlib-rs>
 - <https://docs.rs/crate/sha2/0.11.0>
 - <https://github.com/RustCrypto/hashes/blob/master/sha2/CHANGELOG.md>
 - <https://github.com/RustCrypto/hashes/blob/master/sha2/Cargo.toml>
