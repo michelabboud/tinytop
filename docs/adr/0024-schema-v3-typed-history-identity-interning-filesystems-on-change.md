@@ -158,3 +158,21 @@ legacy JSON); downgrading ANY undecodable row to non-assembleable (a count would
 mismatch across the whole file); patching the Bun collector (Michel's ruling 2026-08-29: `legacy/` is
 not updated). Measured on the same copy with the 25 rows' payload cleared: v1→v2 363 ms, v2→v3 2,641 ms
 (2,426 JSON rows decoded, 1 identity, 27 filesystem events), total 3,266 ms — plan §4's 60 s budget holds.
+
+**Amendment 2026-08-30 #2 (T14-fix2 — luna run #667's P1 on `tinytop-store/src/lib.rs:1588`, validated by the
+orchestrator as a CONTRACT gap, not a code defect).** Decision 4 says a `fs_samples` row is written "when the
+enumeration is new (stamp differs from the last one written)". The writer requires the stamp to be NEWER than the
+last processed stamp, and that is the correct rule: a sample whose `filesystemsCapturedAtMs` is OLDER than the last
+processed stamp cannot be replayed correctly — in `1000 (/) → 3000 (/) → late 2000 (/ + /data)` processing the late
+stamp would write `appear(/data)@2000` while nothing recorded `/data` as absent at 3000 (absent mounts leave no
+row), so every assembly after 3000 would show `/data` present. The successor enumeration's mount set is not
+recoverable, so the late stamp's filesystems are discarded: the metric row is stored with its stamp, no
+`fs_samples` row and no `fs_mount_events` row is written, the in-memory state keeps the newest stamp, and the
+assembled row at that stamp shows the filesystem state as of the newest stamp at or before it. **T14-fix2 adds
+the missing diagnostic:** the discard is warned once a minute (`history writer warning: …`, the same
+rate-limited mechanism as the process-row warning) instead of being silent, and the architecture document states
+the rule. A stamp EQUAL to the last processed one is the normal steady state (no new enumeration), never a warning.
+**Rejected:** processing a late stamp (the corruption above; pinned by
+`regressing_filesystem_key_cannot_reintroduce_a_mount_into_future_history`); refusing the whole sample (loses a
+metric row for a filesystem-domain problem); storing the full mount set per enumeration to make late stamps
+replayable (27 × 1,440 rows a day for a case that needs a backwards clock step or a second writer).
