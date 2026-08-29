@@ -641,7 +641,12 @@ async fn migrate_v1_to_v2(
     sqlx::query("ALTER TABLE process_samples DROP COLUMN command")
         .execute(&mut *transaction)
         .await
-        .map_err(|_| sqlite_version_refusal(&linked_version))?;
+        .map_err(|error| StoreError::Migration {
+            reason: format!(
+                "ALTER TABLE process_samples DROP COLUMN command failed inside the v1→v2 transaction: {error} (linked SQLite {linked_version})"
+            ),
+            remedy: "remove the index, trigger or view that references process_samples.command and restart; the database was not modified".to_string(),
+        })?;
 
     let commands_interned: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM process_commands")
         .fetch_one(&mut *transaction)

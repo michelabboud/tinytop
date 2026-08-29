@@ -12,6 +12,7 @@ use tinytop_store::{
     DashboardSettings, DiskPressureState, FreeBytesProvider, SqliteHistoryStore, StoreError,
     check_disk,
     ladder::{Stat, Tier, TierBucket},
+    maintenance::maintain_with_config,
     otel_settings::SECRET_SHAPED_KEY_WORDS,
     settings_transfer::{
         MAX_CONFIG_VERSION, apply_import, export_document, export_filename, import_marker,
@@ -302,7 +303,27 @@ async fn import_plan_counts_fast_process_rows_for_a_shrinking_horizon() {
         .put_settings(&shrinking)
         .await
         .expect("short horizon should save");
+    sqlx::query(
+        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) VALUES (?, 2, 2, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
+    )
+    .bind(now_ms - 30 * 60 * MINUTE_MS)
+    .bind(command_id)
+    .execute(&pool)
+    .await
+    .expect("older fast process fixture should insert");
     let growing = DashboardSettings::default();
+    let unpruned_growth_plan = plan_import(&store, &document(&growing), now_ms)
+        .await
+        .expect("unpruned growing plan should compute");
+    assert_eq!(unpruned_growth_plan.would_delete.process_fast_rows, 1);
+
+    let config = shrinking
+        .retention_ladder
+        .to_ladder_config(shrinking.poll_interval_ms);
+    let report = maintain_with_config(&store, &config, now_ms)
+        .await
+        .expect("maintenance should prune fast process history");
+    assert_eq!(report.process_fast_rows, 2);
     let growth_plan = plan_import(&store, &document(&growing), now_ms)
         .await
         .expect("growing plan should compute");

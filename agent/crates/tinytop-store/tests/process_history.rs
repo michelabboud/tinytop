@@ -60,7 +60,13 @@ async fn fast_rows_every_tick_and_minute_rows_every_interval() {
     let fixture = TempDatabase::new("cadence");
     let store = fixture.store().await;
     let t = current_time_ms();
-    for captured_at_ms in [t, t + 1_500, t + 3_000] {
+    let first_snapshot = snapshot(t);
+    let fixture_command = first_snapshot.processes[0].command.clone();
+    store
+        .insert_snapshot(t, &first_snapshot)
+        .await
+        .expect("snapshot should insert");
+    for captured_at_ms in [t + 1_500, t + 3_000] {
         store
             .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms))
             .await
@@ -89,13 +95,30 @@ async fn fast_rows_every_tick_and_minute_rows_every_interval() {
             .expect("command count should read"),
         2
     );
-    let shared_ids: Vec<i64> = sqlx::query_scalar(
-        "SELECT DISTINCT command_id FROM (SELECT command_id FROM process_samples_fast UNION ALL SELECT command_id FROM process_samples) WHERE command_id = (SELECT command_id FROM process_commands WHERE command = 'shared-command')",
+    let fast_command_id: i64 = sqlx::query_scalar(
+        "SELECT command_id FROM process_samples_fast WHERE captured_at_ms = ? AND rank = ?",
     )
-    .fetch_all(&pool)
+    .bind(t)
+    .bind(0_i64)
+    .fetch_one(&pool)
     .await
-    .expect("shared command identifiers should read");
-    assert_eq!(shared_ids.len(), 1);
+    .expect("fast command identifier should read");
+    let minute_command_id: i64 = sqlx::query_scalar(
+        "SELECT command_id FROM process_samples WHERE captured_at_ms = ? AND rank = ?",
+    )
+    .bind(t)
+    .bind(0_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("minute command identifier should read");
+    let dictionary_command_id: i64 =
+        sqlx::query_scalar("SELECT command_id FROM process_commands WHERE command = ?")
+            .bind(&fixture_command)
+            .fetch_one(&pool)
+            .await
+            .expect("dictionary command identifier should read");
+    assert_eq!(fast_command_id, minute_command_id);
+    assert_eq!(fast_command_id, dictionary_command_id);
     pool.close().await;
 }
 
@@ -111,10 +134,29 @@ async fn read_history_processes_picks_fast_inside_the_keep_window_and_minute_out
         .expect("settings should save");
     let now_ms = current_time_ms();
     let captured_at_ms = now_ms - 10 * 60_000;
+    let history_snapshot = snapshot(captured_at_ms);
+    let fixture_command = history_snapshot.processes[0].command.clone();
     store
-        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms))
+        .insert_snapshot(captured_at_ms, &history_snapshot)
         .await
         .expect("snapshot should insert");
+    let fast_only_captured_at_ms = now_ms - 5 * 60_000;
+    let pool = fixture.pool().await;
+    let command_id: i64 =
+        sqlx::query_scalar("SELECT command_id FROM process_commands WHERE command = ?")
+            .bind(&fixture_command)
+            .fetch_one(&pool)
+            .await
+            .expect("fixture command identifier should read");
+    sqlx::query(
+        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) VALUES (?, 0, 424242, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
+    )
+    .bind(fast_only_captured_at_ms)
+    .bind(command_id)
+    .execute(&pool)
+    .await
+    .expect("fast-only process fixture should insert");
+    pool.close().await;
 
     let fast = store
         .read_history_processes(HistoryQuery {
@@ -125,7 +167,13 @@ async fn read_history_processes_picks_fast_inside_the_keep_window_and_minute_out
         .await
         .expect("fast history should read");
     assert_eq!(fast.source, ProcessHistorySource::Fast);
-    assert_eq!(fast.captures.len(), 1);
+    assert_eq!(fast.captures.len(), 2);
+    assert!(
+        fast.captures
+            .iter()
+            .flat_map(|capture| &capture.processes)
+            .any(|process| process.pid == 424_242)
+    );
 
     let minute = store
         .read_history_processes(HistoryQuery {
@@ -136,6 +184,14 @@ async fn read_history_processes_picks_fast_inside_the_keep_window_and_minute_out
         .await
         .expect("minute history should read");
     assert_eq!(minute.source, ProcessHistorySource::Minute);
+    assert_eq!(minute.captures.len(), 1);
+    assert!(
+        minute
+            .captures
+            .iter()
+            .flat_map(|capture| &capture.processes)
+            .all(|process| process.pid != 424_242)
+    );
 
     let open = store
         .read_history_processes(HistoryQuery {
@@ -146,6 +202,42 @@ async fn read_history_processes_picks_fast_inside_the_keep_window_and_minute_out
         .await
         .expect("open-ended history should read");
     assert_eq!(open.source, ProcessHistorySource::Minute);
+    assert_eq!(open.captures.len(), 1);
+    assert!(
+        open.captures
+            .iter()
+            .flat_map(|capture| &capture.processes)
+            .all(|process| process.pid != 424_242)
+    );
+
+    let expected_commands: Vec<&str> = history_snapshot
+        .processes
+        .iter()
+        .map(|process| process.command.as_str())
+        .collect();
+    for capture in fast
+        .captures
+        .iter()
+        .chain(&minute.captures)
+        .chain(&open.captures)
+    {
+        if capture.captured_at_ms == fast_only_captured_at_ms {
+            assert_eq!(capture.processes.len(), 1);
+            assert_eq!(capture.processes[0].pid, 424_242);
+            assert_eq!(
+                capture.processes[0].command.as_str(),
+                fixture_command.as_str()
+            );
+        } else {
+            assert_eq!(capture.captured_at_ms, captured_at_ms);
+            let commands: Vec<&str> = capture
+                .processes
+                .iter()
+                .map(|process| process.command.as_str())
+                .collect();
+            assert_eq!(commands, expected_commands);
+        }
+    }
 }
 
 #[tokio::test]

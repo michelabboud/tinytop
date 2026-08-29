@@ -231,6 +231,88 @@ async fn v1_fixture_with_three_commands_migrates_to_v2() {
 }
 
 #[tokio::test]
+async fn v1_fixture_with_an_index_on_command_refuses_and_leaves_the_file_untouched() {
+    let fixture = TempDatabase::new("indexed-command");
+    seed_v1_processes(&fixture).await;
+
+    let pool = fixture.raw_pool().await;
+    sqlx::query("CREATE INDEX idx_probe_command ON process_samples (command)")
+        .execute(&pool)
+        .await
+        .expect("probe index should be created");
+    pool.close().await;
+
+    let error = SqliteHistoryStore::connect(&fixture.url)
+        .await
+        .expect_err("the command index should prevent DROP COLUMN");
+    match error {
+        StoreError::Migration { reason, remedy } => {
+            assert!(
+                reason.contains("DROP COLUMN command failed"),
+                "migration reason should identify the failed DROP COLUMN: {reason}"
+            );
+            assert!(
+                reason.contains("idx_probe_command"),
+                "migration reason should retain SQLite's index name: {reason}"
+            );
+            assert!(
+                reason.contains("after drop column"),
+                "migration reason should retain SQLite's DROP COLUMN diagnostic: {reason}"
+            );
+            assert!(
+                reason.contains("no such column: command"),
+                "migration reason should retain SQLite's missing-column diagnostic: {reason}"
+            );
+            assert!(remedy.contains("database was not modified"));
+        }
+        other => panic!("expected migration refusal, observed {other:?}"),
+    }
+
+    let pool = fixture.raw_pool().await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .expect("version should read"),
+        1
+    );
+    let columns = process_sample_shape(&pool).await;
+    assert!(columns.iter().any(|column| column.name == "command"));
+    assert!(!columns.iter().any(|column| column.name == "command_id"));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('process_commands', 'process_samples_fast')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("v2 table count should read"),
+        0
+    );
+    assert_eq!(marker_count(&pool).await, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM process_samples")
+            .fetch_one(&pool)
+            .await
+            .expect("process row count should read"),
+        5
+    );
+    sqlx::query("DROP INDEX idx_probe_command")
+        .execute(&pool)
+        .await
+        .expect("probe index should be removed");
+    pool.close().await;
+
+    let store = SqliteHistoryStore::connect(&fixture.url)
+        .await
+        .expect("migration should succeed after removing the probe index");
+    assert_eq!(store.user_version().await.expect("version should read"), 2);
+    store.close().await.expect("store should close");
+    let pool = fixture.raw_pool().await;
+    assert_eq!(marker_count(&pool).await, 1);
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn migrated_and_fresh_process_samples_have_identical_shape() {
     let fresh = TempDatabase::new("shape-fresh");
     SqliteHistoryStore::connect(&fresh.url)

@@ -294,14 +294,18 @@ database only receives idempotent `CREATE ... IF NOT EXISTS` checks.
 A v1 database migrates to v2 in one transaction. Before any write, the store
 checks that the linked SQLite version is at least 3.35.0, which is required by
 `ALTER TABLE ... DROP COLUMN`; an older library is refused with
-`schema migration requires SQLite ≥ 3.35.0 (linked: <version>)`. The
-transaction creates the dictionary and fast table, adds and backfills
+`schema migration requires SQLite ≥ 3.35.0 (linked: <version>)`. If
+`ALTER TABLE ... DROP COLUMN` fails after that check because an index, trigger,
+or view still references the old column (none exists in the shipped schema),
+the store reports SQLite's own error text; the transaction rolls back and the
+file is untouched. There is never a silent copy-table fallback. The transaction
+creates the dictionary and fast table, adds and backfills
 `process_samples.command_id`, verifies that no row remains unmapped, creates
 both command indexes, drops the old command column, writes a
-`schemaMigrated` app-event marker, and sets `PRAGMA user_version = 2`. The
-backfill guard rolls the transaction back on any failure. There is deliberately
-no pre-image and no post-migration `VACUUM`: SQLite's transaction provides the
-atomicity, and the design is recorded in
+`schemaMigrated` app-event marker, and sets `PRAGMA user_version = 2`. Any
+in-transaction failure rolls back. There is deliberately no pre-image and no
+post-migration `VACUUM`: SQLite's transaction provides the atomicity, and the
+design is recorded in
 [ADR 0023](adr/0023-schema-v2-migration-one-transaction-no-pre-image.md).
 
 A populated v0 database is migrated fail-closed:
