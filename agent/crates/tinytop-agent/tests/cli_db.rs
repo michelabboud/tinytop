@@ -8,6 +8,14 @@ use std::{
 };
 
 use serde_json::{Map, Value};
+use tinytop_store::{
+    DashboardSettings, SqliteHistoryStore,
+    archive::{archive_paths, move_expired_l4},
+    ladder::{Stat, Tier, TierBucket},
+};
+
+const HOUR_MS: i64 = 3_600_000;
+const JAN_2023_MS: i64 = 1_672_531_200_000;
 
 struct TempDatabase {
     dir: PathBuf,
@@ -43,7 +51,8 @@ impl TempDatabase {
     }
 
     fn initialize_v1(&self) {
-        let output = self.run(&["db", "stats", "--json"]);
+        // Inspection commands deliberately refuse missing databases; collection owns creation.
+        let output = self.run(&["collect", "--json"]);
         assert_success(&output);
     }
 
@@ -92,9 +101,10 @@ fn key_set(object: &Map<String, Value>) -> BTreeSet<&str> {
 }
 
 fn set_sqlite_user_version(path: &Path, user_version: u32) {
-    // The agent deliberately uses WAL mode. Its short-lived process can leave
-    // page 1 in the fixture WAL, which would override the main-file header
-    // below. These are the two exact sidecars owned by this temp fixture.
+    // Before explicit CLI close, the agent's WAL mode could leave page 1 in a
+    // fixture WAL and override the main-file header below. Sidecar cleanup stays
+    // as defensive fixture isolation and should now be a no-op. These are the
+    // two exact sidecars owned here.
     for suffix in ["-wal", "-shm"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
         match fs::remove_file(&sidecar) {
@@ -154,6 +164,7 @@ fn remove_owned_sqlite_database_and_sidecars(path: &Path) {
 #[test]
 fn db_stats_json_reports_the_ladder() {
     let fixture = TempDatabase::new("stats");
+    fixture.initialize_v1();
 
     let output = fixture.run(&["db", "stats", "--json"]);
 
@@ -219,6 +230,151 @@ fn db_stats_json_reports_the_ladder() {
             "exportedUntilMonth",
             "fileCount",
         ])
+    );
+}
+
+#[test]
+fn db_stats_closes_store_and_checkpoints_wal() {
+    // Break caught: process exit drops the runtime before SQLite checkpoints its last WAL.
+    let fixture = TempDatabase::new("stats-checkpoint");
+    fixture.initialize_populated_v1();
+
+    let output = fixture.run(&["db", "stats", "--json"]);
+
+    assert_success(&output);
+    assert!(!PathBuf::from(format!("{}-wal", fixture.db_path.display())).exists());
+}
+
+#[test]
+fn db_stats_refuses_a_missing_database() {
+    // Break caught: a read-only diagnostic creates the requested DB or any sidecar/directory.
+    let fixture = TempDatabase::new("stats-missing");
+    let missing_dir = fixture.dir.join("must-not-exist");
+    let missing_db = missing_dir.join("h.sqlite");
+    let missing_url = format!("sqlite://{}", missing_db.display());
+
+    let output = run_database_command(&missing_url, &["db", "stats", "--json"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "refused");
+    assert_eq!(
+        json["reason"],
+        format!(
+            "database {} does not exist; nothing was created — check the path or start the daemon once",
+            missing_db.display()
+        )
+    );
+    assert!(!missing_db.exists());
+    assert!(!PathBuf::from(format!("{}-wal", missing_db.display())).exists());
+    assert!(!PathBuf::from(format!("{}-shm", missing_db.display())).exists());
+    assert!(!missing_dir.exists());
+}
+
+#[test]
+fn db_archive_status_on_fresh_v1_is_read_only() {
+    // Break caught: status creates an archive or reports stub cold counters.
+    let fixture = TempDatabase::new("archive-status-fresh");
+    fixture.initialize_v1();
+
+    let output = fixture.run(&["db", "archive", "status"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["value"]["cold"]["manifest"], serde_json::json!([]));
+    assert_eq!(json["value"]["cold"]["fileCount"], 0);
+    assert_eq!(json["value"]["cold"]["bytes"], 0);
+    assert!(!fixture.dir.join("history-archive.sqlite").exists());
+}
+
+#[test]
+fn db_archive_export_now_refuses_when_cold_is_off() {
+    // Break caught: the operator command bypasses its explicit setting gate.
+    let fixture = TempDatabase::new("archive-export-refused");
+    fixture.initialize_v1();
+
+    let output = fixture.run(&["db", "archive", "export-now"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "refused");
+    let reason = json["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("retentionLadder.archive.cold"));
+    assert!(reason.contains("observed false"));
+}
+
+#[tokio::test]
+async fn db_archive_export_now_writes_seeded_month() {
+    // Break caught: the spawned CLI cannot discover/export archive rows seeded through the store.
+    let fixture = TempDatabase::new("archive-export-seeded");
+    let store = SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fixture store should connect");
+    let mut settings = DashboardSettings::default();
+    settings.retention_ladder.l3.enabled = false;
+    settings.retention_ladder.l4.keep_days = 30;
+    settings.retention_ladder.archive.queryable = true;
+    settings.retention_ladder.archive.cold = true;
+    settings.retention_ladder.archive.cold_after_months = 1;
+    store
+        .put_settings(&settings)
+        .await
+        .expect("settings should persist");
+    let stat = Stat {
+        avg: 12.5,
+        min: 10.0,
+        max: 15.0,
+    };
+    store
+        .upsert_tier_bucket(
+            Tier::L4,
+            &TierBucket {
+                bucket_start_ms: JAN_2023_MS,
+                first_captured_at_ms: JAN_2023_MS,
+                newest_captured_at_ms: JAN_2023_MS + HOUR_MS - 1,
+                sample_count: 60,
+                cpu: stat,
+                memory: stat,
+                swap: stat,
+                load: stat,
+                root_used: Some(stat),
+            },
+        )
+        .await
+        .expect("fixture L4 bucket should insert");
+    let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 10)
+            .await
+            .expect("fixture bucket should move"),
+        1
+    );
+    store.close().await.expect("fixture store should close");
+
+    let output = fixture.run(&["db", "archive", "export-now"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["value"]["action"], "export-now");
+    assert_eq!(json["value"]["written"].as_array().unwrap().len(), 1);
+    assert_eq!(json["value"]["written"][0]["month"], "2023-01");
+
+    let status = fixture.run(&["db", "archive", "status"]);
+    assert_success(&status);
+    eprintln!(
+        "db archive status acceptance JSON:\n{}",
+        String::from_utf8_lossy(&status.stdout)
+    );
+    let status_json = stdout_json(&status);
+    assert_eq!(status_json["value"]["cold"]["fileCount"], 1);
+    assert_eq!(
+        status_json["value"]["cold"]["manifest"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
 }
 
@@ -335,7 +491,7 @@ fn pre_image_status_follows_a_symlinked_database_path() {
     fs::create_dir_all(&real_dir).expect("real database directory should be created");
     let real_db_path = real_dir.join("h.sqlite");
     let real_database_url = format!("sqlite://{}", real_db_path.display());
-    let initialize = run_database_command(&real_database_url, &["db", "check"]);
+    let initialize = run_database_command(&real_database_url, &["collect", "--json"]);
     assert_success(&initialize);
     std::os::unix::fs::symlink(&real_dir, &alias_dir)
         .expect("database directory symlink should be created");
@@ -370,6 +526,7 @@ fn pre_image_status_follows_a_symlinked_database_path() {
 #[test]
 fn explicit_sqlite_url_never_touches_the_default_state_directory() {
     let fixture = TempDatabase::new("explicit-sqlite-default-state");
+    fixture.initialize_v1();
     let home = fixture.dir.join("home");
     assert!(!home.exists());
 

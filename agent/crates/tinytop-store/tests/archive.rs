@@ -1,8 +1,12 @@
 use std::{
+    fs::OpenOptions,
+    io::Read,
     path::PathBuf,
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use flate2::read::GzDecoder;
 use sqlx::{
     Connection, Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -10,17 +14,27 @@ use sqlx::{
 use tinytop_store::{
     ArchiveErrorSource, DashboardSettings, HistoryPointMode, HistoryPointSource,
     HistoryPointsQuery, SqliteHistoryStore, StoreError,
-    archive::{archive_paths, copy_expired_l4_batch, move_expired_l4, read_archive_points},
+    archive::{
+        archive_paths, copy_expired_l4_batch, export_cold_months, move_expired_l4,
+        read_archive_manifest, read_archive_points, verify_cold_file,
+    },
     ladder::{Stat, Tier, TierBucket},
     maintenance::maintain,
 };
 
 const HOUR_MS: i64 = 3_600_000;
 const DAY_MS: i64 = 86_400_000;
+const AUG_29_2026_MS: i64 = 1_787_961_600_000;
+const SEP_2_2026_MS: i64 = 1_788_307_200_000;
+const JAN_2023_MS: i64 = 1_672_531_200_000;
+const FEB_2023_MS: i64 = 1_675_209_600_000;
+const MAR_2023_MS: i64 = 1_677_628_800_000;
+const JUL_2026_MS: i64 = 1_782_864_000_000;
 
 struct TempDatabase {
     dir: PathBuf,
     url: String,
+    preserve: bool,
 }
 
 impl TempDatabase {
@@ -37,7 +51,11 @@ impl TempDatabase {
         std::fs::create_dir_all(&dir).expect("temp dir should be created");
         let path = dir.join("history.sqlite");
         let url = format!("sqlite://{}", path.display());
-        Self { dir, url }
+        Self {
+            dir,
+            url,
+            preserve: false,
+        }
     }
 
     async fn store(&self) -> SqliteHistoryStore {
@@ -53,11 +71,17 @@ impl TempDatabase {
             .await
             .expect("fixture verification pool should connect")
     }
+
+    fn preserve(&mut self) {
+        self.preserve = true;
+    }
 }
 
 impl Drop for TempDatabase {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.dir).ok();
+        if !self.preserve {
+            std::fs::remove_dir_all(&self.dir).ok();
+        }
     }
 }
 
@@ -87,6 +111,120 @@ async fn seed_l4(store: &SqliteHistoryStore, starts: &[i64]) {
             .await
             .expect("L4 fixture bucket should insert");
     }
+}
+
+fn cold_ladder() -> tinytop_store::retention_ladder::RetentionLadder {
+    let mut ladder = tinytop_store::retention_ladder::RetentionLadder::default();
+    ladder.l3.enabled = false;
+    ladder.l4.keep_days = 30;
+    ladder.archive.queryable = true;
+    ladder.archive.cold = true;
+    ladder.archive.cold_after_months = 1;
+    ladder
+}
+
+async fn seed_archive(
+    store: &SqliteHistoryStore,
+    paths: &tinytop_store::archive::ArchivePaths,
+    starts: &[i64],
+) {
+    seed_l4(store, starts).await;
+    assert_eq!(
+        move_expired_l4(store, paths, i64::MAX, starts.len().max(1))
+            .await
+            .expect("fixture L4 rows should move to the archive"),
+        starts.len() as i64
+    );
+}
+
+async fn archive_l4_count(paths: &tinytop_store::archive::ArchivePaths) -> i64 {
+    let pool = read_only_archive_pool(&paths.db).await;
+    let count = sqlx::query_scalar("SELECT COUNT(*) FROM metric_rollups_1h")
+        .fetch_one(&pool)
+        .await
+        .expect("archive row count should query");
+    pool.close().await;
+    count
+}
+
+fn read_csv_gz(path: &std::path::Path) -> String {
+    let file = std::fs::File::open(path).expect("cold file should open");
+    let mut decoder = GzDecoder::new(file);
+    let mut csv = String::new();
+    decoder
+        .read_to_string(&mut csv)
+        .expect("cold file should decompress as UTF-8 CSV");
+    csv
+}
+
+fn parse_rfc4180(csv: &str) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field = String::new();
+    let mut chars = csv.chars().peekable();
+    let mut quoted = false;
+    while let Some(ch) = chars.next() {
+        if quoted {
+            if ch == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    quoted = false;
+                }
+            } else {
+                field.push(ch);
+            }
+            continue;
+        }
+        match ch {
+            '"' if field.is_empty() => quoted = true,
+            ',' => row.push(std::mem::take(&mut field)),
+            '\r' => {
+                assert_eq!(chars.next(), Some('\n'), "records must end with CRLF");
+                row.push(std::mem::take(&mut field));
+                rows.push(std::mem::take(&mut row));
+            }
+            '\n' => panic!("records must not use bare LF"),
+            _ => field.push(ch),
+        }
+    }
+    assert!(!quoted, "quoted field must close");
+    assert!(
+        field.is_empty() && row.is_empty(),
+        "last record must end in CRLF"
+    );
+    rows
+}
+
+fn bucket_fields(bucket: &TierBucket) -> Vec<String> {
+    let mut fields = vec![
+        bucket.bucket_start_ms.to_string(),
+        bucket.first_captured_at_ms.to_string(),
+        bucket.newest_captured_at_ms.to_string(),
+        bucket.sample_count.to_string(),
+        bucket.cpu.avg.to_string(),
+        bucket.cpu.min.to_string(),
+        bucket.cpu.max.to_string(),
+        bucket.memory.avg.to_string(),
+        bucket.memory.min.to_string(),
+        bucket.memory.max.to_string(),
+        bucket.swap.avg.to_string(),
+        bucket.swap.min.to_string(),
+        bucket.swap.max.to_string(),
+        bucket.load.avg.to_string(),
+        bucket.load.min.to_string(),
+        bucket.load.max.to_string(),
+    ];
+    match bucket.root_used {
+        Some(root) => {
+            fields.push(root.avg.to_string());
+            fields.push(root.min.to_string());
+            fields.push(root.max.to_string());
+        }
+        None => fields.extend([String::new(), String::new(), String::new()]),
+    }
+    fields
 }
 
 async fn main_l4_count(pool: &SqlitePool) -> i64 {
@@ -166,6 +304,15 @@ fn archive_error_remedy_is_step_aware() {
     .to_string();
     assert!(detach.contains(
         "remedy: the batch is committed in history-archive.sqlite and removed from the main database; only the detach bookkeeping failed — retrying is safe, nothing is duplicated or lost"
+    ));
+
+    let cold_verify = StoreError::Archive {
+        step: "cold verify",
+        source: ArchiveErrorSource::Io(std::io::Error::other("fixture cold verify failure")),
+    }
+    .to_string();
+    assert!(cold_verify.contains(
+        "remedy: the queryable archive is untouched; a `.tmp` file may remain in the archive directory and is safe to delete; retrying re-exports the month"
     ));
 }
 
@@ -748,4 +895,280 @@ async fn coverage_reports_archive_counts_and_reads_never_create_the_file() {
             .expect("disabled archive read should succeed")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn cold_export_writes_verified_month_files() {
+    // Break caught: a pass omits an eligible month, publishes an unverifiable file, or advances twice.
+    let mut fixture = TempDatabase::new("cold-verified-files");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    let starts = [
+        JAN_2023_MS,
+        JAN_2023_MS + HOUR_MS,
+        FEB_2023_MS,
+        FEB_2023_MS + HOUR_MS,
+        MAR_2023_MS,
+        MAR_2023_MS + HOUR_MS,
+    ];
+    seed_archive(&store, &paths, &starts).await;
+
+    let written = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("all three old months should export in one pass");
+    assert_eq!(
+        written
+            .iter()
+            .map(|row| row.month.as_str())
+            .collect::<Vec<_>>(),
+        ["2023-01", "2023-02", "2023-03"]
+    );
+    for row in &written {
+        let file = paths.directory.join(&row.file);
+        let sidecar = paths.directory.join(format!("{}.sha256", row.file));
+        assert!(file.is_file(), "{} should exist", file.display());
+        assert!(sidecar.is_file(), "{} should exist", sidecar.display());
+        assert_eq!(
+            row.bytes as u64,
+            std::fs::metadata(&file)
+                .expect("cold file metadata should read")
+                .len()
+        );
+        #[cfg(unix)]
+        {
+            let status = Command::new("sha256sum")
+                .current_dir(&paths.directory)
+                .args([
+                    "-c",
+                    sidecar
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .as_ref(),
+                ])
+                .status()
+                .expect("sha256sum should run");
+            assert!(status.success(), "sha256sum -c should verify {}", row.file);
+        }
+    }
+    assert_eq!(read_archive_manifest(&paths).await.unwrap(), written);
+    let mut settings = DashboardSettings::default();
+    settings.retention_ladder = ladder.clone();
+    let coverage = store.history_coverage(&settings).await.unwrap();
+    assert_eq!(coverage.archive.cold.file_count, 3);
+    assert_eq!(
+        coverage.archive.cold.bytes,
+        written.iter().map(|row| row.bytes).sum::<i64>()
+    );
+    assert_eq!(
+        store
+            .history_state_get::<String>("coldExportedUntilMonth")
+            .await
+            .expect("cold watermark should read")
+            .as_deref(),
+        Some("2023-03")
+    );
+    assert!(
+        export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+            .await
+            .expect("second pass should succeed")
+            .is_empty()
+    );
+
+    let artifact = paths.directory.join("tinytop-1h-2023-01.csv.gz");
+    eprintln!("cold export acceptance artifact: {}", artifact.display());
+    fixture.preserve();
+}
+
+#[tokio::test]
+async fn corrupted_tmp_does_not_advance_month() {
+    // Break caught: verification accepts a truncated gzip or a retry cannot replace it atomically.
+    let fixture = TempDatabase::new("cold-corrupt-retry");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_archive(&store, &paths, &[JAN_2023_MS, JAN_2023_MS + HOUR_MS]).await;
+    let first = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("fixture month should export");
+    assert_eq!(first.len(), 1);
+    let target = paths.directory.join(&first[0].file);
+    let original_bytes = std::fs::metadata(&target).unwrap().len();
+    OpenOptions::new()
+        .write(true)
+        .open(&target)
+        .expect("cold target should open for fixture corruption")
+        .set_len(original_bytes / 2)
+        .expect("fixture target should truncate");
+
+    let error = verify_cold_file(
+        &target,
+        first[0].row_count,
+        JAN_2023_MS,
+        JAN_2023_MS + HOUR_MS,
+    )
+    .expect_err("truncated gzip must fail cold verification");
+    assert!(matches!(
+        error,
+        StoreError::Archive {
+            step: "cold verify",
+            ..
+        }
+    ));
+
+    let options = SqliteConnectOptions::new()
+        .filename(&paths.db)
+        .create_if_missing(false);
+    let mut archive = SqliteConnection::connect_with(&options)
+        .await
+        .expect("archive fixture should open read-write");
+    sqlx::query("DELETE FROM archive_manifest WHERE month = '2023-01'")
+        .execute(&mut archive)
+        .await
+        .expect("fixture manifest row should delete");
+    archive.close().await.expect("archive fixture should close");
+    store
+        .history_state_set("coldExportedUntilMonth", &"1900-01", AUG_29_2026_MS)
+        .await
+        .expect("fixture watermark should reset");
+
+    let retried = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("retry should overwrite corrupt target atomically");
+    assert_eq!(retried.len(), 1);
+    assert!(std::fs::metadata(&target).unwrap().len() > original_bytes / 2);
+    verify_cold_file(
+        &target,
+        retried[0].row_count,
+        JAN_2023_MS,
+        JAN_2023_MS + HOUR_MS,
+    )
+    .expect("re-exported file should verify");
+}
+
+#[tokio::test]
+async fn csv_round_trip_is_row_exact() {
+    // Break caught: CSV column order, numeric formatting, NULL encoding, or row order drifts.
+    let fixture = TempDatabase::new("cold-row-exact");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    let first = bucket(JAN_2023_MS, 10.25);
+    let mut second = bucket(JAN_2023_MS + HOUR_MS, 20.5);
+    second.root_used = None;
+    store.upsert_tier_bucket(Tier::L4, &first).await.unwrap();
+    store.upsert_tier_bucket(Tier::L4, &second).await.unwrap();
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 10).await.unwrap(),
+        2
+    );
+
+    let written = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("fixture month should export");
+    let csv = read_csv_gz(&paths.directory.join(&written[0].file));
+    let records = parse_rfc4180(&csv);
+    assert_eq!(records.len(), 3, "header plus two rows expected");
+    assert_eq!(
+        records[0],
+        [
+            "bucket_start_ms",
+            "first_captured_at_ms",
+            "newest_captured_at_ms",
+            "sample_count",
+            "avg_cpu_usage_percent",
+            "min_cpu_usage_percent",
+            "max_cpu_usage_percent",
+            "avg_memory_used_percent",
+            "min_memory_used_percent",
+            "max_memory_used_percent",
+            "avg_swap_used_percent",
+            "min_swap_used_percent",
+            "max_swap_used_percent",
+            "avg_load_percent",
+            "min_load_percent",
+            "max_load_percent",
+            "avg_root_used_percent",
+            "min_root_used_percent",
+            "max_root_used_percent",
+        ]
+    );
+    let archived = read_archive_points(&paths, i64::MIN, i64::MAX, 10)
+        .await
+        .expect("archive rows should read");
+    for (record, bucket) in records[1..].iter().zip(&archived) {
+        let expected = bucket_fields(bucket);
+        assert_eq!(&record[..4], &expected[..4]);
+        for index in 4..19 {
+            if expected[index].is_empty() {
+                assert!(
+                    record[index].is_empty(),
+                    "column {index} should encode NULL empty"
+                );
+            } else {
+                assert_eq!(
+                    record[index].parse::<f64>().unwrap(),
+                    expected[index].parse::<f64>().unwrap(),
+                    "REAL column {index} should round-trip"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn cold_export_skips_months_whose_hours_have_not_all_expired() {
+    // Break caught: July exports on its first archived hour before its end plus L4 horizon and margin.
+    let fixture = TempDatabase::new("cold-partial-month");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_archive(&store, &paths, &[JUL_2026_MS]).await;
+
+    assert!(
+        export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+            .await
+            .expect("partial-month pass should succeed")
+            .is_empty()
+    );
+    assert!(!paths.directory.join("tinytop-1h-2026-07.csv.gz").exists());
+    assert_eq!(
+        export_cold_months(&store, &paths, &ladder, SEP_2_2026_MS)
+            .await
+            .expect("month should export after every hour expires")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn cold_export_never_deletes_archive_rows() {
+    // Break caught: cold publication removes the queryable source rows.
+    let fixture = TempDatabase::new("cold-never-deletes");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_archive(&store, &paths, &[JAN_2023_MS, FEB_2023_MS]).await;
+    let before = archive_l4_count(&paths).await;
+
+    export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("cold export should succeed");
+
+    assert_eq!(archive_l4_count(&paths).await, before);
+}
+
+#[tokio::test]
+async fn read_archive_manifest_never_creates_the_file() {
+    // Break caught: read-only status inspection creates an empty archive sidecar.
+    let fixture = TempDatabase::new("cold-manifest-no-create");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    assert!(!paths.db.exists());
+
+    assert!(read_archive_manifest(&paths).await.unwrap().is_empty());
+
+    assert!(!paths.db.exists());
 }

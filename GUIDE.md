@@ -96,6 +96,8 @@ The dialog validates ranges before saving, including the ladder's monotonic tier
 
 Browser validation of archive and database paths is advisory; the server validates the authoritative host-native path.
 
+For an operator-managed cold copy, enable both `retentionLadder.archive.queryable` and `retentionLadder.archive.cold`. Completed eligible UTC months land in the configured archive directory (beside the main database when `directory` is empty) as `tinytop-1h-YYYY-MM.csv.gz` plus a `.sha256` sidecar. Run `sha256sum -c tinytop-1h-YYYY-MM.csv.gz.sha256` from that directory before copying or restoring a file. The CSV is the cold record; restore tooling should read it as an RFC 4180 document in archive DDL column order. Cold export never removes the queryable SQLite rows, and rows that arrive after their month was exported stay queryable rather than changing the sealed CSV.
+
 ## History
 
 History renders CPU, RAM, swap, and load-derived percent values from SQLite-backed collector samples.

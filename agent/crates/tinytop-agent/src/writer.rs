@@ -223,6 +223,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
         )
         .await?;
     let _collection_task = spawn_collection_loop(state.clone(), options.poll_ms);
+    let _cold_export_task = spawn_cold_export_loop(state.clone());
 
     let app = router(state);
     let address: SocketAddr = format!("{}:{}", options.host, options.port).parse()?;
@@ -588,6 +589,57 @@ fn spawn_collection_loop(state: AppState, poll_ms: u64) -> JoinHandle<()> {
     })
 }
 
+fn spawn_cold_export_loop(state: AppState) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let mut interval = tokio::time::interval(Duration::from_secs(3_600));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let settings = match state.store.get_settings().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    eprintln!("cold export completed with an error: {error}");
+                    continue;
+                }
+            };
+            if !settings.retention_ladder.archive.cold {
+                continue;
+            }
+            let now = match now_ms() {
+                Ok(now) => now,
+                Err(error) => {
+                    eprintln!("cold export completed with an error: {error}");
+                    continue;
+                }
+            };
+            let paths = tinytop_store::archive::archive_paths(
+                state.store.database_path(),
+                &settings.retention_ladder.archive,
+            );
+            match tinytop_store::archive::export_cold_months(
+                &state.store,
+                &paths,
+                &settings.retention_ladder,
+                now,
+            )
+            .await
+            {
+                Ok(written) if !written.is_empty() => {
+                    let files = written
+                        .iter()
+                        .map(|row| row.file.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    eprintln!("cold export info: wrote {} file(s): {files}", written.len());
+                }
+                Ok(_) => {}
+                Err(error) => eprintln!("cold export completed with an error: {error}"),
+            }
+        }
+    })
+}
+
 fn history_query(params: HistoryParams) -> HistoryQuery {
     let now = now_ms().unwrap_or_default();
     let window_seconds = params
@@ -611,6 +663,20 @@ fn history_query(params: HistoryParams) -> HistoryQuery {
 }
 
 fn history_points_query(params: HistoryPointsParams) -> Result<HistoryPointsQuery, ServeError> {
+    if let Some(limit) = params.limit
+        && limit < 1
+    {
+        return Err(invalid_query(format!(
+            "limit must be between 1 and 10000; observed {limit}"
+        )));
+    }
+    if let (Some(since_ms), Some(until_ms)) = (params.since_ms, params.until_ms)
+        && since_ms > until_ms
+    {
+        return Err(invalid_query(format!(
+            "sinceMs must be less than or equal to untilMs; observed sinceMs={since_ms}, untilMs={until_ms}"
+        )));
+    }
     let now = now_ms().unwrap_or_default();
     let window_seconds = params
         .window_seconds
@@ -1264,6 +1330,27 @@ mod tests {
             "x",
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn history_points_rejects_zero_limit_and_inverted_range() {
+        // Break caught: boundary-invalid requests are silently clamped or queried as empty ranges.
+        let (_fixture, state) = test_state("points-invalid-boundaries").await;
+        let (status, body) =
+            request_json(router(state.clone()), "/api/history/points?limit=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            json!({ "error": "limit must be between 1 and 10000; observed 0" })
+        );
+
+        let (status, body) =
+            request_json(router(state), "/api/history/points?sinceMs=200&untilMs=100").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            json!({ "error": "sinceMs must be less than or equal to untilMs; observed sinceMs=200, untilMs=100" })
+        );
     }
 
     #[tokio::test]

@@ -6,8 +6,13 @@ use std::{
 use serde::Serialize;
 use tinytop_collectors::NativeCollector;
 use tinytop_store::{
-    HistoryArchiveCoverage, HistoryDiskCoverage, HistoryTierCoverage, SqliteHistoryStore,
-    StoreStats, database_path_from_url, inspect_database_path, pre_image_path,
+    HistoryArchiveCoverage, HistoryColdArchiveCoverage, HistoryDiskCoverage,
+    HistoryQueryableArchiveCoverage, HistoryTierCoverage, SqliteHistoryStore, StoreStats,
+    archive::{
+        ArchiveManifestRow, archive_months_present, archive_paths, export_cold_months,
+        exportable_months, read_archive_manifest,
+    },
+    database_path_from_url, inspect_database_path, pre_image_path,
 };
 
 mod writer;
@@ -99,6 +104,32 @@ struct PreImageRemoveResult {
     bytes: u64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveStatusOutput {
+    queryable: HistoryQueryableArchiveCoverage,
+    cold: ArchiveColdStatus,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveColdStatus {
+    #[serde(flatten)]
+    coverage: HistoryColdArchiveCoverage,
+    manifest: Vec<ArchiveManifestRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_exportable_months: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArchiveExportOutput {
+    action: &'static str,
+    written: Vec<ArchiveManifestRow>,
+}
+
 #[derive(Debug)]
 struct Refused {
     reason: String,
@@ -164,8 +195,12 @@ async fn collect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(database_url) = sqlite_url {
         create_sqlite_parent(&database_url)?;
+        let captured_at_ms = now_ms()?;
         let store = SqliteHistoryStore::connect(&database_url).await?;
-        store.insert_snapshot(now_ms()?, &snapshot).await?;
+        let insert_result = store.insert_snapshot(captured_at_ms, &snapshot).await;
+        let close_result = store.close().await;
+        insert_result?;
+        close_result?;
     }
 
     println!("{}", serde_json::to_string_pretty(&snapshot)?);
@@ -174,17 +209,25 @@ async fn collect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let Some(subcommand) = args.first().map(String::as_str) else {
-        return Err("db requires a subcommand: stats, check, vacuum, or pre-image".into());
+        return Err("db requires a subcommand: stats, check, vacuum, pre-image, or archive".into());
     };
 
-    let (pre_image_action, mut index) = if subcommand == "pre-image" {
-        let action = args
-            .get(1)
-            .map(String::as_str)
-            .ok_or("db pre-image requires an action: status or remove")?;
-        (Some(action), 2)
-    } else {
-        (None, 1)
+    let (pre_image_action, archive_action, mut index) = match subcommand {
+        "pre-image" => {
+            let action = args
+                .get(1)
+                .map(String::as_str)
+                .ok_or("db pre-image requires an action: status or remove")?;
+            (Some(action), None, 2)
+        }
+        "archive" => {
+            let action = args
+                .get(1)
+                .map(String::as_str)
+                .ok_or("db archive requires an action: status or export-now")?;
+            (None, Some(action), 2)
+        }
+        _ => (None, None, 1),
     };
 
     let mut sqlite_url: Option<String> = None;
@@ -214,8 +257,8 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     match subcommand {
         "stats" => {
-            let (store, database_existed) = connect_for_db_diagnostic(&sqlite_url).await?;
-            if database_existed {
+            let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
+            let operation: Result<String, Box<dyn std::error::Error>> = async {
                 let user_version = store.user_version().await?;
                 if user_version < 1 {
                     return Err(Refused {
@@ -225,17 +268,14 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     }
                     .into());
                 }
-            }
-            let settings = store.get_settings().await?;
-            let coverage = store.history_coverage(&settings).await?;
-            let stats = StoreStats {
-                sample_count: coverage.sample_count,
-                oldest_captured_at_ms: coverage.oldest_captured_at_ms,
-                newest_captured_at_ms: coverage.newest_captured_at_ms,
-            };
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&DbStatus {
+                let settings = store.get_settings().await?;
+                let coverage = store.history_coverage(&settings).await?;
+                let stats = StoreStats {
+                    sample_count: coverage.sample_count,
+                    oldest_captured_at_ms: coverage.oldest_captured_at_ms,
+                    newest_captured_at_ms: coverage.newest_captured_at_ms,
+                };
+                Ok(serde_json::to_string_pretty(&DbStatus {
                     status: "ok",
                     value: DbStatsOutput {
                         stats,
@@ -244,31 +284,44 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                         archive: coverage.archive,
                         disk: coverage.disk,
                     },
-                })?
-            );
+                })?)
+            }
+            .await;
+            let close_result = store.close().await;
+            let output = operation?;
+            close_result?;
+            println!("{output}");
         }
         "check" => {
             let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&DbStatus {
+            let operation: Result<String, Box<dyn std::error::Error>> = async {
+                Ok(serde_json::to_string_pretty(&DbStatus {
                     status: "ok",
                     value: IntegrityResult {
                         result: store.integrity_check().await?,
                     },
-                })?
-            );
+                })?)
+            }
+            .await;
+            let close_result = store.close().await;
+            let output = operation?;
+            close_result?;
+            println!("{output}");
         }
         "vacuum" => {
             let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
-            store.vacuum().await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&DbStatus {
+            let operation: Result<String, Box<dyn std::error::Error>> = async {
+                store.vacuum().await?;
+                Ok(serde_json::to_string_pretty(&DbStatus {
                     status: "ok",
                     value: VacuumResult { action: "vacuum" },
-                })?
-            );
+                })?)
+            }
+            .await;
+            let close_result = store.close().await;
+            let output = operation?;
+            close_result?;
+            println!("{output}");
         }
         "pre-image" => {
             let Some(action) = pre_image_action else {
@@ -276,9 +329,115 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             };
             db_pre_image(action, &sqlite_url, yes).await?;
         }
+        "archive" => {
+            let Some(action) = archive_action else {
+                return Err("db archive requires an action: status or export-now".into());
+            };
+            db_archive(action, &sqlite_url).await?;
+        }
         unknown => return Err(format!("unknown db command: {unknown}").into()),
     }
 
+    Ok(())
+}
+
+async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let (store, _) = connect_for_db_diagnostic(sqlite_url).await?;
+    let operation: Result<String, Box<dyn std::error::Error>> = async {
+        let user_version = store.user_version().await?;
+        if user_version < 1 {
+            return Err(Refused {
+                reason: format!(
+                    "user_version check observed {user_version}; the schema v1 migration has not run — stop every TinyTop writer and start the daemon once (it takes the pre-image first; see INSTALL.md)"
+                ),
+            }
+            .into());
+        }
+        let settings = store.get_settings().await?;
+        let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
+        match action {
+            "status" => {
+                let coverage = store.history_coverage(&settings).await?;
+                let manifest = read_archive_manifest(&paths).await?;
+                let (next_exportable_months, reason) = if !settings.retention_ladder.l4.enabled {
+                    (
+                        None,
+                        Some(
+                            "retentionLadder.l4.enabled is false; no L4 hours expire into the queryable archive — enable L4 with a finite retentionLadder.l4.keepDays"
+                                .to_string(),
+                        ),
+                    )
+                } else if settings.retention_ladder.l4.keep_days == 0 {
+                    (
+                        None,
+                        Some(
+                            "retentionLadder.l4.keepDays is 0 (forever); no L4 hours expire into the queryable archive — set a finite retentionLadder.l4.keepDays"
+                                .to_string(),
+                        ),
+                    )
+                } else {
+                    let months_present = archive_months_present(&paths).await?;
+                    (
+                        Some(exportable_months(
+                            &months_present,
+                            &settings.retention_ladder,
+                            coverage.archive.cold.exported_until_month.as_deref(),
+                            now_ms()?,
+                        )),
+                        None,
+                    )
+                };
+                Ok(serde_json::to_string_pretty(&DbStatus {
+                    status: "ok",
+                    value: ArchiveStatusOutput {
+                        queryable: coverage.archive.queryable,
+                        cold: ArchiveColdStatus {
+                            coverage: coverage.archive.cold,
+                            manifest,
+                            next_exportable_months,
+                            reason,
+                        },
+                    },
+                })?)
+            }
+            "export-now" => {
+                if !settings.retention_ladder.archive.cold {
+                    return Err(Refused {
+                        reason: "retentionLadder.archive.cold must be true for db archive export-now; observed false — enable retentionLadder.archive.cold and retry"
+                            .to_string(),
+                    }
+                    .into());
+                }
+                if !settings.retention_ladder.archive.queryable {
+                    return Err(Refused {
+                        reason: "retentionLadder.archive.queryable must be true for db archive export-now; observed false — enable retentionLadder.archive.queryable and retry"
+                            .to_string(),
+                    }
+                    .into());
+                }
+                let written = export_cold_months(
+                    &store,
+                    &paths,
+                    &settings.retention_ladder,
+                    now_ms()?,
+                )
+                .await?;
+                Ok(serde_json::to_string_pretty(&DbStatus {
+                    status: "ok",
+                    value: ArchiveExportOutput {
+                        action: "export-now",
+                        written,
+                    },
+                })?)
+            }
+            unknown => Err(format!("unknown db archive action: {unknown}").into()),
+        }
+    }
+    .await;
+    let close_result = store.close().await;
+    let output = operation?;
+    close_result?;
+    println!("{output}");
     Ok(())
 }
 
@@ -299,7 +458,17 @@ async fn db_pre_image(
     };
     let database_checks = if database_exists {
         let store = SqliteHistoryStore::connect_for_inspection(sqlite_url).await?;
-        Some((store.user_version().await?, store.integrity_check().await?))
+        let operation = async {
+            Ok::<_, tinytop_store::StoreError>((
+                store.user_version().await?,
+                store.integrity_check().await?,
+            ))
+        }
+        .await;
+        let close_result = store.close().await;
+        let checks = operation?;
+        close_result?;
+        Some(checks)
     } else {
         None
     };
@@ -552,8 +721,14 @@ async fn connect_for_db_diagnostic(
             true,
         ));
     }
-    create_sqlite_parent(sqlite_url)?;
-    Ok((SqliteHistoryStore::connect(sqlite_url).await?, false))
+    let database_path = database_path_from_url(sqlite_url)?;
+    Err(Refused {
+        reason: format!(
+            "database {} does not exist; nothing was created — check the path or start the daemon once",
+            database_path.display()
+        ),
+    }
+    .into())
 }
 
 fn create_sqlite_parent(sqlite_url: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -603,6 +778,8 @@ Usage:
   tinytop-agent db check|vacuum [--sqlite <database-url>]
   tinytop-agent db pre-image status [--sqlite <database-url>]
   tinytop-agent db pre-image remove [--yes] [--sqlite <database-url>]
+  tinytop-agent db archive status [--sqlite <database-url>]
+  tinytop-agent db archive export-now [--sqlite <database-url>]
   tinytop-agent serve [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>] [--public-dir <path>]
   tinytop-agent serve-writer [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>]
   tinytop-agent help
@@ -612,6 +789,7 @@ Examples:
   tinytop-agent collect --sqlite sqlite::memory:
   tinytop-agent db stats
   tinytop-agent db pre-image remove --yes
+  tinytop-agent db archive status
   tinytop-agent serve --host 127.0.0.1 --port 4274
   tinytop-agent serve-writer --host 127.0.0.1 --port 4276
 "#
