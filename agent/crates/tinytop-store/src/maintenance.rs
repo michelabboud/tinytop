@@ -17,6 +17,7 @@ pub struct LadderConfig {
     pub l4: Option<i64>,
     pub snapshot_json_keep_ms: i64,
     pub detail_interval_ms: i64,
+    pub process_fast_keep_ms: i64,
     pub poll_interval_ms: i64,
 }
 

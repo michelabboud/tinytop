@@ -264,6 +264,82 @@ async fn dry_run_reports_changed_keys_and_would_delete() {
 }
 
 #[tokio::test]
+async fn import_plan_counts_fast_process_rows_for_a_shrinking_horizon() {
+    // Break caught: shortening the fast-process horizon omits rows from the
+    // dry-run, lengthening it invents deletions, or a 0.5.x document no longer
+    // receives the 24-hour default cleanly.
+    let fixture = TempDatabase::new("fast-process-horizon");
+    let store = fixture.store().await;
+    let pool = fixture.pool().await;
+    let now_ms = 2_000 * DAY_MS;
+    sqlx::query("INSERT INTO process_commands (command) VALUES ('fixture-command')")
+        .execute(&pool)
+        .await
+        .expect("command fixture should insert");
+    let command_id: i64 = sqlx::query_scalar(
+        "SELECT command_id FROM process_commands WHERE command = 'fixture-command'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("command id should read");
+    sqlx::query(
+        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) VALUES (?, 1, 1, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
+    )
+    .bind(now_ms - 2 * 60 * MINUTE_MS)
+    .bind(command_id)
+    .execute(&pool)
+    .await
+    .expect("fast process fixture should insert");
+
+    let mut shrinking = DashboardSettings::default();
+    shrinking.retention_ladder.process_fast_keep_hours = 1;
+    let shrink_plan = plan_import(&store, &document(&shrinking), now_ms)
+        .await
+        .expect("shrinking plan should compute");
+    assert_eq!(shrink_plan.would_delete.process_fast_rows, 1);
+
+    store
+        .put_settings(&shrinking)
+        .await
+        .expect("short horizon should save");
+    let growing = DashboardSettings::default();
+    let growth_plan = plan_import(&store, &document(&growing), now_ms)
+        .await
+        .expect("growing plan should compute");
+    assert_eq!(growth_plan.would_delete.process_fast_rows, 0);
+
+    let mut legacy_settings = serde_json::to_value(DashboardSettings::default())
+        .expect("legacy settings should serialize");
+    legacy_settings["retentionLadder"]
+        .as_object_mut()
+        .expect("retention ladder should be an object")
+        .remove("processFastKeepHours");
+    let legacy_plan = plan_import(
+        &store,
+        &json!({"tinytopConfigVersion": 1, "settings": legacy_settings}),
+        now_ms,
+    )
+    .await
+    .expect("0.5.x document should plan");
+    assert!(legacy_plan.valid);
+    assert_eq!(
+        legacy_plan
+            .candidate
+            .expect("valid legacy plan should carry a candidate")
+            .retention_ladder
+            .process_fast_keep_hours,
+        24
+    );
+    assert!(
+        legacy_plan
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("processFastKeepHours"))
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn dry_run_honors_exact_prune_predicate_boundaries() {
     // Break caught: count previews drift from `<` for raw/JSON or `<=` for rollup ends.
     let fixture = TempDatabase::new("predicate-boundaries");

@@ -113,6 +113,7 @@ function ladder() {
     l4: { enabled: true, keepDays: 730 },
     snapshotJsonKeepMinutes: 60,
     detailIntervalSec: 60,
+    processFastKeepHours: 24,
     archive: {
       queryable: false,
       cold: false,
@@ -368,6 +369,20 @@ describe("retention ladder validation mirror", () => {
       message: "retentionLadder.detailIntervalSec must be between 15 and 3600; observed 14",
     },
     {
+      name: "fast process history range",
+      mutate: (candidate) => {
+        candidate.processFastKeepHours = 0;
+      },
+      message: "retentionLadder.processFastKeepHours must be between 1 and 72; observed 0",
+    },
+    {
+      name: "fast process history upper range",
+      mutate: (candidate) => {
+        candidate.processFastKeepHours = 73;
+      },
+      message: "retentionLadder.processFastKeepHours must be between 1 and 72; observed 73",
+    },
+    {
       name: "cold-after range",
       mutate: (candidate) => {
         candidate.archive.coldAfterMonths = 0;
@@ -438,6 +453,14 @@ describe("retention ladder validation mirror", () => {
       expect(validateRetentionLadder(candidate, null, null)).toEqual([invalidCase.message]);
     });
   }
+
+  test("accepts the fast process history boundaries and default", () => {
+    for (const processFastKeepHours of [1, 24, 72]) {
+      const candidate = ladder();
+      candidate.processFastKeepHours = processFastKeepHours;
+      expect(validateRetentionLadder(candidate, null, null)).toEqual([]);
+    }
+  });
 
   test("refuses growth when the coverage pressure field is true", () => {
     const previous = ladder();
@@ -832,6 +855,7 @@ describe("settings transfer plan description", () => {
             l3Buckets: 7,
             l4Buckets: 8,
             snapshotJsonRows: 90,
+            processFastRows: 3,
           },
           changedKeys: ["retentionLadder", "pollIntervalMs"],
           warnings: ["settings.bogus: unknown key ignored"],
@@ -845,6 +869,7 @@ describe("settings transfer plan description", () => {
       "7 L3 buckets",
       "8 L4 buckets (moved to the queryable archive)",
       "90 snapshot JSON blobs stripped",
+      "3 fast process rows deleted",
       "also changes: pollIntervalMs",
       "settings.bogus: unknown key ignored",
     ]);

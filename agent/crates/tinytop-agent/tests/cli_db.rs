@@ -252,6 +252,25 @@ fn db_stats_json_reports_the_ladder() {
 }
 
 #[tokio::test]
+async fn db_stats_json_reports_user_version_2() {
+    // Break caught: schema migration succeeds but operators cannot observe the
+    // active SQLite schema version through the JSON stats contract.
+    let fixture = TempDatabase::new("stats-user-version-v2");
+    SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fresh database should initialize")
+        .close()
+        .await
+        .expect("fresh database should close");
+
+    let output = fixture.run(&["db", "stats", "--json"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(json["value"]["userVersion"], 2);
+}
+
+#[tokio::test]
 async fn db_stats_reports_otel_presence_only() {
     // Break caught: db stats omits OTel configuration or leaks the configured header value.
     let fixture = TempDatabase::new("stats-otel-presence");

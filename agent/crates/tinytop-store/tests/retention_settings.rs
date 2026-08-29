@@ -24,6 +24,7 @@ fn valid_ladder() -> Value {
         "l4": { "enabled": true, "keepDays": 730 },
         "snapshotJsonKeepMinutes": 60,
         "detailIntervalSec": 60,
+        "processFastKeepHours": 24,
         "archive": {
             "queryable": false,
             "cold": false,
@@ -133,6 +134,16 @@ fn invalid_cases() -> Vec<InvalidCase> {
             expected: "retentionLadder.detailIntervalSec must be between 15 and 3600; observed 3601",
         },
         InvalidCase {
+            name: "fast process history below minimum",
+            ladder: with_field(&["processFastKeepHours"], json!(0)),
+            expected: "retentionLadder.processFastKeepHours must be between 1 and 72; observed 0",
+        },
+        InvalidCase {
+            name: "fast process history above maximum",
+            ladder: with_field(&["processFastKeepHours"], json!(73)),
+            expected: "retentionLadder.processFastKeepHours must be between 1 and 72; observed 73",
+        },
+        InvalidCase {
             name: "cold-after below minimum",
             ladder: with_field(&["archive", "coldAfterMonths"], json!(0)),
             expected: "retentionLadder.archive.coldAfterMonths must be between 1 and 120; observed 0",
@@ -217,6 +228,7 @@ fn retention_ladder_accepts_boundaries_and_forever() {
     ladder.l4.keep_days = 0;
     ladder.snapshot_json_keep_minutes = 60;
     ladder.detail_interval_sec = 15;
+    ladder.process_fast_keep_hours = 1;
     ladder.archive.cold_after_months = 1;
     ladder.disk_check.interval_minutes = 5;
     ladder.disk_check.min_free_bytes = 256 * 1024 * 1024;
@@ -224,6 +236,11 @@ fn retention_ladder_accepts_boundaries_and_forever() {
     ladder
         .validate(None, None)
         .expect("documented lower bounds and L4 forever should be valid");
+
+    ladder.process_fast_keep_hours = 72;
+    ladder
+        .validate(None, None)
+        .expect("documented fast-process upper bound should be valid");
 }
 
 #[test]

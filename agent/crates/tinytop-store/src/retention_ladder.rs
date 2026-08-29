@@ -26,6 +26,9 @@ pub struct RetentionLadder {
     /// between checks. Until the typed-history tasks land, this is also the
     /// cadence of typed filesystem/process detail rows. Valid range: 15..=3600.
     pub detail_interval_sec: i64,
+    /// Hours of per-tick process rows (`process_samples_fast`) kept; older
+    /// windows fall back to minute rows (`process_samples`) through the L2 horizon.
+    pub process_fast_keep_hours: i64,
     pub archive: ArchiveSettings,
     pub disk_check: DiskCheckSettings,
 }
@@ -77,6 +80,7 @@ impl Default for RetentionLadder {
             l4: default_l4(),
             snapshot_json_keep_minutes: 60,
             detail_interval_sec: 60,
+            process_fast_keep_hours: 24,
             archive: ArchiveSettings::default(),
             disk_check: DiskCheckSettings::default(),
         }
@@ -228,6 +232,12 @@ impl RetentionLadder {
             3_600,
         )?;
         validate_range(
+            "retentionLadder.processFastKeepHours",
+            self.process_fast_keep_hours,
+            1,
+            72,
+        )?;
+        validate_range(
             "retentionLadder.archive.coldAfterMonths",
             self.archive.cold_after_months,
             1,
@@ -324,6 +334,7 @@ impl RetentionLadder {
                 .then(|| self.l4.keep_days.saturating_mul(DAY_MS)),
             snapshot_json_keep_ms: self.snapshot_json_keep_minutes.saturating_mul(MINUTE_MS),
             detail_interval_ms: self.detail_interval_sec.saturating_mul(1_000),
+            process_fast_keep_ms: self.process_fast_keep_hours.saturating_mul(3_600_000),
             poll_interval_ms,
         }
     }
@@ -346,6 +357,7 @@ impl RetentionLadder {
                 true,
             )
             || self.snapshot_json_keep_minutes > previous.snapshot_json_keep_minutes
+            || self.process_fast_keep_hours > previous.process_fast_keep_hours
             || (self.archive.queryable && !previous.archive.queryable)
             || (self.archive.cold && !previous.archive.cold)
     }

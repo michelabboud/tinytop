@@ -67,6 +67,7 @@ fn config() -> LadderConfig {
         l4: Some(730 * DAY_MS),
         snapshot_json_keep_ms: 365 * DAY_MS,
         detail_interval_ms: MINUTE_MS,
+        process_fast_keep_ms: DAY_MS,
         poll_interval_ms: 1_500,
     }
 }
@@ -997,6 +998,31 @@ async fn detail_rows_written_at_detail_interval() {
     assert_eq!(newest_fs_percent, 77.0);
     assert_eq!(newest_process_cpu, 88.0);
     pool.close().await;
+}
+
+#[tokio::test]
+async fn maintenance_reports_fast_and_detail_prunes() {
+    // Break caught: maintenance logs process-detail deletion counts without
+    // reporting them, conflates deleted detail rows with rows written, or
+    // leaves the command dictionary orphaned after both process tiers prune.
+    let fixture = TempDatabase::new("reported-process-prunes");
+    let store = fixture.store().await;
+    store
+        .insert_snapshot(0, &snapshot(0, 10.0))
+        .await
+        .expect("aged snapshot should insert");
+    let mut settings = config();
+    settings.l2_keep_ms = 10;
+    settings.process_fast_keep_ms = 10;
+
+    let report = maintain_with_config(&store, &settings, 1_000)
+        .await
+        .expect("maintenance should report process prunes");
+
+    assert_eq!(report.detail_rows, 2);
+    assert_eq!(report.detail_rows_pruned, 2);
+    assert_eq!(report.process_fast_rows, 1);
+    assert_eq!(report.orphan_commands, 1);
 }
 
 #[tokio::test]
