@@ -39,6 +39,17 @@ pub enum RuntimeConfidence {
     Low,
 }
 
+impl RuntimeConfidence {
+    /// Canonical string form matching this type's serde representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDetection {
@@ -109,12 +120,13 @@ pub struct LoadSnapshot {
     pub one: f64,
     pub five: f64,
     pub fifteen: f64,
-    pub runnable: u64,
-    /// Kernel task total on Linux (`/proc/loadavg`); process count on the
-    /// sysinfo-based macOS/Windows collectors, where no thread total exists.
-    /// Schema v3 makes this optional.
-    pub total_threads: u64,
-    pub last_pid: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runnable: Option<u64>,
+    /// Kernel task total from Linux `/proc/loadavg`, when that source exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_threads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pid: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

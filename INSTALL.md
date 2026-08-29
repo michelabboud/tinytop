@@ -254,7 +254,8 @@ History retention:
 
 - The Rust daemon promotes and prunes history through `retentionLadder`: L1 raw, L2 one-minute, optional L3 five-minute, and optional L4 hourly horizons.
 - `retentionHours` and `rollupRetentionDays` remain in `/api/settings` only as derived compatibility mirrors of L1 and L2.
-- Full snapshot JSON follows `retentionLadder.snapshotJsonKeepMinutes`; older L1 rows retain compact typed metrics, and typed filesystem/process detail follows `detailIntervalSec` through the L2 horizon.
+- Schema v3 assembles raw history snapshots from typed rows; filesystem detail is stored on change after each `detailIntervalSec` check, and typed process detail follows its configured horizon.
+- From schema v3, the Rust daemon and legacy Bun runtime must not share a database path: Bun expects the legacy payload column that v3 removes, and the Rust daemon does not refuse on Bun's behalf.
 - The Rust daemon stores `targetDatabaseBytes` in `/api/settings` and reports current database budget usage through `/api/history/coverage`.
 - The dashboard's recent history window limits what it reads and renders; the retention settings control database pruning.
 - Legacy Bun split mode keeps raw samples until you manually archive or reset the database.

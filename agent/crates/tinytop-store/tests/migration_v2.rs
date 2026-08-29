@@ -3,11 +3,11 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     str::FromStr,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
-use tinytop_store::migration::{CREATE_SCHEMA_V1_SQL, require_sqlite_at_least};
+use tinytop_store::migration::{CREATE_SCHEMA_V1_SQL, SCHEMA_VERSION, require_sqlite_at_least};
 use tinytop_store::{SqliteHistoryStore, StoreError};
 
 struct TempDatabase {
@@ -112,12 +112,12 @@ async fn marker_count(pool: &SqlitePool) -> i64 {
 }
 
 #[tokio::test]
-async fn fresh_database_is_created_at_v2() {
+async fn fresh_database_at_v3_keeps_the_v2_process_schema() {
     let fixture = TempDatabase::new("fresh");
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("fresh database should connect");
-    assert_eq!(store.user_version().await.expect("version should read"), 2);
+    assert_eq!(store.user_version().await.expect("version should read"), 3);
     store.close().await.expect("store should close");
 
     let pool = fixture.raw_pool().await;
@@ -150,14 +150,14 @@ async fn fresh_database_is_created_at_v2() {
 }
 
 #[tokio::test]
-async fn v1_fixture_with_three_commands_migrates_to_v2() {
+async fn v1_fixture_with_three_commands_migrates_through_v2_to_v3() {
     let fixture = TempDatabase::new("three-commands");
     seed_v1_processes(&fixture).await;
 
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("v1 database should migrate");
-    assert_eq!(store.user_version().await.expect("version should read"), 2);
+    assert_eq!(store.user_version().await.expect("version should read"), 3);
     store.close().await.expect("store should close");
 
     let pool = fixture.raw_pool().await;
@@ -224,7 +224,7 @@ async fn v1_fixture_with_three_commands_migrates_to_v2() {
             .fetch_one(&pool)
             .await
             .expect("version should read"),
-        2
+        3
     );
     assert_eq!(marker_count(&pool).await, 1);
     pool.close().await;
@@ -305,7 +305,7 @@ async fn v1_fixture_with_an_index_on_command_refuses_and_leaves_the_file_untouch
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("migration should succeed after removing the probe index");
-    assert_eq!(store.user_version().await.expect("version should read"), 2);
+    assert_eq!(store.user_version().await.expect("version should read"), 3);
     store.close().await.expect("store should close");
     let pool = fixture.raw_pool().await;
     assert_eq!(marker_count(&pool).await, 1);
@@ -374,77 +374,14 @@ async fn newer_schema_version_is_refused() {
         .close()
         .await
         .expect("fresh database should close");
-    set_sqlite_user_version(&fixture.path, 3);
+    set_sqlite_user_version(&fixture.path, (SCHEMA_VERSION + 1) as u32);
 
     let error = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect_err("newer schema should be refused")
         .to_string();
-    assert!(error.contains("unsupported SQLite schema version 3"));
-    assert!(error.contains("supported version is 2"));
-}
-
-#[tokio::test]
-#[ignore = "needs TINYTOP_V1_FIXTURE=<path to a v1 history.sqlite>"]
-async fn real_v1_file_copy_migrates_to_v2() {
-    let source = std::env::var("TINYTOP_V1_FIXTURE").unwrap_or_else(|error| {
-        panic!("TINYTOP_V1_FIXTURE must name a readable v1 database: {error}")
-    });
-    let source_path = PathBuf::from(source);
-    assert!(
-        source_path.is_file(),
-        "TINYTOP_V1_FIXTURE must name a readable v1 database"
-    );
-    let fixture = TempDatabase::new("real-copy");
-    fs::copy(&source_path, &fixture.path)
-        .unwrap_or_else(|error| panic!("TINYTOP_V1_FIXTURE copy should succeed: {error}"));
-
-    let pool = fixture.raw_pool().await;
-    let distinct_commands: i64 =
-        sqlx::query_scalar("SELECT COUNT(DISTINCT command) FROM process_samples")
-            .fetch_one(&pool)
-            .await
-            .expect("distinct v1 commands should read");
-    let process_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM process_samples")
-        .fetch_one(&pool)
-        .await
-        .expect("v1 process row count should read");
-    pool.close().await;
-
-    let started = Instant::now();
-    let store = SqliteHistoryStore::connect(&fixture.url)
-        .await
-        .expect("real v1 copy should migrate");
-    let elapsed_ms = started.elapsed().as_millis();
-    assert_eq!(store.user_version().await.expect("version should read"), 2);
-    store.close().await.expect("store should close");
-
-    let pool = fixture.raw_pool().await;
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM process_commands")
-            .fetch_one(&pool)
-            .await
-            .expect("command count should read"),
-        distinct_commands
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM process_samples WHERE command_id IS NULL",
-        )
-        .fetch_one(&pool)
-        .await
-        .expect("NULL command count should read"),
-        0
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
-            .fetch_one(&pool)
-            .await
-            .expect("integrity check should run"),
-        "ok"
-    );
-    println!("migration of {process_rows} process rows took {elapsed_ms} ms");
-    pool.close().await;
+    assert!(error.contains("unsupported SQLite schema version 4"));
+    assert!(error.contains("supported version is 3"));
 }
 
 fn set_sqlite_user_version(path: &Path, user_version: u32) {

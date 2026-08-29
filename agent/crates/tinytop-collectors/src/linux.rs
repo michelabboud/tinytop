@@ -421,12 +421,15 @@ pub fn parse_loadavg(text: &str) -> CollectorResult<LoadSnapshot> {
         one: parse_f64(parts[0], "load one")?,
         five: parse_f64(parts[1], "load five")?,
         fifteen: parse_f64(parts[2], "load fifteen")?,
-        runnable: parse_u64(thread_counts.first().copied().unwrap_or("0"), "runnable")?,
-        total_threads: parse_u64(
+        runnable: Some(parse_u64(
+            thread_counts.first().copied().unwrap_or("0"),
+            "runnable",
+        )?),
+        total_threads: Some(parse_u64(
             thread_counts.get(1).copied().unwrap_or("0"),
             "total threads",
-        )?,
-        last_pid: parse_u64(parts[4], "last pid")?,
+        )?),
+        last_pid: Some(parse_u64(parts[4], "last pid")?),
     })
 }
 

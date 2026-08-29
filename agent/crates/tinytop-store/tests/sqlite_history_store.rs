@@ -70,9 +70,9 @@ fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
             one: 1.0,
             five: 2.0,
             fifteen: 3.0,
-            runnable: 1,
-            total_threads: 2,
-            last_pid: 3,
+            runnable: Some(1),
+            total_threads: Some(2),
+            last_pid: Some(3),
         },
         pressure: PressureGroup {
             cpu: PressureSnapshot::default(),
@@ -118,7 +118,15 @@ async fn sqlite_store_inserts_latest_and_reads_history_oldest_first() {
         .await
         .expect("insert second");
 
-    let latest = store.latest_snapshot().await.expect("latest").expect("row");
+    let latest = store
+        .read_history(HistoryQuery {
+            limit: Some(1),
+            ..HistoryQuery::default()
+        })
+        .await
+        .expect("latest")
+        .pop()
+        .expect("row");
     assert_eq!(latest.captured_at_ms, 2_000);
     assert_eq!(latest.snapshot.cpu.usage_percent, 20.0);
 
@@ -554,7 +562,15 @@ async fn insert_snapshot_persists_canonical_runtime_kind() {
 
     // The store must persist the serde/JSON contract spelling, not the Rust
     // Debug spelling (M4): "WSL"/"macOS", never "Wsl"/"MacOs".
-    let latest = store.latest_snapshot().await.expect("latest").expect("row");
+    let latest = store
+        .read_history(HistoryQuery {
+            limit: Some(1),
+            ..HistoryQuery::default()
+        })
+        .await
+        .expect("latest")
+        .pop()
+        .expect("row");
     assert_eq!(latest.snapshot.identity.runtime.kind, RuntimeKind::MacOs);
 }
 

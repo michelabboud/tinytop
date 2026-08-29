@@ -183,9 +183,7 @@ Response shape:
 }
 ```
 
-`runnable` is `0` and `totalThreads` is the process count on the macOS/Windows collectors (sysinfo has no thread totals); Linux reports the `/proc/loadavg` task totals.
-
-The example above is shortened. `filesystemsCapturedAtMs` is Unix time in milliseconds and can be older than `timestamp` between filesystem checks. `cpu.times` is optional: it is present on the Linux collector and absent on the sysinfo-based macOS/Windows collectors. Filesystem rows and pressure data are included when present, and `processes.length` is at most the configured `topProcessCount`.
+The example above is shortened. `filesystemsCapturedAtMs` is Unix time in milliseconds and can be older than `timestamp` between filesystem checks. `cpu.times` is optional: it is present on the Linux collector and absent on the sysinfo-based macOS/Windows collectors. Filesystem rows and pressure data are included when present, `load.runnable`, `load.totalThreads`, and `load.lastPid` are omitted when their collector has no source, and `processes.length` is at most the configured `topProcessCount`.
 
 ### GET /api/settings
 
@@ -215,7 +213,6 @@ Response:
     "l2": { "keepDays": 30 },
     "l3": { "enabled": true, "keepDays": 90 },
     "l4": { "enabled": true, "keepDays": 730 },
-    "snapshotJsonKeepMinutes": 60,
     "detailIntervalSec": 60,
     "processFastKeepHours": 24
   },
@@ -264,7 +261,7 @@ The Settings dialog separates browser-local choices from daemon defaults:
 
 ### GET /api/history
 
-Returns persisted recent history from the Rust daemon or legacy Bun collector process. The query parameters bound the read result only; they do not prune SQLite history.
+Returns persisted recent history. The Rust daemon assembles each snapshot from typed tables; the legacy Bun collector remains a separate legacy runtime. The query parameters bound the read result only; they do not prune SQLite history.
 
 The dashboard timeline uses explicit `since_ms` and `until_ms` bounds for its Live, 15m, and 1h raw-snapshot presets. The 6h, 24h, 7d, 30d, 90d, 1y, and All presets use one `/api/history/points?source=auto&limit=10000` request so the server selects the finest retained tier that fits the complete range.
 
@@ -300,7 +297,7 @@ Response:
 
 Samples are returned oldest first.
 
-Retention note: The API default window is 300 seconds when no explicit window is supplied. In Rust, `/api/history` returns only rows whose `snapshot_json` remains within `retentionLadder.snapshotJsonKeepMinutes`; L1 typed rows follow the ladder horizon, and `retentionHours` is only the derived L1 compatibility mirror. The legacy Bun split path keeps raw SQLite rows until manual archive/reset.
+Retention note: The API default window is 300 seconds when no explicit window is supplied. In Rust, `/api/history` is assembled from typed tables and returns assembleable L1 rows through the ladder horizon; `retentionHours` is only the derived L1 compatibility mirror. History snapshots omit `cpu.times` and every `pressure.*.{some,full}` line. `load.runnable`, `load.totalThreads`, and `load.lastPid` are absent keys—not `null`—when the collector has no source. The legacy Bun split path keeps raw SQLite rows until manual archive/reset.
 
 ### GET /api/history/points
 
@@ -348,7 +345,7 @@ Response:
 
 ### GET /api/history/filesystems
 
-Rust daemon endpoint for typed filesystem history. It accepts inclusive `sinceMs` / `untilMs`, optional exact `mount`, and `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "filesystems": [...] }`, with each row containing `capturedAtMs`, `mount`, `filesystem`, `type`, byte/usage fields, and nullable inode fields.
+Rust daemon endpoint for typed filesystem history. Since schema v3, it returns the rows stored on change rather than one row per enumeration; `/api/history` separately uses those rows and mount-presence events to assemble each snapshot. It accepts inclusive `sinceMs` / `untilMs`, optional exact `mount`, and `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "filesystems": [...] }`, with each row containing `capturedAtMs`, `mount`, `filesystem`, `type`, byte/usage fields, and nullable inode fields.
 
 ### GET /api/history/processes
 
@@ -447,7 +444,6 @@ Response:
     { "tier": "l3", "enabled": true, "keepDays": 90, "resolutionMs": 300000, "bucketCount": 12, "oldestMs": 1782292546568, "newestMs": 1782296146568 },
     { "tier": "l4", "enabled": true, "keepDays": 730, "resolutionMs": 3600000, "bucketCount": 1, "oldestMs": 1782292546568, "newestMs": 1782296146568 }
   ],
-  "snapshotJsonOldestMs": 1782292546568,
   "detailIntervalSec": 60,
   "disk": { "freeBytes": null, "minFreeBytes": 5368709120, "pressure": false, "lastCheckMs": null },
   "archive": {

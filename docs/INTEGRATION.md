@@ -177,9 +177,9 @@ Stable metric fields:
 | `load.one` | number |
 | `load.five` | number |
 | `load.fifteen` | number |
-| `load.runnable` | number |
-| `load.totalThreads` | number |
-| `load.lastPid` | number |
+| `load.runnable` | number, optional when unavailable |
+| `load.totalThreads` | number, optional when unavailable |
+| `load.lastPid` | number, optional when unavailable |
 
 Stable filesystem item fields:
 
