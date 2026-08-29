@@ -925,16 +925,28 @@ async fn migrate_v2_to_v3(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
         reason: "schema v3 JSON row count exceeds SQLite INTEGER capacity".to_string(),
         remedy: "inspect the database with `db check`; the database was not modified".to_string(),
     })?;
+    let mut legacy_inode_rows_normalised = 0_i64;
 
     for (sample_id, captured_at_ms, snapshot_json) in json_rows {
-        let snapshot: SystemSnapshot =
-            serde_json::from_str(&snapshot_json).map_err(|error| StoreError::Migration {
+        let mut value = serde_json::from_str::<serde_json::Value>(&snapshot_json).map_err(
+            |error| StoreError::Migration {
                 reason: format!(
                     "metric_samples row {sample_id} holds snapshot JSON that does not decode: {error}"
                 ),
-                remedy: "the row was written by an unknown writer; inspect it with `db check`; the database was not modified"
-                    .to_string(),
-            })?;
+                remedy: "a row this version cannot decode — back up the database, then clear that row's payload (UPDATE metric_samples SET snapshot_json = NULL WHERE sample_id = <n>; see INSTALL.md, Upgrade) and start again; the database was not modified".to_string(),
+            },
+        )?;
+        if normalise_legacy_snapshot(&mut value) > 0 {
+            legacy_inode_rows_normalised += 1;
+        }
+        let snapshot = serde_json::from_value::<SystemSnapshot>(value).map_err(|error| {
+            StoreError::Migration {
+                reason: format!(
+                    "metric_samples row {sample_id} holds snapshot JSON that does not decode: {error}"
+                ),
+                remedy: "a row this version cannot decode — back up the database, then clear that row's payload (UPDATE metric_samples SET snapshot_json = NULL WHERE sample_id = <n>; see INSTALL.md, Upgrade) and start again; the database was not modified".to_string(),
+            }
+        })?;
         let identity = &snapshot.identity;
         let runtime = &identity.runtime;
         sqlx::query(
@@ -1097,6 +1109,7 @@ async fn migrate_v2_to_v3(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
         "toVersion": 3,
         "sampleRows": sample_rows,
         "jsonRowsDecoded": json_rows_decoded,
+        "legacyInodeRowsNormalised": legacy_inode_rows_normalised,
         "identitiesInterned": identities_interned,
         "eventsWritten": events_written,
         "durationMs": duration_ms,
@@ -1117,9 +1130,37 @@ async fn migrate_v2_to_v3(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
     transaction.commit().await?;
 
     eprintln!(
-        "history migration info: schema v2 → v3 in {duration_ms} ms ({json_rows_decoded} JSON rows decoded, {identities_interned} identities interned, {events_written} filesystem events written over {sample_rows} metric rows)"
+        "history migration info: schema v2 → v3 in {duration_ms} ms ({json_rows_decoded} JSON rows decoded, {identities_interned} identities interned, {events_written} filesystem events written over {sample_rows} metric rows, {legacy_inode_rows_normalised} rows with legacy negative inode counts normalised)"
     );
     Ok(())
+}
+
+/// Normalises negative inode counts emitted by the legacy Bun collector when
+/// its unclamped `inodeTotal - inodeFree` subtraction observed more free inodes
+/// than total inodes. The return value counts fields changed, not rows.
+fn normalise_legacy_snapshot(value: &mut serde_json::Value) -> u32 {
+    let Some(filesystems) = value
+        .get_mut("filesystems")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return 0;
+    };
+    let mut fields_changed = 0_u32;
+    for filesystem in filesystems {
+        let Some(filesystem) = filesystem.as_object_mut() else {
+            continue;
+        };
+        for field in ["inodeUsed", "inodeTotal"] {
+            let Some(field_value) = filesystem.get_mut(field) else {
+                continue;
+            };
+            if field_value.as_i64().is_some_and(|value| value < 0) {
+                *field_value = serde_json::Value::Null;
+                fields_changed += 1;
+            }
+        }
+    }
+    fields_changed
 }
 
 fn migration_u64_to_i64(
@@ -1574,6 +1615,79 @@ fn database_bytes_with_wal(canonical_db_path: &Path) -> Result<u64, StoreError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalise_legacy_snapshot_nulls_negative_inode_fields_and_counts_fields() {
+        let mut only_inode_used = serde_json::json!({
+            "filesystems": [{ "inodeUsed": -999001, "inodeTotal": 999 }],
+        });
+        assert_eq!(normalise_legacy_snapshot(&mut only_inode_used), 1);
+        assert_eq!(
+            only_inode_used["filesystems"][0]["inodeUsed"],
+            JsonValue::Null
+        );
+        assert_eq!(only_inode_used["filesystems"][0]["inodeTotal"], 999);
+
+        let mut both = serde_json::json!({
+            "filesystems": [{ "inodeUsed": -1, "inodeTotal": -2 }],
+        });
+        assert_eq!(normalise_legacy_snapshot(&mut both), 2);
+        assert_eq!(both["filesystems"][0]["inodeUsed"], JsonValue::Null);
+        assert_eq!(both["filesystems"][0]["inodeTotal"], JsonValue::Null);
+    }
+
+    #[test]
+    fn normalise_legacy_snapshot_leaves_other_inode_values_byte_identical() {
+        let mut value = serde_json::json!({
+            "filesystems": [
+                { "inodeUsed": 0, "inodeTotal": 1 },
+                { "inodeUsed": null, "inodeTotal": null },
+                { "inodeUsed": -1.5, "inodeTotal": -2.5 },
+                { "inodeUsed": "x", "inodeTotal": "x" },
+                { "inodeUsed": true, "inodeTotal": true },
+                { "inodeTotal": 999 },
+                { "inodeUsed": 999 }
+            ],
+        });
+        let before = serde_json::to_vec(&value).expect("fixture JSON should serialize");
+
+        assert_eq!(normalise_legacy_snapshot(&mut value), 0);
+        assert_eq!(
+            serde_json::to_vec(&value).expect("normalised JSON should serialize"),
+            before
+        );
+    }
+
+    #[test]
+    fn normalise_legacy_snapshot_leaves_other_filesystem_shapes_byte_identical() {
+        for mut value in [
+            serde_json::json!({ "identity": {} }),
+            serde_json::json!({ "filesystems": null }),
+            serde_json::json!({ "filesystems": { "inodeUsed": -1 } }),
+            serde_json::json!({ "filesystems": [null, 1, "x", true, []] }),
+        ] {
+            let before = serde_json::to_vec(&value).expect("fixture JSON should serialize");
+            assert_eq!(normalise_legacy_snapshot(&mut value), 0);
+            assert_eq!(
+                serde_json::to_vec(&value).expect("normalised JSON should serialize"),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_legacy_snapshot_counts_fields_across_filesystems() {
+        let mut value = serde_json::json!({
+            "filesystems": [
+                { "mount": "/a", "inodeUsed": -1, "inodeTotal": 10 },
+                { "mount": "/b", "inodeUsed": 10, "inodeTotal": -1 }
+            ],
+        });
+
+        assert_eq!(normalise_legacy_snapshot(&mut value), 2);
+        assert_eq!(value["filesystems"][0]["inodeUsed"], JsonValue::Null);
+        assert_eq!(value["filesystems"][1]["inodeTotal"], JsonValue::Null);
+    }
 
     #[tokio::test]
     async fn schema_group_failure_rolls_back_fresh_schema() {

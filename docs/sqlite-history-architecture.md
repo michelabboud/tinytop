@@ -375,6 +375,16 @@ from a neighbouring row. The transaction also creates `host_identity` and
 `fs_mount_events`, backfills mount presence events from existing detail rows,
 writes exactly one `schemaMigrated` marker, and sets `user_version = 3`.
 
+Before strict snapshot decoding, the v3 migration normalises only negative
+`inodeUsed` and `inodeTotal` fields to absent values. The legacy Bun writer could
+produce those impossible counts through an unclamped `inodeTotal - inodeFree`
+subtraction on filesystems where `f_ffree > f_files`; the backfill stores neither
+inode field, so this loses and invents no typed history. The audit records
+`legacyInodeRowsNormalised`, and the `history migration info` line reports the
+same affected-row count. The decode guard remains fail-closed for every other
+unknown field shape or value, leaving the database untouched for operator
+recovery.
+
 The migration guard refuses an in-progress v3 migration rather than allowing a
 second writer to rebuild the same table. Any failure rolls the transaction back.
 The v0 path still performs its existing pre-image/VACUUM migration first and

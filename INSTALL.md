@@ -338,6 +338,16 @@ If the first start fails after the pre-image was written but before the schema t
 
 A crash after the post-migration `VACUUM` but before the audit transaction commits leaves schema v1 with an incomplete audit. The next start runs `VACUUM` once more; this is safe but can cost several minutes on a large database.
 
+**Refused schema migration.** `holds snapshot JSON that does not decode` means
+that a retained history payload cannot be decoded by this version. The database
+is untouched and the daemon exits with status 1. Payloads written by the legacy
+Bun collector with negative inode counts are normalised automatically since
+0.5.3; affected-row counts appear in the `history migration info` line and the
+migration audit. For any payload that remains undecodable, back up the database,
+then clear that row's payload (`UPDATE metric_samples SET snapshot_json = NULL
+WHERE sample_id = <n>;`) and start again; that row keeps its scalar history and
+becomes non-assembleable.
+
 ```bash
 tinytop-agent db pre-image status
 tinytop-agent db pre-image remove --yes

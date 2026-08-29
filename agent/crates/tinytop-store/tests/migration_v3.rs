@@ -70,17 +70,17 @@ async fn v2_fixture_with_json_rows_migrates_to_v3() {
         (
             11_i64,
             1_000_i64,
-            legacy_snapshot("kernel-a", 101, 601, 701, Some(801), Some(901)),
+            legacy_snapshot("kernel-a", 101, 601, 701, Some(801), Some(901), json!([])),
         ),
         (
             12,
             2_000,
-            legacy_snapshot("kernel-a", 102, 602, 702, None, None),
+            legacy_snapshot("kernel-a", 102, 602, 702, None, None, json!([])),
         ),
         (
             13,
             3_000,
-            legacy_snapshot("kernel-b", 103, 603, 703, Some(803), Some(903)),
+            legacy_snapshot("kernel-b", 103, 603, 703, Some(803), Some(903), json!([])),
         ),
         (14, 4_000, None),
         (15, 5_000, None),
@@ -331,6 +331,115 @@ async fn fresh_database_is_created_at_v3() {
 }
 
 #[tokio::test]
+async fn v2_fixture_with_legacy_negative_inode_counts_migrates_and_counts() {
+    // Break caught: the v3 migration decodes a legacy Bun filesystem payload
+    // directly into the strict Rust type and refuses the whole database when
+    // inodeTotal - inodeFree produced a negative inodeUsed value.
+    let fixture = TempDatabase::new("legacy-negative-inodes");
+    let pool = seed_v2_schema(&fixture).await;
+    let filesystem_with_negative_inodes = json!([{
+        "filesystem": "drivers",
+        "type": "9p",
+        "sizeBytes": 1,
+        "usedBytes": 1,
+        "availableBytes": 0,
+        "usedPercent": 100.0,
+        "mount": "/usr/lib/wsl/drivers",
+        "inodeUsedPercent": null,
+        "inodeUsed": -999001,
+        "inodeTotal": 999,
+    }]);
+    let healthy_filesystem = json!([{
+        "filesystem": "drivers",
+        "type": "9p",
+        "sizeBytes": 1,
+        "usedBytes": 1,
+        "availableBytes": 0,
+        "usedPercent": 100.0,
+        "mount": "/usr/lib/wsl/drivers",
+        "inodeUsedPercent": 0.1,
+        "inodeUsed": 1,
+        "inodeTotal": 999,
+    }]);
+    insert_v2_metric(
+        &pool,
+        41,
+        1_000,
+        legacy_snapshot(
+            "kernel-a",
+            141,
+            641,
+            741,
+            Some(841),
+            Some(1_000),
+            filesystem_with_negative_inodes,
+        )
+        .as_deref(),
+    )
+    .await;
+    insert_v2_metric(
+        &pool,
+        42,
+        2_000,
+        legacy_snapshot(
+            "kernel-a",
+            142,
+            642,
+            742,
+            Some(842),
+            Some(1_000),
+            healthy_filesystem,
+        )
+        .as_deref(),
+    )
+    .await;
+    insert_filesystem(&pool, 1_000, "/usr/lib/wsl/drivers").await;
+    pool.close().await;
+
+    SqliteHistoryStore::connect(&fixture.url)
+        .await
+        .expect("known legacy negative inode counts should be normalised")
+        .close()
+        .await
+        .expect("migrated store should close");
+
+    let pool = fixture.raw_pool().await;
+    assert_eq!(user_version(&pool).await, 3);
+    let identities = sqlx::query(
+        "SELECT sample_id, identity_id FROM metric_samples WHERE sample_id IN (41, 42) ORDER BY sample_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("migrated identities should read");
+    assert_eq!(identities.len(), 2);
+    for row in identities {
+        assert!(
+            row.get::<Option<i64>, _>("identity_id").is_some(),
+            "sample {} should be assembleable",
+            row.get::<i64, _>("sample_id")
+        );
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM fs_samples")
+            .fetch_one(&pool)
+            .await
+            .expect("filesystem sample count should read"),
+        1
+    );
+
+    let marker: String = sqlx::query_scalar(
+        "SELECT details_json FROM app_events WHERE marker_type = 'schemaMigrated' AND label = 'SQLite schema migrated from v2 to v3'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("v3 migration audit should read");
+    let marker: JsonValue = serde_json::from_str(&marker).expect("v3 marker should be JSON");
+    assert_eq!(marker["legacyInodeRowsNormalised"], 1);
+    assert_eq!(marker["jsonRowsDecoded"], 2);
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn v2_fixture_with_undecodable_json_refuses_and_leaves_the_file_untouched() {
     // Break caught: malformed surviving JSON is silently discarded after the
     // old table is dropped, or a refusal leaks partial v3 tables/markers.
@@ -346,6 +455,7 @@ async fn v2_fixture_with_undecodable_json_refuses_and_leaves_the_file_untouched(
         StoreError::Migration { reason, remedy } => {
             assert!(reason.contains("metric_samples row 41"), "{reason}");
             assert!(reason.contains("does not decode"), "{reason}");
+            assert!(remedy.contains("snapshot_json = NULL"), "{remedy}");
             assert!(remedy.contains("database was not modified"), "{remedy}");
         }
         other => panic!("expected migration refusal, observed {other:?}"),
@@ -508,6 +618,7 @@ fn legacy_snapshot(
     swap_free_bytes: i64,
     last_pid: Option<i64>,
     filesystems_captured_at_ms: Option<i64>,
+    filesystems: JsonValue,
 ) -> Option<String> {
     let mut load = json!({
         "one": 0.1,
@@ -549,7 +660,7 @@ fn legacy_snapshot(
         },
         "load": load,
         "pressure": { "cpu": {}, "memory": {}, "io": {} },
-        "filesystems": [],
+        "filesystems": filesystems,
         "processes": [],
     });
     if let Some(stamp) = filesystems_captured_at_ms {
