@@ -26,6 +26,12 @@
   subpath deployments. Polish, not needed by any current deployment (v0.2.2's base-relative
   assets cover the standalone-under-subpath and `/embed` cases). Reference implementation:
   closed PR #1 (superseded; VERSION/ADR-number/dashboard-file conflicts made it unmergeable).
+- **Ring-only rustls provider for the OTel exporter (from the T11 fix round, 2026-08-29)** — the OTLP
+  HTTP client reaches `aws-lc-sys` (rustls's default crypto provider, built from C), which makes
+  `cmake` and a C compiler build prerequisites on every host. `opentelemetry-otlp` 0.32 exposes no
+  `ring`-only feature path; reaching one means a direct `reqwest`/`rustls` client passed through
+  `with_http_client`. Deferred: documented as a prerequisite instead (INSTALL.md); revisit when the
+  OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
 
