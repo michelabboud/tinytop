@@ -1,7 +1,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$TinyTopVersion = "0.2.0"
+$TinyTopFallbackVersion = "0.2.11"
+$TinyTopVersionPath = Join-Path $PSScriptRoot "VERSION"
+$TinyTopVersion = if (Test-Path -LiteralPath $TinyTopVersionPath) {
+  (Get-Content -LiteralPath $TinyTopVersionPath -Raw).Trim()
+} else {
+  $TinyTopFallbackVersion
+}
 $ServiceName = "TinyTop"
 $DefaultHost = if ($env:HOST) { $env:HOST } else { "127.0.0.1" }
 $DefaultPort = if ($env:PORT) { [int]$env:PORT } else { 4275 }
@@ -79,6 +85,7 @@ Native Windows command center for the Rust collector/dashboard daemon.
 
 Usage:
   .\tinytop.ps1 help
+  .\tinytop.ps1 version
   .\tinytop.ps1 doctor
   .\tinytop.ps1 rust install-binary
   .\tinytop.ps1 rust build
@@ -388,6 +395,8 @@ switch ($Command) {
   "help" { Write-TinyTopHelp }
   "-h" { Write-TinyTopHelp }
   "--help" { Write-TinyTopHelp }
+  "version" { Write-Output $TinyTopVersion }
+  "--version" { Write-Output $TinyTopVersion }
   "doctor" { Get-TinyTopStatus }
   "status" { Get-TinyTopStatus }
   "rust" { Invoke-TinyTopRust -Rest $Rest }

@@ -36,19 +36,20 @@ The supported Linux/WSL operator entrypoint is the root `./tinytop` Bash command
 
 ## Data Flow
 
-1. The browser loads embedded Rust dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, and `app.js`.
+1. The browser loads the shared dashboard assets: `index.html`, `styles.css`, `/vendor/echarts.min.js`, `app.js`, and `ladder-rules.js`.
 2. `app.js` requests `/api/settings` for SQLite-backed daemon defaults.
 3. `app.js` reads browser-local theme, graph-mode, history-range, visible-series, process-table, filesystem-toggle, and last-section overrides from `localStorage`.
-4. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for raw Live, 15m, and 1h ranges.
-5. The frontend requests `/api/history/points` for 6h, 24h, 7d, and 30d chart ranges backed by one-minute rollups.
-6. The frontend requests `/api/history/markers` for daemon starts, settings changes, and computed coverage gaps.
-7. The frontend requests `/api/history/coverage` when the Rust daemon is serving the page.
-8. The frontend requests `/api/version` once to display the serving runtime and product version.
-9. The frontend polls `/api/snapshot` on the configured browser refresh interval.
-10. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
-11. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
-12. `tinytop-store` writes samples, one-minute rollups, daemon timeline events, and daemon defaults into SQLite through SQLx.
-13. The frontend pages raw ranges, reads rollup points for long ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, computes threshold states, and redraws ECharts views.
+4. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for the raw Live, 15m, and 1h ranges.
+5. For 6h, 24h, 7d, 30d, 90d, 1y, and All, the frontend makes one `/api/history/points?source=auto&limit=10000` request and renders the tier reported by `source` and `resolutionMs`.
+6. The Rust read surface also exposes `/api/history/filesystems` and `/api/history/processes` for typed historical detail.
+7. The frontend requests `/api/history/markers` for daemon starts, settings changes, migration events, and computed coverage gaps.
+8. The frontend requests `/api/history/coverage` when the Rust daemon is serving the page; dashboard polling coalesces concurrent requests and throttles routine refreshes.
+9. The frontend requests `/api/version` once to display the serving runtime and product version.
+10. The frontend polls `/api/snapshot` on the configured browser refresh interval.
+11. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
+12. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
+13. `tinytop-store` writes raw samples, all enabled rollup tiers, typed detail rows, daemon timeline events, and daemon defaults into SQLite through SQLx.
+14. The frontend pages raw ranges, reads tier-selected points for long ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, computes threshold states, and redraws ECharts views.
 
 ## Modules
 
@@ -113,9 +114,11 @@ The Rust daemon and legacy Bun dashboard expose:
 - `GET /api/history?limit=&window_seconds=&since_ms=&until_ms=`
 - `GET /api/history/coverage` in the Rust daemon
 - `GET /api/history/points?limit=&window_seconds=&since_ms=&until_ms=&source=`
+- `GET /api/history/filesystems?sinceMs=&untilMs=&mount=&limit=` in the Rust daemon
+- `GET /api/history/processes?sinceMs=&untilMs=&limit=` in the Rust daemon
 - `GET /api/history/markers?limit=&window_seconds=&since_ms=&until_ms=&expected_gap_ms=`
 - `GET /vendor/echarts.min.js`
-- static frontend assets: `/`, `/index.html`, `/styles.css`, `/app.js`
+- static frontend assets: `/`, `/index.html`, `/styles.css`, `/app.js`, `/ladder-rules.js`
 
 See [docs/guides/API.md](docs/guides/API.md) for request and response details.
 
@@ -177,7 +180,7 @@ PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 ```
 
-Current table:
+Core table excerpt (see [Tiered History Ladder](#tiered-history-ladder) and the SQLite architecture document for the complete schema-v1 tier/detail tables):
 
 ```sql
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -201,7 +204,7 @@ CREATE TABLE IF NOT EXISTS metric_samples (
   runnable_threads INTEGER NOT NULL,
   total_threads INTEGER NOT NULL,
   root_used_percent REAL,
-  snapshot_json TEXT NOT NULL
+  snapshot_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
@@ -229,7 +232,13 @@ CREATE TABLE IF NOT EXISTS metric_rollups_1m (
   max_swap_used_percent REAL NOT NULL,
   avg_load_percent REAL NOT NULL,
   max_load_percent REAL NOT NULL,
-  avg_root_used_percent REAL
+  avg_root_used_percent REAL,
+  min_cpu_usage_percent REAL,
+  min_memory_used_percent REAL,
+  min_swap_used_percent REAL,
+  min_load_percent REAL,
+  min_root_used_percent REAL,
+  max_root_used_percent REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_metric_rollups_1m_newest
@@ -247,9 +256,9 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 ```
 
-The current implementation stores indexed graph/query columns plus full `SystemSnapshot` JSON. It also stores dashboard daemon defaults as typed JSON in `app_settings` under `setting_key = 'dashboard'`, maintains one-minute aggregate metric buckets in `metric_rollups_1m`, records daemon timeline events in `app_events`, and exposes coverage metadata through `/api/history/coverage`. This supports refresh-safe chart hydration, rollup-backed long ranges, selected raw-sample detail rendering, shared daemon defaults for future dashboard loads, retention enforcement, and history coverage display.
+The current implementation stores indexed graph/query columns for every raw sample but keeps full `SystemSnapshot` JSON only for `retentionLadder.snapshotJsonKeepMinutes`. It also stores daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed filesystem/process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
 
-In the Rust daemon, every stored sample also refreshes its one-minute rollup bucket. Raw samples are pruned by `retentionHours`; rollup buckets are pruned by `rollupRetentionDays`. The legacy Bun split path still keeps raw rows until manual archive/reset. Normalized filesystem/process/pressure child tables remain future work.
+Rust retention is the four-tier ladder described in [Tiered History Ladder](#tiered-history-ladder): each sample refreshes L2, completed buckets promote to enabled coarser tiers before finer rows are pruned, and `retentionHours` / `rollupRetentionDays` are derived compatibility mirrors of L1/L2. The legacy Bun split path still keeps raw rows until manual archive/reset.
 
 ## Frontend State
 
@@ -289,7 +298,7 @@ In-memory session state:
 - active settings dialog focus-return target
 - active process-detail dialog
 
-The browser loads raw Live, 15m, and 1h timestamp ranges with `since_ms` and `until_ms` query parameters. The 6h, 24h, 7d, and 30d presets use `/api/history/points` with one-minute rollups. Large raw ranges are paged through the existing API limit, deduplicated by captured timestamp, and downsampled to a browser rendering cap when needed. This browser cap is a UI memory/rendering policy, not the SQLite retention policy. The timeline rail draws an overview trace from loaded samples or rollup points, uses timestamp selection rather than sample-index state, and overlays daemon-start, settings-change, and coverage-gap markers. Bar mode calculates the number of visible bars from the chart width so bars never shrink below the configured minimum width.
+The browser loads raw Live, 15m, and 1h ranges with explicit time bounds. Every preset from 6h through All uses one `/api/history/points?source=auto&limit=10000` request, so the Rust daemon selects the finest enabled tier that retains and fits the range; Bun disables those Rust-only presets. Raw ranges are paged and browser rendering may downsample, but neither transport nor rendering limits change SQLite retention. The timeline uses timestamp selection and overlays daemon-start, settings-change, migration, and coverage-gap markers. Bar mode derives visible bars from chart width so bars keep their minimum width.
 
 Web UI interaction policy:
 

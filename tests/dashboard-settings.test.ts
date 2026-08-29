@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  ladderCapabilityFrom,
   settingsPutPayload,
-  settingsRetentionLadderAvailable,
 } from "../agent/assets/dashboard/ladder-rules.js";
 
 const html = readFileSync("agent/assets/dashboard/index.html", "utf8");
@@ -127,14 +127,16 @@ describe("dashboard settings", () => {
       },
     };
 
-    expect(settingsRetentionLadderAvailable(runtimeSettings)).toBe(false);
+    expect(ladderCapabilityFrom(null)).toBe(false);
+    expect(ladderCapabilityFrom(runtimeSettings)).toBe(false);
+    expect(ladderCapabilityFrom(normalizedInternalSettings)).toBe(true);
     expect(settingsPutPayload(normalizedInternalSettings, false)).toEqual(runtimeSettings);
   });
 
   test("declares the Rust-only ladder replacement line", () => {
     expect(html).toContain('id="history-ladder-unavailable"');
     expect(html).toContain("History ladder — Rust daemon only");
-    expect(app).toContain("settingsRetentionLadderAvailable");
+    expect(app).toContain("ladderCapabilityFrom");
     expect(app).toContain("settingsPutPayload");
   });
 

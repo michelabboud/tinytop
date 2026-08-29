@@ -2,12 +2,54 @@ import { describe, expect, test } from "bun:test";
 
 import {
   HISTORY_WINDOWS,
+  describeDiskCoverage,
   fallbackWindowKey,
   historyWindowFor,
+  shouldFetchCoverage,
   validateRetentionLadder,
 } from "../agent/assets/dashboard/ladder-rules.js";
 
 const MIB = 1024 * 1024;
+
+describe("history coverage polling", () => {
+  test("skips a request while another coverage request is in flight", () => {
+    expect(
+      shouldFetchCoverage({ lastFetchedAtMs: 0, nowMs: 20_000, inFlight: true, force: true }),
+    ).toBe(false);
+  });
+
+  test("allows a forced request when no coverage request is in flight", () => {
+    expect(
+      shouldFetchCoverage({ lastFetchedAtMs: 19_999, nowMs: 20_000, inFlight: false, force: true }),
+    ).toBe(true);
+  });
+
+  test("allows a scheduled request after the minimum interval", () => {
+    expect(
+      shouldFetchCoverage({ lastFetchedAtMs: 5_000, nowMs: 20_000, inFlight: false, force: false }),
+    ).toBe(true);
+  });
+
+  test("throttles a scheduled request within the minimum interval", () => {
+    expect(
+      shouldFetchCoverage({ lastFetchedAtMs: 5_001, nowMs: 20_000, inFlight: false, force: false }),
+    ).toBe(false);
+  });
+});
+
+describe("history disk coverage", () => {
+  test("describes an unmeasured disk check without inventing zero free bytes", () => {
+    expect(describeDiskCoverage({ freeBytes: null, minFreeBytes: 5 * 1024 * MIB, lastCheckMs: null })).toBe(
+      "History disk check: not measured yet; minimum 5.0 GiB.",
+    );
+  });
+
+  test("describes a measured disk check", () => {
+    expect(describeDiskCoverage({ freeBytes: 12 * 1024 * MIB, minFreeBytes: 5 * 1024 * MIB })).toBe(
+      "History disk check: 12 GiB free; minimum 5.0 GiB.",
+    );
+  });
+});
 
 function ladder() {
   return {

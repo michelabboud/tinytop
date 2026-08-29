@@ -94,6 +94,8 @@ The Settings dialog opens from the left rail and is split by scope:
 
 The dialog validates ranges before saving, including the ladder's monotonic tier rules, with the same field-specific messages as the Rust server. It warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Boolean daemon options, including redaction and enabled dashboard sections, render as compact responsive toggle controls so several options can fit per row on desktop while remaining touch-friendly on narrow screens. Saving daemon defaults uses `PUT /api/settings`. If a save shrinks a horizon or disables a tier/archive, the dialog first lists approximate affected counts calculated from current coverage; these are labelled `approx.` until the server dry-run lands. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
 
+Browser validation of archive and database paths is advisory; the server validates the authoritative host-native path.
+
 ## History
 
 History renders CPU, RAM, swap, and load-derived percent values from SQLite-backed collector samples.

@@ -250,8 +250,9 @@ history.sqlite-shm
 
 History retention:
 
-- The Rust daemon prunes raw samples according to `retentionHours` saved in `/api/settings`.
-- The Rust daemon keeps one-minute rollups according to `rollupRetentionDays` saved in `/api/settings`.
+- The Rust daemon promotes and prunes history through `retentionLadder`: L1 raw, L2 one-minute, optional L3 five-minute, and optional L4 hourly horizons.
+- `retentionHours` and `rollupRetentionDays` remain in `/api/settings` only as derived compatibility mirrors of L1 and L2.
+- Full snapshot JSON follows `retentionLadder.snapshotJsonKeepMinutes`; older L1 rows retain compact typed metrics, and typed filesystem/process detail follows `detailIntervalSec` through the L2 horizon.
 - The Rust daemon stores `targetDatabaseBytes` in `/api/settings` and reports current database budget usage through `/api/history/coverage`.
 - The dashboard's recent history window limits what it reads and renders; the retention settings control database pruning.
 - Legacy Bun split mode keeps raw samples until you manually archive or reset the database.
@@ -260,7 +261,7 @@ Dashboard settings:
 
 - Browser-local active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section are stored in `localStorage`.
 - Rust daemon defaults are stored in SQLite through `/api/settings`.
-- Retention, rollup, DB budget, warning/critical threshold, and enabled-section defaults are applied by the Rust daemon/dashboard.
+- Ladder retention, derived legacy mirrors, DB budget, warning/critical threshold, and enabled-section defaults are applied by the Rust daemon/dashboard.
 
 ## Verify Installation
 
@@ -323,6 +324,10 @@ TinyTop never deletes or overwrites the pre-image automatically. Inspect it, and
 remove it only after schema v1 and the main database have been verified:
 
 If the main database is missing, `db pre-image status` reports `databaseExists: false` and `remove` refuses: the pre-image may be your only copy.
+
+If the first start fails after the pre-image was written but before the schema transaction committed, the main database is still v0 and the pre-image is protected. `db pre-image remove --yes` refuses while `user_version < 1` by design: that pre-image is your data at that moment. Verify it, move it aside by hand, and then retry the migration.
+
+A crash after the post-migration `VACUUM` but before the audit transaction commits leaves schema v1 with an incomplete audit. The next start runs `VACUUM` once more; this is safe but can cost several minutes on a large database.
 
 ```bash
 tinytop-agent db pre-image status

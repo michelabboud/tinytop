@@ -133,6 +133,8 @@ Archive DB `history-archive.sqlite` (same directory as the main DB unless `archi
 
 Runs after the PRAGMAs, before schema creation, when `PRAGMA user_version = 0` and `metric_samples` exists with ≥ 1 row.
 
+`journal_mode=WAL` and `synchronous=NORMAL` are applied before the pre-image; this can write the SQLite header, but no row.
+
 1. **Pre-image, fail closed.** `VACUUM INTO '<db>.pre-v0.sqlite'`. Refuse to proceed if that path already exists (never overwrite), or if free space on the DB's filesystem < 1.2 × current DB bytes. On refusal, `connect` returns `StoreError::Migration(reason, remedy)` and the daemon does **not** start — a silent skip would migrate later without a pre-image.
 2. In one transaction: `CREATE TABLE metric_samples_v1 (… snapshot_json TEXT NULL …)`; `INSERT INTO metric_samples_v1 SELECT …, CASE WHEN captured_at_ms >= :now − :keepMs THEN snapshot_json ELSE NULL END FROM metric_samples`; `DROP TABLE metric_samples`; `ALTER TABLE metric_samples_v1 RENAME TO metric_samples`; recreate both indexes; `ALTER TABLE metric_rollups_1m ADD COLUMN …` ×6; create the new tables; `PRAGMA user_version = 1`.
 3. Outside the transaction: `VACUUM` (the one automatic VACUUM in the product — it returns the ~3.5 GB). Record `history_state.schemaMigration` and an `app_events` marker `schemaMigrated` with `{from:0,to:1,preImagePath,samplesKept,jsonRowsKept,durationMs,bytesBefore,bytesAfter}`.
@@ -157,9 +159,9 @@ pub fn fold(bucket_start_ms: i64, finer: &[TierBucket]) -> Option<TierBucket>;
 pub fn raw_to_bucket(sample: &RawSampleRow) -> TierBucket;
 ```
 
-Rules: `sample_count = Σ count` · `avg = Σ(avg × count) / Σ count` · `min = min(min)` · `max = max(max)` · `first = min(first)` · `newest = max(newest)` · `root_used`: folded over the finer buckets where `Some`, weighted by *their* counts; `None` if none. **Legacy 1-minute rows** (min columns NULL): read as `min = COALESCE(min, avg)`, `max_root_used = COALESCE(max_root_used, avg_root_used)`. Tier N folds from the **nearest enabled finer tier** (L4 folds from L2 when L3 is off).
+Rules: `sample_count = Σ count` · `avg = Σ(avg × count) / Σ count` · `min = min(min)` · `max = max(max)` · `first = min(first)` · `newest = max(newest)` · `root_used`: folded over the finer buckets where `Some`, weighted by *their* counts; `None` if none. A `root_used` fold weighted by bucket `sample_count` is exact whenever the root mount is present on every sample in the bucket (the production case); a separate per-bucket root-observation count would require a schema change and is out of scope. **Legacy 1-minute rows** (min columns NULL): read as `min = COALESCE(min, avg)`, `max_root_used = COALESCE(max_root_used, avg_root_used)`. Tier N folds from the **nearest enabled finer tier** (L4 folds from L2 when L3 is off).
 
-## 9. Maintenance algorithm (`maintain_history`, every tick after insert; idempotent; bounded)
+## 9. Maintenance algorithm (`maintain_history`, every tick after insert; convergent and bounded: a tick promotes ≤ 50 buckets; two ticks at one `now` may promote different batches)
 
 ```
 insert raw row; write detail rows if (now − last_detail_ms) ≥ detailIntervalSec;
@@ -176,6 +178,8 @@ expire L4 (if enabled and keepDays > 0): rows with bucket_start_ms + 3_600_000 �
                       : DELETE
 ```
 `dependentWatermark(T)` = the fold watermark of the nearest enabled coarser tier, or `+∞` when none is enabled. Disabling a tier stops writes to it and drops it from `dependentWatermark`; its existing rows are pruned by its own horizon only when the tier is re-enabled (disabled tables are left untouched — no silent deletion on a toggle). Every step logs counts at `debug`, and anything non-zero deleted at `info`; a step that fails logs at `error` with the SQLite message and the tick continues with the next step (a failed prune must not stop collection).
+
+A replayed sample whose raw row has already been pruned merges through the late-write path; collectors never replay samples, so this is an API/test boundary rather than a production collector flow.
 
 **Hourly (`diskCheck.intervalMinutes`):** free bytes of the DB's mount (from the collector's filesystem snapshot, matching the longest mount prefix of the DB path) and DB bytes. `free < minFreeBytes` → `history_state.diskPressure = {active:true,…}` + marker `diskPressure` (once per breach); recovery → `{active:false}` + marker `diskRecovered`. `diskPressure` never deletes anything; it only refuses growth (§5) and shows a banner.
 
