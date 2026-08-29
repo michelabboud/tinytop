@@ -295,6 +295,8 @@ pub(crate) async fn read_archive_points(paths: &ArchivePaths, since_ms: i64, unt
 
 **Phase 4 close (Fable):** deep dual-blind; `VERSION` 0.5.0; tag; release; audits.
 
+**Amended 2026-08-29:** Task 11's final exporter decisions are recorded in [ADR 0015's Phase 4 amendment](../adr/0015-opentelemetry-metrics-push-export.md#amendment-2026-08-29-phase-4-close).
+
 ---
 
 ## Contingencies

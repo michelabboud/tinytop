@@ -602,6 +602,12 @@ pub struct SqliteHistoryStore {
     database_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SettingsWrite {
+    pub previous: DashboardSettings,
+    pub saved: DashboardSettings,
+}
+
 pub(crate) async fn history_state_get_on<T: DeserializeOwned>(
     connection: &mut SqliteConnection,
     key: &str,
@@ -649,6 +655,61 @@ async fn rollback_settings_transaction<T>(
         eprintln!("settings rollback failed after {error}: {source}");
     }
     Err(error)
+}
+
+async fn write_settings_on(
+    connection: &mut SqliteConnection,
+    settings: &DashboardSettings,
+    previous: &DashboardSettings,
+) -> Result<DashboardSettings, StoreError> {
+    let mut normalized = settings.clone();
+    normalized.normalize_legacy_mirrors();
+    let disk_pressure = history_state_get_on::<DiskPressureState>(connection, "diskPressure")
+        .await?
+        .unwrap_or_default();
+    normalized.validate()?;
+    normalized
+        .retention_ladder
+        .validate(Some(&disk_pressure), Some(&previous.retention_ladder))?;
+
+    let value_json = serde_json::to_string(&normalized)?;
+    let updated_at_ms = now_ms();
+    sqlx::query(
+        r#"
+        INSERT INTO app_settings (setting_key, value_json, updated_at_ms)
+        VALUES ('dashboard', ?, ?)
+        ON CONFLICT(setting_key) DO UPDATE SET
+          value_json = excluded.value_json,
+          updated_at_ms = excluded.updated_at_ms
+        "#,
+    )
+    .bind(value_json)
+    .bind(updated_at_ms)
+    .execute(&mut *connection)
+    .await?;
+
+    for (key, enabled) in [
+        ("l3Enabled", normalized.retention_ladder.l3.enabled),
+        ("l4Enabled", normalized.retention_ladder.l4.enabled),
+    ] {
+        let enabled_json = serde_json::to_string(&enabled)?;
+        sqlx::query(
+            r#"
+            INSERT INTO history_state (state_key, value_json, updated_at_ms)
+            VALUES (?, ?, ?)
+            ON CONFLICT(state_key) DO UPDATE SET
+              value_json = excluded.value_json,
+              updated_at_ms = excluded.updated_at_ms
+            "#,
+        )
+        .bind(key)
+        .bind(enabled_json)
+        .bind(updated_at_ms)
+        .execute(&mut *connection)
+        .await?;
+    }
+
+    Ok(normalized)
 }
 
 pub(crate) async fn history_state_set_on<T: Serialize>(
@@ -810,8 +871,6 @@ impl SqliteHistoryStore {
         &self,
         settings: &DashboardSettings,
     ) -> Result<DashboardSettings, StoreError> {
-        let mut normalized = settings.clone();
-        normalized.normalize_legacy_mirrors();
         let mut connection = self.pool.acquire().await?;
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *connection)
@@ -819,64 +878,45 @@ impl SqliteHistoryStore {
 
         let transaction_result = async {
             let previous = get_settings_on(&mut connection).await?;
-            let disk_pressure =
-                history_state_get_on::<DiskPressureState>(&mut connection, "diskPressure")
-                    .await?
-                    .unwrap_or_default();
-            normalized.validate()?;
-            normalized
-                .retention_ladder
-                .validate(Some(&disk_pressure), Some(&previous.retention_ladder))?;
-
-            let value_json = serde_json::to_string(&normalized)?;
-            let updated_at_ms = now_ms();
-            sqlx::query(
-                r#"
-                INSERT INTO app_settings (setting_key, value_json, updated_at_ms)
-                VALUES ('dashboard', ?, ?)
-                ON CONFLICT(setting_key) DO UPDATE SET
-                  value_json = excluded.value_json,
-                  updated_at_ms = excluded.updated_at_ms
-                "#,
-            )
-            .bind(value_json)
-            .bind(updated_at_ms)
-            .execute(&mut *connection)
-            .await?;
-
-            for (key, enabled) in [
-                ("l3Enabled", normalized.retention_ladder.l3.enabled),
-                ("l4Enabled", normalized.retention_ladder.l4.enabled),
-            ] {
-                let enabled_json = serde_json::to_string(&enabled)?;
-                sqlx::query(
-                    r#"
-                    INSERT INTO history_state (state_key, value_json, updated_at_ms)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(state_key) DO UPDATE SET
-                      value_json = excluded.value_json,
-                      updated_at_ms = excluded.updated_at_ms
-                    "#,
-                )
-                .bind(key)
-                .bind(enabled_json)
-                .bind(updated_at_ms)
-                .execute(&mut *connection)
-                .await?;
-            }
-
-            Ok::<DashboardSettings, StoreError>(normalized)
+            write_settings_on(&mut connection, settings, &previous).await
         }
         .await;
-        let normalized = match transaction_result {
-            Ok(normalized) => normalized,
+        let saved = match transaction_result {
+            Ok(saved) => saved,
             Err(error) => return rollback_settings_transaction(&mut connection, error).await,
         };
         if let Err(source) = sqlx::query("COMMIT").execute(&mut *connection).await {
             return rollback_settings_transaction(&mut connection, StoreError::from(source)).await;
         }
 
-        Ok(normalized)
+        Ok(saved)
+    }
+
+    pub async fn put_settings_document(
+        &self,
+        document: &JsonValue,
+    ) -> Result<SettingsWrite, StoreError> {
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+
+        let transaction_result = async {
+            let previous = get_settings_on(&mut connection).await?;
+            let candidate = DashboardSettings::from_document(document.clone(), Some(&previous))?;
+            let saved = write_settings_on(&mut connection, &candidate, &previous).await?;
+            Ok::<SettingsWrite, StoreError>(SettingsWrite { previous, saved })
+        }
+        .await;
+        let write = match transaction_result {
+            Ok(write) => write,
+            Err(error) => return rollback_settings_transaction(&mut connection, error).await,
+        };
+        if let Err(source) = sqlx::query("COMMIT").execute(&mut *connection).await {
+            return rollback_settings_transaction(&mut connection, StoreError::from(source)).await;
+        }
+
+        Ok(write)
     }
 
     pub async fn insert_snapshot(

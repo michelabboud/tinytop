@@ -424,22 +424,19 @@ async fn update_settings(
     State(state): State<AppState>,
     Json(payload): Json<JsonValue>,
 ) -> Result<Response, ServeError> {
-    let previous = state.store.get_settings().await?;
-    let settings = DashboardSettings::from_document(payload, Some(&previous))?;
-    let saved = state.store.put_settings(&settings).await?;
-    maintain_history(&state, &saved).await?;
+    let write = state.store.put_settings_document(&payload).await?;
+    maintain_history(&state, &write.saved).await?;
+    let changed = DashboardSettings::changed_keys(&write.previous, &write.saved);
     state
         .store
         .record_event(
             now_ms()?,
             HistoryMarkerType::SettingsChange,
             "Settings changed",
-            json!({
-                "changed": DashboardSettings::changed_keys(&previous, &saved),
-            }),
+            json!({ "changed": changed }),
         )
         .await?;
-    Ok(no_store(Json(saved)).into_response())
+    Ok(no_store(Json(write.saved)).into_response())
 }
 
 async fn latest_snapshot(State(state): State<AppState>) -> Result<Response, ServeError> {
@@ -707,8 +704,9 @@ pub(crate) fn spawn_otel_export_loop(state: AppState, tick: Duration) -> JoinHan
                     continue;
                 }
             };
-            // Keep this defensive clamp aligned with OtelSettings::validate's 5..=3600 range;
-            // the persisted document may have been edited outside the validated settings API.
+            // The store validates 5..=3600 on every read. This belt-and-braces clamp
+            // keeps sleep arithmetic inside that range; the warning is reachable only
+            // if a future change breaks the validated-read invariant.
             let stored_interval_sec = settings.interval_sec;
             let interval_sec = used_otel_interval_sec(stored_interval_sec);
             if interval_sec != stored_interval_sec {
@@ -2162,7 +2160,7 @@ pub(crate) mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(
             body["error"],
-            "otel.endpoint must be an http:// or https:// URL with a host"
+            "otel.endpoint must be an http:// or https:// URL with a host and without credentials"
         );
     }
 
@@ -2249,9 +2247,12 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn otel_loop_applies_a_disable_within_one_tick() {
+    async fn otel_loop_applies_a_disable_promptly_and_stops_exporting() {
         // New wiring coverage: a persisted disable reaches runtime status promptly
         // and prevents further export attempts.
+        // The one-tick bound is measured outside this suite by the Fabulous
+        // docs/fleet/tinytop/tools/ acceptance driver: on 2026-08-29, disable
+        // applied in 8.9 s under a hung 10 s receiver; coverage took 9 ms disabled.
         let (_fixture, state) = test_state("otel-loop-disable-wiring").await;
         let mut settings = state.store.get_settings().await.expect("default settings");
         settings.otel.enabled = true;
@@ -2731,5 +2732,28 @@ pub(crate) mod tests {
         assert_eq!(markers.len(), 1);
         assert_eq!(markers[0].details, json!({ "changed": ["defaultTheme"] }));
         assert!(markers[0].details.get("source").is_none());
+    }
+
+    #[tokio::test]
+    async fn put_settings_marker_changed_list_comes_from_transactional_write_pair() {
+        // Break caught: the PUT marker is computed from a stale pre-transaction
+        // read instead of the exact previous/saved pair written by the store.
+        let (_fixture, state) = test_state("settings-put-marker-write-pair").await;
+        let mut settings =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        settings["otel"]["enabled"] = json!(true);
+
+        let (status, body) = put_json(router(state.clone()), "/api/settings", settings).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["otel"]["enabled"], true);
+        let markers = state
+            .store
+            .read_history_markers(HistoryQuery::default(), 60_000)
+            .await
+            .expect("markers should read");
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].details, json!({ "changed": ["otel"] }));
     }
 }

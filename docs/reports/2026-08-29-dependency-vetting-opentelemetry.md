@@ -47,7 +47,9 @@ home and read directly. They report:
 Reqwest client and `reqwest-rustls` for its Rustls TLS path. Its default uses
 `reqwest-blocking-client`; disabling defaults is therefore required to keep
 exports inside TinyTop's Tokio task. `http-proto` selects protobuf messages and
-the metrics signal. The test-only protocol crate is needed because the
+enables both the `trace` and `metrics` features (`Cargo.toml:88-95`); the trace
+code is compiled by that feature closure but TinyTop never invokes it. The
+`logs` feature remains off. The test-only protocol crate is needed because the
 exporter does not publicly re-export the generated request type.
 
 In SDK 0.32, `ManualReader`, the `MetricReader` trait, and the metrics
@@ -123,8 +125,9 @@ remains an explicit upgrade risk.
 
 The official crates win because they implement OTLP/HTTP protobuf with the
 OpenTelemetry metrics data model, resource handling, and an asynchronous
-Rustls transport while allowing all unrelated default signals and blocking
-clients to remain disabled.
+Rustls transport. The selected `http-proto` feature compiles trace alongside
+metrics, but TinyTop never invokes trace; logs stays off, and the blocking
+client remains disabled.
 
 ## Measured dependency and binary cost
 
@@ -148,8 +151,17 @@ build or dependency metadata.
 
 ### Build prerequisites and deferred TLS option
 
-`aws-lc-sys` builds native code, so local Rust daemon builds require CMake and
-a C compiler on Linux, WSL, macOS, and Windows. The lockfile also records
+`aws-lc-sys` builds native code, so local Rust daemon builds require a C
+compiler on Linux, WSL, macOS, and Windows. Its builder tries `cc` first when
+pregenerated bindings are available for the target; CMake is used only when
+explicitly selected (`AWS_LC_SYS_CMAKE_BUILDER=1`), for FIPS/no-assembly/sanitizer
+builds, for targets without pregenerated bindings, or after the `cc` builder
+fails. CMake is harmless to install. On Debian/Ubuntu use `build-essential`
+and optionally `cmake`; macOS's Xcode Command Line Tools provide the compiler
+(Homebrew's `cmake` is optional); Windows needs Visual Studio Build Tools with
+the C++ workload, while CMake is optional for normal builds and required only
+on the fallback paths above. On Linux with `cc` absent, the real first `cc`
+1.x failure line is `error occurred in cc-rs: failed to find tool "cc": No such file or directory (os error 2)`. The lockfile also records
 target-conditional or otherwise unreferenced packages (`quinn`, `jni`,
 `wasm-bindgen`, `schannel`, and `security-framework`); they are not compiled
 in the Linux build. The Linux-target normal dependency tree contained none of

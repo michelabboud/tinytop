@@ -103,7 +103,7 @@ If a release binary is not available for your platform, compile locally:
 ./tinytop systemd install --rust
 ```
 
-For local Rust build prerequisites, including CMake and a C compiler, see [INSTALL.md](INSTALL.md).
+For local Rust builds, a C compiler is required (`build-essential` on Debian/Ubuntu, Xcode Command Line Tools on macOS, or the Visual Studio Build Tools C++ workload on Windows). `aws-lc-sys` tries its `cc` builder first when pregenerated bindings are available; CMake is used only for explicit CMake selection, FIPS/no-assembly/sanitizer builds, targets without pregenerated bindings, or after the `cc` builder fails, and is harmless to install. On Linux with `cc` absent, the real first `cc` 1.x failure line is `error occurred in cc-rs: failed to find tool "cc": No such file or directory (os error 2)`. See [INSTALL.md](INSTALL.md).
 
 `./tinytop setup` is the Telecode-style Bun wizard for source/development installs. It asks whether to install the Rust collector/dashboard daemon or the legacy Bun collector path. For Rust installs, it also asks whether to use a GitHub release binary or a local Cargo compile. Verification inside the wizard is runtime-specific: Rust selections do not run Bun tests, and legacy Bun selections do not run Rust tests.
 
@@ -407,7 +407,7 @@ Settings export is a versioned JSON document that contains daemon settings but n
 
 ## OpenTelemetry export
 
-The Rust daemon can push the latest collected snapshot as OTLP metrics over HTTP/protobuf. It is disabled by default and never reads from OpenTelemetry. Configure it in the Settings dialog, or include the `otel` block in a `config import` document. Request headers are secret-free by design: set `TINYTOP_OTEL_HEADERS="authorization=Bearer <token>"` in the daemon's service environment, using an environment variable named by `headersEnvVar`; the value is never stored in settings or an export.
+The Rust daemon can push the latest collected snapshot as OTLP metrics over HTTP/protobuf. It is disabled by default and never reads from OpenTelemetry. Configure it in the Settings dialog, or include the `otel` block in a `config import` document. Request headers are secret-free by design: set `TINYTOP_OTEL_HEADERS="authorization=Bearer <token>"` in the daemon's service environment, using an environment variable named by `headersEnvVar`; the value is never stored in settings or an export. The exporter refuses to start while either `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_METRICS_HEADERS` is set, so TinyTop has one parser and one header source; neither reserved name may be selected as `headersEnvVar`.
 
 For a user systemd service, create `~/.config/systemd/user/tinytop.service.d/otel.conf` with these three lines:
 

@@ -178,12 +178,27 @@ export function settingsPutPayload(settings, retentionLadderAvailable, otelAvail
 }
 
 const OTEL_PROTOCOL_ERROR = "otel.protocol must be one of http/protobuf";
-const OTEL_ENDPOINT_ERROR = "otel.endpoint must be an http:// or https:// URL with a host";
+const OTEL_ENDPOINT_ERROR = "otel.endpoint must be an http:// or https:// URL with a host and without credentials";
 const OTEL_INTERVAL_ERROR = "otel.intervalSec must be between 5 and 3600";
 const OTEL_HEADERS_ERROR = "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$";
+export const OTEL_HEADERS_RESERVED_ERROR =
+  "otel.headersEnvVar must not be OTEL_EXPORTER_OTLP_HEADERS or OTEL_EXPORTER_OTLP_METRICS_HEADERS; tinytop reads headers only from its own variable";
 const OTEL_SERVICE_ERROR = "otel.serviceName must be 1–128 characters without control characters";
 const OTEL_ATTRIBUTES_ERROR =
   "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters";
+const OTEL_SECRET_SHAPED_KEY_ERROR =
+  "otel.resourceAttributes keys must not be secret-shaped (no segment may be secret, token, password, passwd, apikey, api_key, authorization, bearer or credential)";
+export const SECRET_SHAPED_KEY_WORDS = [
+  "secret",
+  "token",
+  "password",
+  "passwd",
+  "apikey",
+  "api_key",
+  "authorization",
+  "bearer",
+  "credential",
+];
 
 function hasControlCharacters(value) {
   return /\p{Cc}/u.test(value);
@@ -192,6 +207,13 @@ function hasControlCharacters(value) {
 function validResourceAttributeKey(key) {
   const characters = Array.from(key);
   return characters.length <= 64 && /^[a-z][a-z0-9._]*$/.test(key);
+}
+
+function secretShapedResourceAttributeKey(key) {
+  return key.split(".").some((segment) =>
+    SECRET_SHAPED_KEY_WORDS.includes(segment) ||
+    segment.split("_").some((part) => SECRET_SHAPED_KEY_WORDS.includes(part)),
+  );
 }
 
 function validResourceAttributes(attributes) {
@@ -209,6 +231,17 @@ function validResourceAttributes(attributes) {
   });
 }
 
+function validEndpointAuthority(authority) {
+  if (authority.length === 0 || authority.includes("@")) return false;
+  if (authority.startsWith("[")) {
+    const closeBracket = authority.indexOf("]");
+    return closeBracket > 1;
+  }
+  const portSeparator = authority.lastIndexOf(":");
+  const host = portSeparator >= 0 ? authority.slice(0, portSeparator) : authority;
+  return host.length > 0;
+}
+
 export function validateOtelSettings(otel) {
   const settings = otel && typeof otel === "object" && !Array.isArray(otel) ? otel : {};
   if (settings.protocol !== "http/protobuf") return [OTEL_PROTOCOL_ERROR];
@@ -217,7 +250,7 @@ export function validateOtelSettings(otel) {
   const endpointMatch = /^(?:http|https):\/\/([^/?#]*)/u.exec(endpoint);
   if (
     !endpointMatch ||
-    endpointMatch[1].length === 0 ||
+    !validEndpointAuthority(endpointMatch[1]) ||
     /\s|\p{Cc}/u.test(endpoint)
   ) {
     return [OTEL_ENDPOINT_ERROR];
@@ -230,6 +263,12 @@ export function validateOtelSettings(otel) {
     return [OTEL_HEADERS_ERROR];
   }
   if (
+    settings.headersEnvVar === "OTEL_EXPORTER_OTLP_HEADERS" ||
+    settings.headersEnvVar === "OTEL_EXPORTER_OTLP_METRICS_HEADERS"
+  ) {
+    return [OTEL_HEADERS_RESERVED_ERROR];
+  }
+  if (
     typeof settings.serviceName !== "string" ||
     Array.from(settings.serviceName).length < 1 ||
     Array.from(settings.serviceName).length > 128 ||
@@ -238,6 +277,9 @@ export function validateOtelSettings(otel) {
     return [OTEL_SERVICE_ERROR];
   }
   if (!validResourceAttributes(settings.resourceAttributes)) return [OTEL_ATTRIBUTES_ERROR];
+  if (Object.keys(settings.resourceAttributes).some(secretShapedResourceAttributeKey)) {
+    return [OTEL_SECRET_SHAPED_KEY_ERROR];
+  }
   return [];
 }
 
@@ -257,6 +299,10 @@ export function parseResourceAttributes(text) {
     const value = rawLine.slice(separator + 1);
     if (!validResourceAttributeKey(key) || typeof value !== "string" || Array.from(value).length > 256 || hasControlCharacters(value)) {
       errors.push(`line ${lineNumber}: ${OTEL_ATTRIBUTES_ERROR}`);
+      continue;
+    }
+    if (secretShapedResourceAttributeKey(key)) {
+      errors.push(`line ${lineNumber}: ${OTEL_SECRET_SHAPED_KEY_ERROR}`);
       continue;
     }
     if (!Object.hasOwn(attributes, key) && Object.keys(attributes).length >= 32) {

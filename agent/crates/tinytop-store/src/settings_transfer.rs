@@ -104,6 +104,7 @@ pub async fn plan_import(
             "settings is required and must be an object".to_string(),
         ]));
     };
+    // This decode is a dry-run preview; apply decodes authoritatively inside the write transaction.
     let mut candidate =
         match DashboardSettings::from_document(settings_value.clone(), Some(&previous)) {
             Ok(candidate) => candidate,
@@ -160,15 +161,17 @@ pub async fn apply_import(
     if !plan.valid {
         return Err(StoreError::Validation(plan.errors.join("; ")));
     }
-    let Some(candidate) = plan.candidate.as_ref() else {
-        return Err(StoreError::Validation(
-            "settings import plan was valid but had no candidate".to_string(),
-        ));
-    };
-    let settings = store.put_settings(candidate).await?;
+    let settings_document = document.get("settings").ok_or_else(|| {
+        StoreError::Validation("settings is required and must be an object".to_string())
+    })?;
+    let write = store.put_settings_document(settings_document).await?;
+    let changed_keys = DashboardSettings::changed_keys(&write.previous, &write.saved)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
     Ok(ImportOutcome {
-        settings,
-        changed_keys: plan.changed_keys,
+        settings: write.saved,
+        changed_keys,
         would_delete: plan.would_delete,
     })
 }
