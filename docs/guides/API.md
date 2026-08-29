@@ -121,7 +121,7 @@ Legacy Bun response:
 
 ### GET /api/snapshot
 
-Returns the latest `SystemSnapshot`. In the Rust daemon this is handled in-process. In Bun split mode it proxies to collector `/snapshot/latest`.
+Returns the latest `SystemSnapshot`. The Rust daemon answers from the collection task's latest in-memory value; before the first collection it returns HTTP `503` with `{"error":"no snapshot yet"}` (the daemon normally collects once before binding). In Bun split mode it proxies to collector `/snapshot/latest`.
 
 Example:
 
@@ -134,6 +134,7 @@ Response shape:
 ```json
 {
   "timestamp": "2026-06-24T10:15:46.568Z",
+  "filesystemsCapturedAtMs": 1782296146568,
   "identity": {
     "hostname": "devbox",
     "platform": "linux",
@@ -182,7 +183,7 @@ Response shape:
 }
 ```
 
-The example above is shortened. Real responses include full CPU times, filesystem rows, pressure data when present, and process rows.
+The example above is shortened. `filesystemsCapturedAtMs` is Unix time in milliseconds and can be older than `timestamp` between filesystem checks. `cpu.times` is optional: it is present on the Linux collector and absent on the sysinfo-based macOS/Windows collectors. Filesystem rows and pressure data are included when present, and `processes.length` is at most the configured `topProcessCount`.
 
 ### GET /api/settings
 
@@ -228,6 +229,8 @@ Response:
   }
 }
 ```
+
+`topProcessCount` accepts `1`–`50` and becomes effective on the daemon's next collection tick.
 
 ### PUT /api/settings
 
@@ -413,6 +416,8 @@ Response:
 }
 ```
 
+`detailIntervalSec` is the filesystem check interval in seconds (`15`–`3,600`); cached filesystem rows are served between checks.
+
 ### GET /vendor/echarts.min.js
 
 Returns `agent/assets/dashboard/vendor/echarts.min.js`, embedded by Rust and served from the same single-source dashboard tree by Bun.
@@ -497,7 +502,7 @@ Response:
 
 ### GET /snapshot/latest
 
-Returns the latest stored snapshot. If no sample exists yet, the collector collects and stores one before responding.
+Uses the same handler and in-memory rule as `/api/snapshot`: it returns the latest snapshot published by the collection task, or HTTP `503` with `{"error":"no snapshot yet"}` before the first collection.
 
 ### GET /snapshot/collect
 

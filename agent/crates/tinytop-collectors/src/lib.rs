@@ -10,13 +10,33 @@ pub mod macos;
 #[cfg(all(feature = "windows-collector", target_os = "windows"))]
 pub mod windows;
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 use tinytop_types::SystemSnapshot;
 
 pub type CollectorResult<T> = Result<T, CollectorError>;
 
+/// Runtime collector settings. These defaults mirror the store's
+/// `topProcessCount` and `retentionLadder.detailIntervalSec` defaults. The
+/// daemon configures its collector before the first sample, so they govern only
+/// `tinytop-agent collect --json` and direct collector tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CollectorConfig {
+    pub top_process_count: usize,
+    pub filesystems_interval: Duration,
+}
+
+impl Default for CollectorConfig {
+    fn default() -> Self {
+        Self {
+            top_process_count: 8,
+            filesystems_interval: Duration::from_secs(60),
+        }
+    }
+}
+
 pub trait Collector {
+    fn configure(&mut self, config: CollectorConfig);
     fn collect(&mut self) -> CollectorResult<SystemSnapshot>;
 }
 
@@ -43,6 +63,8 @@ pub struct NativeCollector;
     all(feature = "windows-collector", target_os = "windows"),
 )))]
 impl Collector for NativeCollector {
+    fn configure(&mut self, _config: CollectorConfig) {}
+
     fn collect(&mut self) -> CollectorResult<SystemSnapshot> {
         Self::collect(self)
     }

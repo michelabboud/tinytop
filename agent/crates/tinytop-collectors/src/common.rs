@@ -1,4 +1,10 @@
-use std::{env, ffi::OsStr, path::Path, thread, time::Duration};
+use std::{
+    env,
+    ffi::OsStr,
+    path::Path,
+    thread,
+    time::{Duration, Instant},
+};
 
 use sysinfo::{
     CpuRefreshKind, DiskRefreshKind, Disks, ProcessRefreshKind, ProcessesToUpdate, System,
@@ -6,16 +12,27 @@ use sysinfo::{
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tinytop_types::{
-    CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
-    PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
-    RuntimeKind, SwapSnapshot, SystemSnapshot,
+    CpuSnapshot, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot, PressureGroup,
+    PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection, RuntimeKind,
+    SwapSnapshot, SystemSnapshot,
 };
 
-use crate::{CollectorError, CollectorResult};
+use crate::{CollectorConfig, CollectorError, CollectorResult};
+
+struct SysinfoSlowCache {
+    taken_at: Instant,
+    captured_at_ms: i64,
+    filesystems: Vec<FilesystemSnapshot>,
+    hostname: String,
+    distro: String,
+    kernel: String,
+}
 
 pub struct SysinfoCollector {
     system: System,
     initialized_cpu_usage: bool,
+    config: CollectorConfig,
+    slow_cache: Option<SysinfoSlowCache>,
 }
 
 impl Default for SysinfoCollector {
@@ -23,11 +40,19 @@ impl Default for SysinfoCollector {
         Self {
             system: System::new(),
             initialized_cpu_usage: false,
+            config: CollectorConfig::default(),
+            slow_cache: None,
         }
     }
 }
 
 impl SysinfoCollector {
+    pub fn configure(&mut self, config: CollectorConfig) {
+        if self.config != config {
+            self.config = config;
+        }
+    }
+
     pub fn collect(
         &mut self,
         runtime_kind: RuntimeKind,
@@ -36,10 +61,30 @@ impl SysinfoCollector {
         reason: &'static str,
     ) -> CollectorResult<SystemSnapshot> {
         self.refresh();
-        let disks = Disks::new_with_refreshed_list_specifics(
-            DiskRefreshKind::nothing().with_kind().with_storage(),
-        );
-        let processes = native_processes(&self.system);
+        let now = Instant::now();
+        let slow_due = self.slow_cache.as_ref().is_none_or(|cache| {
+            now.duration_since(cache.taken_at) >= self.config.filesystems_interval
+        });
+        if slow_due {
+            let disks = Disks::new_with_refreshed_list_specifics(
+                DiskRefreshKind::nothing().with_kind().with_storage(),
+            );
+            self.slow_cache = Some(SysinfoSlowCache {
+                taken_at: now,
+                captured_at_ms: now_unix_ms()?,
+                filesystems: native_filesystems(&disks),
+                hostname: System::host_name().unwrap_or_else(|| "unknown".to_string()),
+                distro: System::long_os_version()
+                    .or_else(System::name)
+                    .unwrap_or_else(|| default_name.to_string()),
+                kernel: System::kernel_version().unwrap_or_else(|| platform.to_string()),
+            });
+        }
+        let slow = self
+            .slow_cache
+            .as_ref()
+            .expect("the first collection always populates the slow cache");
+        let processes = native_processes(&self.system, self.config.top_process_count);
         let load = System::load_average();
         let total_memory = self.system.total_memory();
         let used_memory = self.system.used_memory();
@@ -48,14 +93,13 @@ impl SysinfoCollector {
 
         Ok(SystemSnapshot {
             timestamp: now_rfc3339()?,
+            filesystems_captured_at_ms: Some(slow.captured_at_ms),
             identity: IdentitySnapshot {
-                hostname: System::host_name().unwrap_or_else(|| "unknown".to_string()),
+                hostname: slow.hostname.clone(),
                 platform: platform.to_string(),
                 arch: env::consts::ARCH.to_string(),
-                distro: System::long_os_version()
-                    .or_else(System::name)
-                    .unwrap_or_else(|| default_name.to_string()),
-                kernel: System::kernel_version().unwrap_or_else(|| platform.to_string()),
+                distro: slow.distro.clone(),
+                kernel: slow.kernel.clone(),
                 runtime: RuntimeDetection {
                     kind: runtime_kind,
                     confidence: RuntimeConfidence::Medium,
@@ -66,7 +110,8 @@ impl SysinfoCollector {
             cpu: CpuSnapshot {
                 usage_percent: round_percent(self.system.global_cpu_usage() as f64),
                 cores: self.system.cpus().len().max(1),
-                times: CpuTimes::default(),
+                // sysinfo exposes aggregate usage but no platform CPU tick breakdown.
+                times: None,
             },
             memory: MemorySnapshot {
                 total_bytes: total_memory,
@@ -97,7 +142,7 @@ impl SysinfoCollector {
                 memory: PressureSnapshot::default(),
                 io: PressureSnapshot::default(),
             },
-            filesystems: native_filesystems(&disks),
+            filesystems: slow.filesystems.clone(),
             processes,
         })
     }
@@ -148,7 +193,9 @@ fn native_filesystems(disks: &Disks) -> Vec<FilesystemSnapshot> {
         .collect()
 }
 
-fn native_processes(system: &System) -> Vec<ProcessSnapshot> {
+fn native_processes(system: &System, top_process_count: usize) -> Vec<ProcessSnapshot> {
+    // Validated settings are at least one; keep that invariant for direct callers.
+    let top_process_count = top_process_count.max(1);
     let total_memory = system.total_memory();
     let mut processes = system
         .processes()
@@ -176,7 +223,7 @@ fn native_processes(system: &System) -> Vec<ProcessSnapshot> {
             .partial_cmp(&left.cpu_percent)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    processes.truncate(10);
+    processes.truncate(top_process_count);
     processes
 }
 
@@ -207,6 +254,11 @@ fn now_rfc3339() -> CollectorResult<String> {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .map_err(|error| CollectorError::parse("format timestamp", error.to_string()))
+}
+
+fn now_unix_ms() -> CollectorResult<i64> {
+    i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+        .map_err(|_| CollectorError::parse("read timestamp", "milliseconds exceed i64"))
 }
 
 fn percent(used: u64, total: u64) -> f64 {

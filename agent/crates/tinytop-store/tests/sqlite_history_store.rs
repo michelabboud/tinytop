@@ -35,6 +35,7 @@ async fn sqlite_store_creates_missing_database_file() {
 fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
     SystemSnapshot {
         timestamp: timestamp.to_string(),
+        filesystems_captured_at_ms: None,
         identity: IdentitySnapshot {
             hostname: "devbox".to_string(),
             platform: "linux".to_string(),
@@ -51,7 +52,7 @@ fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
         cpu: CpuSnapshot {
             usage_percent: cpu,
             cores: 4,
-            times: CpuTimes::default(),
+            times: Some(CpuTimes::default()),
         },
         memory: MemorySnapshot {
             total_bytes: 100,

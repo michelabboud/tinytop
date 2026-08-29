@@ -24,6 +24,7 @@ describe("dashboard process and filesystem controls", () => {
 
   test("renders filesystem system-toggle and root filesystem card", () => {
     expect(html).toContain('id="filesystem-show-system"');
+    expect(html).toContain('id="filesystem-captured-at"');
     expect(html).toContain('id="root-filesystem-card"');
     expect(html).toContain('id="root-filesystem-name"');
     expect(html).toContain('id="root-filesystem-usage"');
@@ -34,11 +35,13 @@ describe("dashboard process and filesystem controls", () => {
     expect(app).toContain("processDensity: document.querySelector(\"#process-density\")");
     expect(app).toContain("processSortButtons: Array.from(document.querySelectorAll(\"[data-process-sort]\"))");
     expect(app).toContain("filesystemShowSystem: document.querySelector(\"#filesystem-show-system\")");
+    expect(app).toContain("filesystemCapturedAt: document.querySelector(\"#filesystem-captured-at\")");
     expect(app).toContain("function sortProcesses");
     expect(app).toContain("function processTrendForPid");
     expect(app).toContain("function redactCommandText");
     expect(app).toContain("function copyProcessCommand");
     expect(app).toContain("function filterFilesystems");
+    expect(app).toContain("function renderFilesystemFreshness");
     expect(app).toContain("tinytop.processFilter");
     expect(app).toContain("tinytop.processSort");
     expect(app).toContain("tinytop.filesystemShowSystem");

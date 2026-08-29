@@ -1,6 +1,6 @@
 use tinytop_types::{RuntimeKind, SystemSnapshot};
 
-use crate::{Collector, CollectorResult, common::SysinfoCollector};
+use crate::{Collector, CollectorConfig, CollectorResult, common::SysinfoCollector};
 
 #[derive(Default)]
 pub struct MacOsCollector {
@@ -19,6 +19,10 @@ impl MacOsCollector {
 }
 
 impl Collector for MacOsCollector {
+    fn configure(&mut self, config: CollectorConfig) {
+        self.inner.configure(config);
+    }
+
     fn collect(&mut self) -> CollectorResult<SystemSnapshot> {
         Self::collect(self)
     }

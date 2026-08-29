@@ -1131,6 +1131,7 @@ async fn history_coverage_reports_every_tier_and_json_horizon() {
 fn snapshot(captured_at_ms: i64, cpu: f64) -> SystemSnapshot {
     SystemSnapshot {
         timestamp: format!("fixture-{captured_at_ms}"),
+        filesystems_captured_at_ms: None,
         identity: IdentitySnapshot {
             hostname: "devbox".to_string(),
             platform: "linux".to_string(),
@@ -1147,7 +1148,7 @@ fn snapshot(captured_at_ms: i64, cpu: f64) -> SystemSnapshot {
         cpu: CpuSnapshot {
             usage_percent: cpu,
             cores: 4,
-            times: CpuTimes::default(),
+            times: Some(CpuTimes::default()),
         },
         memory: MemorySnapshot {
             total_bytes: 100,

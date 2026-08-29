@@ -333,6 +333,14 @@ function formatOtelTime(timestampMs) {
   });
 }
 
+export function describeFilesystemFreshness(snapshot, pollMs) {
+  const capturedAtMs = snapshot?.filesystemsCapturedAtMs;
+  const snapshotAtMs = Date.parse(snapshot?.timestamp);
+  if (!Number.isFinite(capturedAtMs) || !Number.isFinite(snapshotAtMs)) return null;
+  if (snapshotAtMs - capturedAtMs <= pollMs) return null;
+  return `as of ${formatOtelTime(capturedAtMs)}`;
+}
+
 export function describeOtelCoverage(otel) {
   if (!otel || typeof otel !== "object" || otel.enabled !== true) return "OTel — off";
   const endpoint = typeof otel.endpoint === "string" ? otel.endpoint : "-";

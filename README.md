@@ -311,6 +311,9 @@ Implementation notes:
 
 - The Rust Linux collector uses `procfs` and `sysinfo`; it does not shell out to `df`, `ps`, or `uname`.
 - The live collector keeps a reusable `sysinfo::System` so repeated samples avoid rebuilding all collector state from scratch.
+- Collection has three cadence classes: fast CPU, memory, swap, load, pressure, processes, and uptime refresh on every `pollIntervalMs` tick; slow filesystems refresh every `retentionLadder.detailIntervalSec`, are served from cache between checks, and carry `filesystemsCapturedAtMs`; static hostname, kernel, and distro identity is re-read on the slow tick.
+- `/api/snapshot` is answered from the daemon's latest in-memory snapshot. It returns `503 {"error":"no snapshot yet"}` only before the first collection, and the daemon collects once before binding its listener.
+- `topProcessCount` is effective from the next collection tick (default `8`); the previous hard-coded `10` is gone, and `tinytop-agent collect --json` uses the default.
 - Linux is the default supported collector feature. Native macOS and Windows collectors are present as opt-in Rust feature-gated modules for identity, CPU, memory, load equivalent, disks, and processes; Linux remains the reference implementation until those hosts receive full live-machine verification.
 - Local Rust builds require Rust `1.95.0` or newer because the pinned `sysinfo` release uses that MSRV.
 
@@ -397,7 +400,7 @@ In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder h
 | `retentionLadder.l3` | enabled, `90` days | Five-minute rollups; when enabled, retention must be at least L2 and at most 3,650 days |
 | `retentionLadder.l4` | enabled, `730` days | Hourly rollups; `0` means forever, otherwise retention must be at least the nearest enabled finer tier and at most 36,500 days |
 | `retentionLadder.snapshotJsonKeepMinutes` | `60` | Complete raw snapshot JSON; 60–1,440 minutes |
-| `retentionLadder.detailIntervalSec` | `60` | Filesystem/process typed-sample cadence; 15–3,600 seconds |
+| `retentionLadder.detailIntervalSec` | `60` | Filesystem check interval (collector slow class; also the typed detail-row cadence until the typed-history migration); 15–3,600 seconds |
 | `retentionLadder.archive` | off | `queryable` moves expired L4 rows into `history-archive.sqlite`; `directory` is empty (beside the main DB) or absolute. `cold` requires `queryable` and exports complete eligible UTC months as verified `csv.gz` files plus `sha256sum`-compatible sidecars after 1–120 months. |
 | `retentionLadder.diskCheck` | `intervalMinutes: 60`, `minFreeBytes: 5 GiB` | Interval 5–1,440 minutes; minimum at least 256 MiB. A breach shows a banner and refuses retention growth or tier/archive enables; it never deletes history. |
 

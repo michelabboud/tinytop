@@ -22,6 +22,7 @@ fn history_sample_serializes_with_dashboard_field_names() {
 fn minimal_snapshot() -> SystemSnapshot {
     SystemSnapshot {
         timestamp: "2026-06-25T00:00:00Z".to_string(),
+        filesystems_captured_at_ms: None,
         identity: IdentitySnapshot {
             hostname: "host".to_string(),
             platform: "linux".to_string(),
@@ -38,7 +39,7 @@ fn minimal_snapshot() -> SystemSnapshot {
         cpu: CpuSnapshot {
             usage_percent: 1.0,
             cores: 4,
-            times: CpuTimes::default(),
+            times: Some(CpuTimes::default()),
         },
         memory: MemorySnapshot {
             total_bytes: 100,

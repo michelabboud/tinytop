@@ -1,4 +1,11 @@
-use std::{collections::HashMap, env, ffi::OsStr, path::Path, thread, time::Duration};
+use std::{
+    collections::HashMap,
+    env,
+    ffi::OsStr,
+    path::Path,
+    thread,
+    time::{Duration, Instant},
+};
 
 use procfs::{
     CpuPressure, IoPressure, KernelStats, LoadAverage, Meminfo, MemoryPressure, Uptime, prelude::*,
@@ -14,11 +21,12 @@ use tinytop_types::{
     RuntimeDetection, RuntimeKind, SwapSnapshot, SystemSnapshot,
 };
 
-use crate::{Collector, CollectorError, CollectorResult};
+use crate::{Collector, CollectorConfig, CollectorError, CollectorResult};
 
 #[derive(Debug, Clone)]
 pub struct LinuxSnapshotSources {
     pub timestamp: String,
+    pub filesystems_captured_at_ms: i64,
     pub hostname: String,
     pub platform: String,
     pub arch: String,
@@ -41,6 +49,42 @@ pub struct LinuxSnapshotSources {
     pub ps_text: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct LinuxFastSources {
+    pub timestamp: String,
+    pub cpu_count: usize,
+    pub uptime_text: String,
+    pub meminfo_text: String,
+    pub loadavg_text: String,
+    pub previous_proc_stat_text: String,
+    pub current_proc_stat_text: String,
+    pub cpu_pressure_text: String,
+    pub memory_pressure_text: String,
+    pub io_pressure_text: String,
+    pub ps_text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LinuxSlowSources {
+    pub captured_at_ms: i64,
+    pub hostname: String,
+    pub platform: String,
+    pub arch: String,
+    pub os_release_text: String,
+    pub proc_version: String,
+    pub kernel_release: String,
+    pub wsl_distro_name: Option<String>,
+    pub wsl_interop: Option<String>,
+    pub df_blocks_text: String,
+    pub df_inodes_text: String,
+}
+
+struct LinuxSlowCache {
+    taken_at: Instant,
+    captured_at_ms: i64,
+    sources: LinuxSlowSources,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedMeminfo {
     pub total_bytes: u64,
@@ -59,6 +103,11 @@ pub struct ParsedMeminfo {
 pub struct LinuxCollector {
     previous_proc_stat_text: Option<String>,
     system: System,
+    config: CollectorConfig,
+    slow_cache: Option<LinuxSlowCache>,
+    clock: Box<dyn FnMut() -> Instant + Send>,
+    slow_enumerations: u64,
+    configure_calls: u64,
 }
 
 impl Default for LinuxCollector {
@@ -66,11 +115,34 @@ impl Default for LinuxCollector {
         Self {
             previous_proc_stat_text: None,
             system: System::new(),
+            config: CollectorConfig::default(),
+            slow_cache: None,
+            clock: Box::new(Instant::now),
+            slow_enumerations: 0,
+            configure_calls: 0,
         }
     }
 }
 
 impl LinuxCollector {
+    #[doc(hidden)]
+    pub fn with_clock(clock: impl FnMut() -> Instant + Send + 'static) -> Self {
+        Self {
+            clock: Box::new(clock),
+            ..Self::default()
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn slow_enumerations(&self) -> u64 {
+        self.slow_enumerations
+    }
+
+    #[doc(hidden)]
+    pub fn configure_calls(&self) -> u64 {
+        self.configure_calls
+    }
+
     pub fn collect(&mut self) -> CollectorResult<SystemSnapshot> {
         if env::consts::OS != "linux" {
             return Err(CollectorError::UnsupportedPlatform {
@@ -78,13 +150,43 @@ impl LinuxCollector {
             });
         }
 
-        let sources = collect_sources(&mut self.system, self.previous_proc_stat_text.as_deref())?;
-        self.previous_proc_stat_text = Some(sources.current_proc_stat_text.clone());
+        let now = (self.clock)();
+        let slow_due = self.slow_cache.as_ref().is_none_or(|cache| {
+            now.duration_since(cache.taken_at) >= self.config.filesystems_interval
+        });
+        if slow_due {
+            let sources = collect_slow_sources()?;
+            self.slow_enumerations = self.slow_enumerations.saturating_add(1);
+            self.slow_cache = Some(LinuxSlowCache {
+                taken_at: now,
+                captured_at_ms: sources.captured_at_ms,
+                sources,
+            });
+        }
+
+        let fast = collect_fast_sources(
+            &mut self.system,
+            self.previous_proc_stat_text.as_deref(),
+            self.config.top_process_count,
+        )?;
+        self.previous_proc_stat_text = Some(fast.current_proc_stat_text.clone());
+        let cache = self
+            .slow_cache
+            .as_ref()
+            .expect("the first collection always populates the slow cache");
+        let sources = merge_sources(fast, cache.sources.clone(), cache.captured_at_ms);
         build_linux_snapshot_from_sources(sources)
     }
 }
 
 impl Collector for LinuxCollector {
+    fn configure(&mut self, config: CollectorConfig) {
+        self.configure_calls = self.configure_calls.saturating_add(1);
+        if self.config != config {
+            self.config = config;
+        }
+    }
+
     fn collect(&mut self) -> CollectorResult<SystemSnapshot> {
         Self::collect(self)
     }
@@ -109,6 +211,7 @@ pub fn build_linux_snapshot_from_sources(
 
     Ok(SystemSnapshot {
         timestamp: sources.timestamp,
+        filesystems_captured_at_ms: Some(sources.filesystems_captured_at_ms),
         identity: IdentitySnapshot {
             hostname: sources.hostname,
             platform: sources.platform,
@@ -121,7 +224,7 @@ pub fn build_linux_snapshot_from_sources(
         cpu: CpuSnapshot {
             usage_percent: calculate_cpu_usage(&previous_cpu, &current_cpu),
             cores: sources.cpu_count,
-            times: current_cpu,
+            times: Some(current_cpu),
         },
         memory: MemorySnapshot {
             total_bytes: memory.total_bytes,
@@ -146,10 +249,11 @@ pub fn build_linux_snapshot_from_sources(
     })
 }
 
-pub fn collect_sources(
+pub fn collect_fast_sources(
     system: &mut System,
     previous_proc_stat_text: Option<&str>,
-) -> CollectorResult<LinuxSnapshotSources> {
+    top_process_count: usize,
+) -> CollectorResult<LinuxFastSources> {
     let first_proc_stat = match previous_proc_stat_text {
         Some(text) => text.to_string(),
         None => proc_stat_text()?,
@@ -163,23 +267,15 @@ pub fn collect_sources(
         refresh_system(system);
     }
     let current_proc_stat = proc_stat_text()?;
-    let disks = Disks::new_with_refreshed_list_specifics(
-        DiskRefreshKind::nothing().with_kind().with_storage(),
-    );
 
-    Ok(LinuxSnapshotSources {
+    // Store validation guarantees at least one process; retain the invariant at
+    // the collector boundary if a future caller bypasses validated settings.
+    let top_process_count = top_process_count.max(1);
+    Ok(LinuxFastSources {
         timestamp: OffsetDateTime::now_utc()
             .format(&Rfc3339)
             .map_err(|error| CollectorError::parse("format timestamp", error.to_string()))?,
-        hostname: System::host_name().unwrap_or_else(|| "unknown".to_string()),
-        platform: "linux".to_string(),
-        arch: env::consts::ARCH.to_string(),
         cpu_count: system.cpus().len().max(1),
-        os_release_text: sysinfo_os_release_text(),
-        proc_version: System::kernel_version().unwrap_or_default(),
-        kernel_release: System::kernel_version().unwrap_or_else(|| env::consts::OS.to_string()),
-        wsl_distro_name: env::var("WSL_DISTRO_NAME").ok(),
-        wsl_interop: env::var("WSL_INTEROP").ok(),
         uptime_text: procfs_uptime_text()?,
         meminfo_text: procfs_meminfo_text(&meminfo),
         loadavg_text: procfs_loadavg_text()?,
@@ -188,10 +284,79 @@ pub fn collect_sources(
         cpu_pressure_text: cpu_pressure_text(),
         memory_pressure_text: memory_pressure_text(),
         io_pressure_text: io_pressure_text(),
+        ps_text: sysinfo_process_text(system, meminfo.mem_total, top_process_count),
+    })
+}
+
+pub fn collect_slow_sources() -> CollectorResult<LinuxSlowSources> {
+    let disks = Disks::new_with_refreshed_list_specifics(
+        DiskRefreshKind::nothing().with_kind().with_storage(),
+    );
+    Ok(LinuxSlowSources {
+        captured_at_ms: now_unix_ms()?,
+        hostname: System::host_name().unwrap_or_else(|| "unknown".to_string()),
+        platform: "linux".to_string(),
+        arch: env::consts::ARCH.to_string(),
+        os_release_text: sysinfo_os_release_text(),
+        proc_version: System::kernel_version().unwrap_or_default(),
+        kernel_release: System::kernel_version().unwrap_or_else(|| env::consts::OS.to_string()),
+        wsl_distro_name: env::var("WSL_DISTRO_NAME").ok(),
+        wsl_interop: env::var("WSL_INTEROP").ok(),
         df_blocks_text: sysinfo_df_blocks_text(&disks),
         df_inodes_text: statvfs_inodes_text(&disks),
-        ps_text: sysinfo_process_text(system, meminfo.mem_total),
     })
+}
+
+/// Collect every source in one shot, including a fresh filesystem enumeration.
+/// This convenience is intentionally uncached; `LinuxCollector` owns cadence.
+pub fn collect_sources(
+    system: &mut System,
+    previous_proc_stat_text: Option<&str>,
+) -> CollectorResult<LinuxSnapshotSources> {
+    let fast = collect_fast_sources(
+        system,
+        previous_proc_stat_text,
+        CollectorConfig::default().top_process_count,
+    )?;
+    let slow = collect_slow_sources()?;
+    let captured_at_ms = slow.captured_at_ms;
+    Ok(merge_sources(fast, slow, captured_at_ms))
+}
+
+fn merge_sources(
+    fast: LinuxFastSources,
+    slow: LinuxSlowSources,
+    filesystems_captured_at_ms: i64,
+) -> LinuxSnapshotSources {
+    LinuxSnapshotSources {
+        timestamp: fast.timestamp,
+        filesystems_captured_at_ms,
+        hostname: slow.hostname,
+        platform: slow.platform,
+        arch: slow.arch,
+        cpu_count: fast.cpu_count,
+        os_release_text: slow.os_release_text,
+        proc_version: slow.proc_version,
+        kernel_release: slow.kernel_release,
+        wsl_distro_name: slow.wsl_distro_name,
+        wsl_interop: slow.wsl_interop,
+        uptime_text: fast.uptime_text,
+        meminfo_text: fast.meminfo_text,
+        loadavg_text: fast.loadavg_text,
+        previous_proc_stat_text: fast.previous_proc_stat_text,
+        current_proc_stat_text: fast.current_proc_stat_text,
+        cpu_pressure_text: fast.cpu_pressure_text,
+        memory_pressure_text: fast.memory_pressure_text,
+        io_pressure_text: fast.io_pressure_text,
+        df_blocks_text: slow.df_blocks_text,
+        df_inodes_text: slow.df_inodes_text,
+        ps_text: fast.ps_text,
+    }
+}
+
+fn now_unix_ms() -> CollectorResult<i64> {
+    i64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+        .map_err(|_| CollectorError::parse("read timestamp", "milliseconds exceed i64"))
 }
 
 pub fn parse_meminfo(text: &str) -> CollectorResult<ParsedMeminfo> {
@@ -531,7 +696,6 @@ impl<'a> DfColumns<'a> {
 fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
-        .take(10)
         .filter_map(|line| {
             if line.contains('\t') {
                 let parts = line.splitn(7, '\t').collect::<Vec<_>>();
@@ -710,7 +874,7 @@ fn statvfs_inodes_text(disks: &Disks) -> String {
     lines.join("\n")
 }
 
-fn sysinfo_process_text(system: &System, total_memory: u64) -> String {
+fn sysinfo_process_text(system: &System, total_memory: u64, top_process_count: usize) -> String {
     let mut processes = system
         .processes()
         .values()
@@ -740,7 +904,7 @@ fn sysinfo_process_text(system: &System, total_memory: u64) -> String {
 
     processes
         .into_iter()
-        .take(10)
+        .take(top_process_count)
         .map(
             |(pid, cpu, memory, rss_kib, parent_pid, started_at, command)| {
                 format!(

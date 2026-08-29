@@ -20,6 +20,11 @@ pub struct RetentionLadder {
     #[serde(default = "default_l4", deserialize_with = "deserialize_l4")]
     pub l4: ToggledTierKeep,
     pub snapshot_json_keep_minutes: i64,
+    /// Filesystem check interval in seconds: the collector's slow cadence class
+    /// re-enumerates mounts (one `statvfs` per mount) and re-stamps
+    /// `filesystemsCapturedAtMs` once per interval, serving the cached list
+    /// between checks. Until the typed-history tasks land, this is also the
+    /// cadence of typed filesystem/process detail rows. Valid range: 15..=3600.
     pub detail_interval_sec: i64,
     pub archive: ArchiveSettings,
     pub disk_check: DiskCheckSettings,
