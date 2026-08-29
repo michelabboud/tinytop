@@ -11,7 +11,7 @@ use axum::{
     extract::{Query, RawQuery, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -21,6 +21,9 @@ use tinytop_store::{
     HistoryMarkerType, HistoryPoint, HistoryPointMode, HistoryPointsQuery, HistoryProcessCapture,
     HistoryQuery, HistorySample, SqliteHistoryStore, SysinfoFreeBytes, apply_disk_measurement,
     resolve_history_point_source_with_poll,
+    settings_transfer::{
+        ImportOutcome, apply_import, export_document, export_filename, import_marker, plan_import,
+    },
 };
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
@@ -142,6 +145,20 @@ struct HistoryMarkersResponse {
     markers: Vec<HistoryMarker>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+struct ImportQuery {
+    #[serde(rename = "dryRun", default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplyImportResponse {
+    applied: bool,
+    #[serde(flatten)]
+    outcome: ImportOutcome,
+}
+
 #[derive(Debug, Serialize)]
 struct VersionResponse {
     status: &'static str,
@@ -252,6 +269,8 @@ fn router(state: AppState) -> Router {
         .route("/version", get(version))
         .route("/api/version", get(version))
         .route("/api/settings", get(get_settings).put(update_settings))
+        .route("/api/settings/export", get(export_settings))
+        .route("/api/settings/import", post(import_settings))
         .route("/api/snapshot", get(latest_snapshot))
         .route("/api/history/coverage", get(history_coverage))
         .route("/api/history/points", get(history_points))
@@ -297,6 +316,48 @@ async fn get_settings(State(state): State<AppState>) -> Result<Response, ServeEr
     Ok(no_store(Json(state.store.get_settings().await?)).into_response())
 }
 
+async fn export_settings(State(state): State<AppState>) -> Result<Response, ServeError> {
+    let now = now_ms()?;
+    let settings = state.store.get_settings().await?;
+    let document = export_document(&settings, now, env!("CARGO_PKG_VERSION"));
+    let bytes = serde_json::to_vec_pretty(&document).map_err(tinytop_store::StoreError::from)?;
+    let mut response = bytes_response(bytes, "application/json");
+    let disposition = format!("attachment; filename=\"{}\"", export_filename(now));
+    let disposition = HeaderValue::from_str(&disposition).map_err(|error| {
+        tinytop_store::StoreError::Validation(format!(
+            "generated settings export filename is not a valid HTTP header: {error}"
+        ))
+    })?;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_DISPOSITION, disposition);
+    Ok(no_store(response))
+}
+
+async fn import_settings(
+    State(state): State<AppState>,
+    Query(query): Query<ImportQuery>,
+    Json(document): Json<JsonValue>,
+) -> Result<Response, ServeError> {
+    let now = now_ms()?;
+    if query.dry_run {
+        let plan = plan_import(&state.store, &document, now).await?;
+        return Ok(no_store(Json(plan)));
+    }
+
+    let outcome = apply_import(&state.store, &document, now).await?;
+    maintain_history(&state, &outcome.settings).await?;
+    let (label, details) = import_marker(&outcome.changed_keys);
+    state
+        .store
+        .record_event(now_ms()?, HistoryMarkerType::SettingsChange, label, details)
+        .await?;
+    Ok(no_store(Json(ApplyImportResponse {
+        applied: true,
+        outcome,
+    })))
+}
+
 async fn update_settings(
     State(state): State<AppState>,
     Json(payload): Json<JsonValue>,
@@ -312,7 +373,7 @@ async fn update_settings(
             HistoryMarkerType::SettingsChange,
             "Settings changed",
             json!({
-                "changed": changed_setting_keys(&previous, &saved),
+                "changed": DashboardSettings::changed_keys(&previous, &saved),
             }),
         )
         .await?;
@@ -941,44 +1002,6 @@ impl From<HistoryMarkersParams> for HistoryParams {
     }
 }
 
-fn changed_setting_keys(
-    previous: &DashboardSettings,
-    saved: &DashboardSettings,
-) -> Vec<&'static str> {
-    let mut changed = Vec::new();
-    if previous.default_theme != saved.default_theme {
-        changed.push("defaultTheme");
-    }
-    if previous.default_graph_mode != saved.default_graph_mode {
-        changed.push("defaultGraphMode");
-    }
-    if previous.poll_interval_ms != saved.poll_interval_ms {
-        changed.push("pollIntervalMs");
-    }
-    if previous.default_history_window != saved.default_history_window {
-        changed.push("defaultHistoryWindow");
-    }
-    if previous.retention_ladder != saved.retention_ladder {
-        changed.push("retentionLadder");
-    }
-    if previous.target_database_bytes != saved.target_database_bytes {
-        changed.push("targetDatabaseBytes");
-    }
-    if previous.top_process_count != saved.top_process_count {
-        changed.push("topProcessCount");
-    }
-    if previous.redaction_default != saved.redaction_default {
-        changed.push("redactionDefault");
-    }
-    if previous.thresholds != saved.thresholds {
-        changed.push("thresholds");
-    }
-    if previous.enabled_sections != saved.enabled_sections {
-        changed.push("enabledSections");
-    }
-    changed
-}
-
 fn static_relative_path(path: &str) -> Option<&'static Path> {
     match path {
         "/" | "/index.html" => Some(Path::new("index.html")),
@@ -1293,6 +1316,31 @@ mod tests {
                 Request::builder()
                     .uri(uri)
                     .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router request should complete");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body should collect")
+            .to_bytes();
+        let body = serde_json::from_slice(&bytes).expect("response should be JSON");
+        (status, body)
+    }
+
+    async fn post_json(app: Router, uri: &str, body: JsonValue) -> (StatusCode, JsonValue) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&body).expect("request body should serialize"),
+                    ))
                     .expect("request should build"),
             )
             .await
@@ -1967,16 +2015,218 @@ mod tests {
         assert_eq!(csp(&response), "frame-ancestors 'self'");
     }
 
-    #[test]
-    fn changed_setting_keys_reports_the_ladder_once_instead_of_derived_aliases() {
-        let previous = DashboardSettings::default();
-        let mut saved = previous.clone();
-        saved.retention_ladder.l1.keep_days = 4;
-        saved.retention_hours = 96;
+    #[tokio::test]
+    async fn export_route_sets_attachment_headers_and_the_envelope() {
+        // Break caught: the export route omits the versioned document or serves it
+        // as cacheable inline JSON instead of a human-downloadable attachment.
+        let (_fixture, state) = test_state("settings-export").await;
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/settings/export")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router request should complete");
 
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            changed_setting_keys(&previous, &saved),
-            vec!["retentionLadder"]
+            response.headers()[header::CACHE_CONTROL],
+            HeaderValue::from_static("no-store")
         );
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            HeaderValue::from_static("application/json")
+        );
+        let disposition = response.headers()[header::CONTENT_DISPOSITION]
+            .to_str()
+            .expect("content disposition should be ASCII");
+        let prefix = "attachment; filename=\"tinytop-settings-";
+        let suffix = ".json\"";
+        assert!(
+            disposition.starts_with(prefix) && disposition.ends_with(suffix),
+            "unexpected content disposition: {disposition}"
+        );
+        let timestamp = &disposition[prefix.len()..disposition.len() - suffix.len()];
+        assert_eq!(timestamp.len(), 13, "expected YYYYMMDD-HHMM");
+        assert_eq!(&timestamp[8..9], "-");
+        assert!(
+            timestamp
+                .bytes()
+                .enumerate()
+                .all(|(index, byte)| index == 8 || byte.is_ascii_digit()),
+            "unexpected timestamp token: {timestamp}"
+        );
+
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("response body should collect")
+            .to_bytes();
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("export should be JSON");
+        assert_eq!(body["tinytopConfigVersion"], 1);
+        assert_eq!(body["agentVersion"], env!("CARGO_PKG_VERSION"));
+        assert!(body["exportedAtMs"].is_number());
+        assert!(body["settings"].is_object());
+    }
+
+    #[tokio::test]
+    async fn import_dry_run_route_returns_the_plan_without_applying() {
+        // Break caught: a preview mutates app_settings or drops the server-computed plan.
+        let (_fixture, state) = test_state("settings-import-dry-run").await;
+        let previous = state.store.get_settings().await.expect("default settings");
+        let mut candidate = serde_json::to_value(&previous).expect("settings should serialize");
+        candidate["retentionLadder"]["l2"]["keepDays"] = json!(10);
+        let document = json!({ "tinytopConfigVersion": 1, "settings": candidate });
+
+        let (status, body) = post_json(
+            router(state.clone()),
+            "/api/settings/import?dryRun=true",
+            document,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["valid"], true);
+        assert_eq!(body["changedKeys"], json!(["retentionLadder"]));
+        assert!(body["wouldDelete"].is_object());
+        assert_eq!(
+            state
+                .store
+                .get_settings()
+                .await
+                .expect("settings after preview"),
+            previous
+        );
+        assert!(
+            state
+                .store
+                .read_history_markers(HistoryQuery::default(), 60_000)
+                .await
+                .expect("markers should read")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn import_route_applies_runs_maintenance_and_records_the_import_marker() {
+        // Break caught: a real import skips persistence, immediate daemon maintenance,
+        // or the source-qualified settingsChange marker.
+        let (_fixture, state) = test_state("settings-import-apply").await;
+        insert_fixture_snapshot(&state.store, 1).await;
+        let mut candidate =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        candidate["retentionLadder"]["l2"]["keepDays"] = json!(10);
+        let document = json!({ "tinytopConfigVersion": 1, "settings": candidate });
+
+        let (status, body) =
+            post_json(router(state.clone()), "/api/settings/import", document).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["applied"], true);
+        assert_eq!(body["changedKeys"], json!(["retentionLadder"]));
+        assert_eq!(body["settings"]["retentionLadder"]["l2"]["keepDays"], 10);
+        assert_eq!(
+            state
+                .store
+                .stats()
+                .await
+                .expect("stats after maintenance")
+                .sample_count,
+            0,
+            "the import route should run maintenance after applying"
+        );
+
+        let (settings_status, settings_body) =
+            request_json(router(state.clone()), "/api/settings").await;
+        assert_eq!(settings_status, StatusCode::OK);
+        assert_eq!(settings_body, body["settings"]);
+
+        let (markers_status, markers_body) =
+            request_json(router(state), "/api/history/markers?windowSeconds=3600").await;
+        assert_eq!(markers_status, StatusCode::OK, "{markers_body}");
+        let settings_markers = markers_body["markers"]
+            .as_array()
+            .expect("markers should be an array")
+            .iter()
+            .filter(|marker| marker["markerType"] == "settingsChange")
+            .collect::<Vec<_>>();
+        assert_eq!(settings_markers.len(), 1, "{markers_body}");
+        assert_eq!(settings_markers[0]["label"], "Settings imported");
+        assert_eq!(settings_markers[0]["details"]["source"], "import");
+        assert_eq!(
+            settings_markers[0]["details"]["changed"],
+            json!(["retentionLadder"])
+        );
+    }
+
+    #[tokio::test]
+    async fn import_route_rejects_a_newer_document_with_400() {
+        // Break caught: unsupported config envelopes are applied or reported in a
+        // different shape from existing settings validation failures.
+        let (_fixture, state) = test_state("settings-import-newer").await;
+        let previous = state.store.get_settings().await.expect("default settings");
+        let document = json!({
+            "tinytopConfigVersion": 2,
+            "settings": serde_json::to_value(&previous).expect("settings should serialize")
+        });
+
+        let (status, body) =
+            post_json(router(state.clone()), "/api/settings/import", document).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("maximum supported 1"),
+            "{body}"
+        );
+        assert_eq!(
+            state
+                .store
+                .get_settings()
+                .await
+                .expect("settings after refusal"),
+            previous
+        );
+    }
+
+    #[tokio::test]
+    async fn put_settings_marker_details_keep_their_shape() {
+        // Break caught: the additive import source field leaks into existing PUT
+        // markers and changes the contract consumed by current clients.
+        let (_fixture, state) = test_state("settings-put-marker-shape").await;
+        let mut settings =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        settings["defaultTheme"] = json!("matrix");
+
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/settings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&settings).expect("request body should serialize"),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router request should complete");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let markers = state
+            .store
+            .read_history_markers(HistoryQuery::default(), 60_000)
+            .await
+            .expect("markers should read");
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].details, json!({ "changed": ["defaultTheme"] }));
+        assert!(markers[0].details.get("source").is_none());
     }
 }

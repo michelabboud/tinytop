@@ -1,4 +1,5 @@
 use std::{
+    io::Write,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -14,6 +15,7 @@ use tinytop_store::{
         months_ready_to_export, read_archive_manifest,
     },
     database_path_from_url, inspect_database_path, pre_image_path,
+    settings_transfer::{apply_import, export_document, import_marker, plan_import},
 };
 
 mod writer;
@@ -28,10 +30,16 @@ const DEFAULT_POLL_MS: u64 = 1500;
 async fn main() {
     if let Err(error) = run().await {
         if let Some(refusal) = error.downcast_ref::<Refused>() {
-            println!(
-                "{}",
-                serde_json::json!({ "status": "refused", "reason": refusal.reason })
-            );
+            let mut response = serde_json::json!({
+                "status": "refused",
+                "reason": refusal.reason,
+            });
+            if let Some(details) = &refusal.details {
+                response["details"] = details.clone();
+            }
+            println!("{response}");
+        } else if error.downcast_ref::<OutputAlreadyReported>().is_some() {
+            // The command already emitted its structured failure response.
         } else {
             eprintln!("{error}");
         }
@@ -46,6 +54,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     match command {
         "collect" => collect(args.get(1..).unwrap_or(&[])).await,
         "db" => db(args.get(1..).unwrap_or(&[])).await,
+        "config" => config(args.get(1..).unwrap_or(&[])).await,
         "serve" => serve(args.get(1..).unwrap_or(&[]), ServeDefaults::dashboard()).await,
         "serve-writer" => serve(args.get(1..).unwrap_or(&[]), ServeDefaults::writer()).await,
         "help" | "--help" | "-h" => {
@@ -131,9 +140,11 @@ struct ArchiveExportOutput {
     written: Vec<ArchiveManifestRow>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Refused {
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 impl std::fmt::Display for Refused {
@@ -143,6 +154,17 @@ impl std::fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+#[derive(Debug)]
+struct OutputAlreadyReported;
+
+impl std::fmt::Display for OutputAlreadyReported {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("structured command failure already reported")
+    }
+}
+
+impl std::error::Error for OutputAlreadyReported {}
 
 #[derive(Debug, Clone)]
 struct ServeDefaults {
@@ -266,6 +288,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                         reason: format!(
                             "user_version check observed {user_version}; the schema v1 migration has not run — stop every TinyTop writer and start the daemon once (it takes the pre-image first; see INSTALL.md)"
                         ),
+                        details: None,
                     }
                     .into());
                 }
@@ -342,6 +365,278 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+async fn config(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err("config requires a subcommand: export or import".into());
+    };
+
+    let mut sqlite_url: Option<String> = None;
+    let mut output_path: Option<PathBuf> = None;
+    let mut dry_run = false;
+    let (input_path, mut index) = match subcommand {
+        "export" => (None, 1),
+        "import" => {
+            let path = args
+                .get(1)
+                .filter(|value| !value.starts_with('-'))
+                .ok_or("config import requires FILE as its first argument")?;
+            (Some(PathBuf::from(path)), 2)
+        }
+        unknown => return Err(format!("unknown config command: {unknown}").into()),
+    };
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--sqlite" => {
+                sqlite_url = Some(normalize_sqlite_url(&require_value(
+                    args, index, "--sqlite",
+                )?)?);
+                index += 2;
+            }
+            "--out" if subcommand == "export" => {
+                output_path = Some(PathBuf::from(require_value(args, index, "--out")?));
+                index += 2;
+            }
+            "--dry-run" if subcommand == "import" => {
+                dry_run = true;
+                index += 1;
+            }
+            other => return Err(format!("unknown config option: {other}").into()),
+        }
+    }
+
+    let sqlite_url = match sqlite_url {
+        Some(url) => url,
+        None => default_sqlite_url()?,
+    };
+    let store = connect_for_db_diagnostic(&sqlite_url).await?;
+    let operation: Result<ConfigCommandOutput, Box<dyn std::error::Error>> = async {
+        let user_version = store.user_version().await?;
+        if user_version < 1 {
+            return Err(Refused {
+                reason: format!(
+                    "user_version check observed {user_version}; the schema v1 migration has not run — stop every TinyTop writer and start the daemon once (it takes the pre-image first; see INSTALL.md)"
+                ),
+                details: None,
+            }
+            .into());
+        }
+
+        match subcommand {
+            "export" => {
+                let settings = store.get_settings().await?;
+                let document =
+                    export_document(&settings, now_ms()?, env!("CARGO_PKG_VERSION"));
+                let mut contents = serde_json::to_string_pretty(&document)?;
+                contents.push('\n');
+
+                if let Some(path) = output_path {
+                    refuse_existing_export_path(&path)?;
+                    let temporary = suffixed_path(&path, ".tmp");
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&temporary)
+                        .map_err(|error| {
+                            format!(
+                                "could not create temporary settings export {}: {error}",
+                                temporary.display()
+                            )
+                        })?;
+                    file.write_all(contents.as_bytes()).map_err(|error| {
+                        format!(
+                            "could not write temporary settings export {}: {error}",
+                            temporary.display()
+                        )
+                    })?;
+                    file.sync_all().map_err(|error| {
+                        format!(
+                            "could not sync temporary settings export {}: {error}",
+                            temporary.display()
+                        )
+                    })?;
+                    drop(file);
+                    publish_settings_export_no_clobber(&temporary, &path)?;
+                    let absolute_path = path.canonicalize().map_err(|error| {
+                        format!(
+                            "could not resolve exported settings path {}: {error}",
+                            path.display()
+                        )
+                    })?;
+                    Ok(ConfigCommandOutput::Success(serde_json::to_string_pretty(
+                        &serde_json::json!({
+                            "status": "ok",
+                            "action": "export",
+                            "path": absolute_path.display().to_string(),
+                            "bytes": contents.len(),
+                        }),
+                    )?))
+                } else {
+                    Ok(ConfigCommandOutput::Success(contents))
+                }
+            }
+            "import" => {
+                let input_path = input_path
+                    .as_ref()
+                    .ok_or("config import requires FILE as its first argument")?;
+                let contents = std::fs::read_to_string(input_path).map_err(|error| {
+                    format!(
+                        "could not read settings document {}: {error}",
+                        input_path.display()
+                    )
+                })?;
+                let document: serde_json::Value =
+                    serde_json::from_str(&contents).map_err(|error| {
+                        format!(
+                            "could not parse settings document {} as JSON: {error}",
+                            input_path.display()
+                        )
+                    })?;
+                let plan = plan_import(&store, &document, now_ms()?).await?;
+                if dry_run {
+                    let output = serde_json::to_string_pretty(&plan)?;
+                    return Ok(if plan.valid {
+                        ConfigCommandOutput::Success(output)
+                    } else {
+                        ConfigCommandOutput::Failure(output)
+                    });
+                }
+                if !plan.valid {
+                    return Err(Refused {
+                        reason: format!(
+                            "settings document invalid: {}",
+                            plan.errors.join("; ")
+                        ),
+                        details: Some(serde_json::to_value(&plan)?),
+                    }
+                    .into());
+                }
+
+                let outcome = apply_import(&store, &document, now_ms()?).await?;
+                let (label, details) = import_marker(&outcome.changed_keys);
+                store
+                    .record_event(
+                        now_ms()?,
+                        tinytop_store::HistoryMarkerType::SettingsChange,
+                        label,
+                        details,
+                    )
+                    .await?;
+                Ok(ConfigCommandOutput::Success(serde_json::to_string_pretty(
+                    &serde_json::json!({
+                        "status": "ok",
+                        "action": "import",
+                        "changedKeys": outcome.changed_keys,
+                        "wouldDelete": outcome.would_delete,
+                        "maintenance": "deferred to the daemon's next tick",
+                    }),
+                )?))
+            }
+            _ => unreachable!("config subcommand was validated before opening the store"),
+        }
+    }
+    .await;
+    let close_result = store.close().await;
+    let output = operation?;
+    close_result?;
+    match output {
+        ConfigCommandOutput::Success(output) => {
+            print_config_output(&output);
+            Ok(())
+        }
+        ConfigCommandOutput::Failure(output) => {
+            print_config_output(&output);
+            Err(OutputAlreadyReported.into())
+        }
+    }
+}
+
+enum ConfigCommandOutput {
+    Success(String),
+    Failure(String),
+}
+
+fn print_config_output(output: &str) {
+    print!("{output}");
+    if !output.ends_with('\n') {
+        println!();
+    }
+}
+
+fn refuse_existing_export_path(path: &std::path::Path) -> Result<(), Refused> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(existing_export_refusal(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Refused {
+            reason: format!(
+                "could not check whether settings export path {} exists: {error}",
+                path.display()
+            ),
+            details: None,
+        }),
+    }
+}
+
+fn existing_export_refusal(path: &std::path::Path) -> Refused {
+    Refused {
+        reason: format!(
+            "{} exists; remove it or choose another name — config export never overwrites",
+            path.display()
+        ),
+        details: None,
+    }
+}
+
+fn publish_settings_export_no_clobber(
+    temporary: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // `rename` is atomic but may replace a target created after a preflight check.
+    // A same-directory hard link atomically publishes the synced inode only when
+    // the final name is still absent; unlinking the temp then leaves one name.
+    match std::fs::hard_link(temporary, target) {
+        Ok(()) => {
+            std::fs::remove_file(temporary).map_err(|error| {
+                format!(
+                    "settings export was published at {}, but temporary link {} could not be removed: {error}",
+                    target.display(),
+                    temporary.display()
+                )
+            })?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if let Err(cleanup_error) = std::fs::remove_file(temporary) {
+                eprintln!(
+                    "settings export refusal cleanup could not remove temporary link {}: {cleanup_error}",
+                    temporary.display()
+                );
+            }
+            Err(existing_export_refusal(target).into())
+        }
+        Err(error) => {
+            if let Err(cleanup_error) = std::fs::remove_file(temporary) {
+                eprintln!(
+                    "settings export publication cleanup could not remove temporary link {}: {cleanup_error}",
+                    temporary.display()
+                );
+            }
+            Err(format!(
+                "could not publish temporary settings export {} at {} without overwriting: {error}",
+                temporary.display(),
+                target.display()
+            )
+            .into())
+        }
+    }
+}
+
+fn suffixed_path(path: &std::path::Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
+}
+
 async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let store = connect_for_db_diagnostic(sqlite_url).await?;
     let operation: Result<String, Box<dyn std::error::Error>> = async {
@@ -351,6 +646,7 @@ async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::e
                 reason: format!(
                     "user_version check observed {user_version}; the schema v1 migration has not run — stop every TinyTop writer and start the daemon once (it takes the pre-image first; see INSTALL.md)"
                 ),
+                details: None,
             }
             .into());
         }
@@ -423,6 +719,7 @@ async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::e
                     return Err(Refused {
                         reason: "retentionLadder.archive.cold must be true for db archive export-now; observed false — enable retentionLadder.archive.cold and retry"
                             .to_string(),
+                        details: None,
                     }
                     .into());
                 }
@@ -430,6 +727,7 @@ async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::e
                     return Err(Refused {
                         reason: "retentionLadder.archive.queryable must be true for db archive export-now; observed false — enable retentionLadder.archive.queryable and retry"
                             .to_string(),
+                        details: None,
                     }
                     .into());
                 }
@@ -520,6 +818,7 @@ async fn db_pre_image(
             ) {
                 return Err(Refused {
                     reason: format!("{reason}; path is {}", path.display()),
+                    details: None,
                 }
                 .into());
             }
@@ -742,6 +1041,7 @@ async fn connect_for_db_diagnostic(
             "database {} does not exist; nothing was created — check the path or start the daemon once",
             database_path.display()
         ),
+        details: None,
     }
     .into())
 }
@@ -795,6 +1095,8 @@ Usage:
   tinytop-agent db pre-image remove [--yes] [--sqlite <database-url>]
   tinytop-agent db archive status [--sqlite <database-url>]
   tinytop-agent db archive export-now [--sqlite <database-url>]
+  tinytop-agent config export [--out <file>] [--sqlite <database-url>]
+  tinytop-agent config import <file> [--dry-run] [--sqlite <database-url>]
   tinytop-agent serve [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>] [--public-dir <path>]
   tinytop-agent serve-writer [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>]
   tinytop-agent help
@@ -852,6 +1154,44 @@ mod tests {
         assert!(url.contains(r"Local"));
         assert!(url.contains(r"TinyTop"));
         assert!(url.contains(r"history.sqlite"));
+    }
+
+    #[test]
+    fn settings_export_publication_refuses_a_destination_created_after_temp_write() {
+        // Break caught: a destination created after the preflight check is overwritten by rename.
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "tinytop-config-publish-race-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("fixture directory should be created");
+        let target = directory.join("settings.json");
+        let temporary = suffixed_path(&target, ".tmp");
+        std::fs::write(&temporary, b"candidate").expect("temporary export should be written");
+        std::fs::write(&target, b"competitor").expect("competing destination should be written");
+
+        let error = publish_settings_export_no_clobber(&temporary, &target)
+            .expect_err("publication must refuse a destination that appeared after temp creation");
+        let refusal = error
+            .downcast_ref::<Refused>()
+            .expect("publication race should retain the structured refusal");
+
+        assert_eq!(
+            refusal.reason,
+            format!(
+                "{} exists; remove it or choose another name — config export never overwrites",
+                target.display()
+            )
+        );
+        assert_eq!(
+            std::fs::read(&target).expect("competing destination should remain readable"),
+            b"competitor"
+        );
+        assert!(!temporary.exists());
+        std::fs::remove_dir_all(&directory).expect("fixture directory should be removable");
     }
 
     #[test]

@@ -152,6 +152,13 @@ describe("dashboard settings", () => {
     expect(app).toContain("validateRetentionLadder");
   });
 
+  test("provides Rust-only settings transfer controls without client-side approximations", () => {
+    expect(html).toContain('id="export-settings-button"');
+    expect(html).toContain('id="import-settings-button"');
+    expect(html).toContain('id="import-settings-file"');
+    expect(app).not.toContain("approx");
+  });
+
   test("keeps native select dropdown options readable in every theme", () => {
     for (const selector of [
       ".settings-group select option",

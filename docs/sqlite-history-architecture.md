@@ -432,6 +432,18 @@ Every explicit settings save validates the complete block and writes `retentionH
 
 If `history_state.diskPressure.active` is present, saves that extend a horizon, enable L3/L4, or enable an archive are refused with `disk pressure active: free X < minFreeBytes Y; shrink first or free disk`; shrinking remains allowed. The ladder validator owns this rule for both pure validation and the persisted settings path.
 
+## Settings transfer
+
+The Rust daemon exports settings in an envelope with `tinytopConfigVersion`, `exportedAtMs`, `agentVersion`, and `settings`. `MAX_CONFIG_VERSION` is currently 1. The envelope is independent of the agent release and secret-free by construction: `DashboardSettings` contains no credential, and settings for external integrations name environment variables instead of holding their values.
+
+Import is split into a read-only plan and an authoritative apply. Planning rejects unknown envelope keys and unsupported versions, decodes through `DashboardSettings::from_document`, normalizes the legacy L1/L2 mirrors, validates the candidate against the persisted ladder and disk-pressure state, and reports ignored unknown keys inside `settings` as warnings. It returns changed keys and `wouldDelete` without writing. Applying repeats that plan and then calls `put_settings`, whose `BEGIN IMMEDIATE` validation is authoritative if pressure changes between preview and write.
+
+`wouldDelete` uses the same predicates as maintenance: L1 counts `captured_at_ms < cutoff`; rollups count `bucket_start_ms + resolution <= cutoff`; snapshot JSON counts non-null blobs with `captured_at_ms < cutoff`. The candidate ladder is converted through the maintenance configuration builder, so disabled tiers count zero and forever L4 counts zero. Queryable-archive L4 counts are the rows that leave `main` and move to the archive. Counts mean “older than the candidate horizon”: they can include rows already past the current horizon but not yet pruned because L2/L3 deletion is watermark-gated and each tick is bounded. Maintenance may therefore take several ticks to reach the reported number, but it never deletes more than that preview.
+
+HTTP import runs maintenance after the settings write and then records a `settingsChange` marker labelled `Settings imported` with `{"source":"import","changed":[…]}`. CLI import records the same marker but never runs maintenance: a running daemon re-reads settings on every collection tick and at startup, while running pruning from a second process beside the daemon would violate the maintenance ownership boundary.
+
+Both CLI verbs inspect an existing writable database without creating or migrating it. They refuse a missing database and `user_version = 0`; import also refuses unknown top-level keys, a config version newer than 1, invalid settings, and retention growth under active disk pressure. The dry-run prints the same plan shape used by the dashboard.
+
 ## Disk check
 
 The Rust daemon checks immediately when its disk task starts, then sleeps for the current `retentionLadder.diskCheck.intervalMinutes`. Settings are read again at the start of every iteration, so a changed interval applies after the current sleep, on the next tick. The check measures the main database's parent directory using the longest matching mount prefix from ADR 0017. Mount enumeration and its per-mount `statvfs` work run on a Tokio blocking thread so a slow network mount cannot stall the HTTP runtime. The report also includes SQLite's current database bytes.
