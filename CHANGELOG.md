@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Dashboard: the import confirmation now names a retention-ladder change that affects no stored history (`retention ladder changes — no stored history is affected`) and an imported document identical to the current settings, instead of listing only the other keys or opening empty; the save path still shows no dialog for a zero-impact change (T10-fix2, hexe run 626; found by the 0.4.1 acceptance pass).
+
 ## 0.4.1 - 2026-08-29
 
 Phase 3 of the tiered history ladder closes with one task: a versioned, secret-free settings document that moves between daemons (ADR 0016) — `GET /api/settings/export`, `POST /api/settings/import` (`?dryRun=true` previews with server-computed `wouldDelete`), the `config export` / `config import` CLI verbs, and the dashboard's Export/Import buttons, which also replace the client-side "approx." retention estimates with the same dry-run. The blind review (luna run 617) and its fix round closed a save-path regression the task had introduced (a theme-only save prompted "also changes: defaultTheme"), a stranded `<FILE>.tmp` after a failed export write, a missing directory fsync after the publish, and the hard-link publish on filesystems without `link(2)` (FAT/exFAT — now a re-checked rename fallback with its window documented), and added the missing version-type, invalid-path-invariant and one-object-refusal tests. Audits at the tag: `cargo audit` 0 vulnerabilities (3 pre-existing allowed warnings), `bun audit` clean; `user_version` stays 1 — no migration.
