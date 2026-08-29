@@ -364,7 +364,8 @@ async fn history_points(
         points,
         source: source.as_str(),
         resolution_ms: source.resolution_ms(settings.poll_interval_ms),
-        available: source != HistoryPointMode::Archive,
+        available: source != HistoryPointMode::Archive
+            || settings.retention_ladder.archive.queryable,
     }))
     .into_response())
 }
@@ -567,8 +568,8 @@ async fn maintain_history(
     }
     if report.pruned.iter().any(|count| *count > 0) || report.expired_l4 > 0 {
         eprintln!(
-            "history maintenance info: deleted tier rows {:?}, expired L4 rows {}",
-            report.pruned, report.expired_l4
+            "history maintenance info: deleted tier rows {:?}, expired L4 rows {}, archived L4 rows {}",
+            report.pruned, report.expired_l4, report.archived_l4
         );
     }
     Ok(())
@@ -1483,11 +1484,68 @@ mod tests {
             );
             assert_eq!(
                 body["available"],
-                case.expected_source != "archive",
+                case.expected_source != "archive" || case.archive_queryable,
                 "{}",
                 case.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn queryable_auto_archive_response_is_available_and_contains_points() {
+        // Break caught: archive-backed auto pages are returned as unavailable or empty.
+        let (_fixture, state) = test_state("queryable-auto-archive").await;
+        let mut settings = state.store.get_settings().await.expect("default settings");
+        settings.retention_ladder.archive.queryable = true;
+        state
+            .store
+            .put_settings(&settings)
+            .await
+            .expect("archive settings should persist");
+        let stat = tinytop_store::ladder::Stat {
+            avg: 10.0,
+            min: 10.0,
+            max: 10.0,
+        };
+        state
+            .store
+            .upsert_tier_bucket(
+                tinytop_store::ladder::Tier::L4,
+                &tinytop_store::ladder::TierBucket {
+                    bucket_start_ms: 0,
+                    first_captured_at_ms: 0,
+                    newest_captured_at_ms: 3_599_999,
+                    sample_count: 60,
+                    cpu: stat,
+                    memory: stat,
+                    swap: stat,
+                    load: stat,
+                    root_used: Some(stat),
+                },
+            )
+            .await
+            .expect("L4 fixture bucket should insert");
+        let paths = tinytop_store::archive::archive_paths(
+            state.store.database_path(),
+            &settings.retention_ladder.archive,
+        );
+        assert_eq!(
+            tinytop_store::archive::move_expired_l4(&state.store, &paths, 7_200_000, 10)
+                .await
+                .expect("fixture row should archive"),
+            1
+        );
+
+        let now = now_ms().expect("test time");
+        let uri = format!("/api/history/points?source=auto&sinceMs=0&untilMs={now}&limit=10000");
+        let (status, body) = request_json(router(state), &uri).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["source"], "archive");
+        assert_eq!(body["resolutionMs"], 3_600_000);
+        assert_eq!(body["available"], true);
+        assert_eq!(body["points"].as_array().expect("points array").len(), 1);
+        assert_eq!(body["points"][0]["source"], "archive");
     }
 
     #[tokio::test]

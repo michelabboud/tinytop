@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS process_samples (
 CREATE INDEX IF NOT EXISTS idx_process_samples_time ON process_samples (captured_at_ms DESC);
 ```
 
-Archive DB `history-archive.sqlite` (same directory as the main DB unless `archive.directory` set): `user_version 1`, tables `metric_rollups_1h` (identical shape) and `archive_manifest (month TEXT PRIMARY KEY, exported_at_ms INTEGER NOT NULL, file TEXT NOT NULL, sha256 TEXT NOT NULL, row_count INTEGER NOT NULL, bytes INTEGER NOT NULL)`. Opened with `ATTACH DATABASE ? AS archive` only for the duration of a move or a read; never left attached across the pool.
+Archive DB `history-archive.sqlite` (same directory as the main DB unless `archive.directory` set): `user_version 1`, tables `metric_rollups_1h` (identical shape) and `archive_manifest (month TEXT PRIMARY KEY, exported_at_ms INTEGER NOT NULL, file TEXT NOT NULL, sha256 TEXT NOT NULL, row_count INTEGER NOT NULL, bytes INTEGER NOT NULL)`. Moves use `ATTACH DATABASE ? AS archive` only for the duration of the move and never leave it attached across the pool; reads use a dedicated read-only connection and never create a missing archive.
 
 ## 7. Migration v0 → v1 (one-time, in `SqliteHistoryStore::connect`)
 

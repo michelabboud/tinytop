@@ -1,7 +1,8 @@
 use crate::{
     DashboardSettings, SqliteHistoryStore, StoreError,
+    archive::{ARCHIVE_BATCH_ROWS, MAX_ARCHIVE_BATCHES_PER_TICK, archive_paths, move_expired_l4},
     ladder::{Tier, TierBucket, bucket_start_for, fold, grace_ms, is_complete},
-    retention_ladder::RetentionLadder,
+    retention_ladder::{ArchiveSettings, RetentionLadder},
 };
 
 const MAX_PROMOTIONS_PER_TICK: i64 = 50;
@@ -27,6 +28,7 @@ pub struct MaintenanceReport {
     pub pruned: [i64; 4],
     pub detail_rows: i64,
     pub expired_l4: i64,
+    pub archived_l4: i64,
 }
 
 #[derive(Debug)]
@@ -62,11 +64,12 @@ pub async fn maintain(
     now_ms: i64,
 ) -> Result<MaintenanceReport, MaintenanceError> {
     settings.validate()?;
-    maintain_with_config(
+    maintain_with_archive(
         store,
         &settings
             .retention_ladder
             .to_ladder_config(settings.poll_interval_ms),
+        &settings.retention_ladder.archive,
         now_ms,
     )
     .await
@@ -76,6 +79,15 @@ pub async fn maintain(
 pub async fn maintain_with_config(
     store: &SqliteHistoryStore,
     config: &LadderConfig,
+    now_ms: i64,
+) -> Result<MaintenanceReport, MaintenanceError> {
+    maintain_with_archive(store, config, &ArchiveSettings::default(), now_ms).await
+}
+
+async fn maintain_with_archive(
+    store: &SqliteHistoryStore,
+    config: &LadderConfig,
+    archive: &ArchiveSettings,
     now_ms: i64,
 ) -> Result<MaintenanceReport, MaintenanceError> {
     let mut report = MaintenanceReport::default();
@@ -230,15 +242,31 @@ pub async fn maintain_with_config(
     }
 
     if let Some(l4_keep_ms) = config.l4.filter(|keep_ms| *keep_ms > 0) {
-        match store
-            .prune_rollups(Tier::L4, now_ms.saturating_sub(l4_keep_ms))
-            .await
-        {
-            Ok(count) => {
-                report.expired_l4 = to_i64_count(count);
-                report.pruned[3] = report.expired_l4;
+        let cutoff_ms = now_ms.saturating_sub(l4_keep_ms);
+        if archive.queryable {
+            let paths = archive_paths(store.database_path(), archive);
+            for _ in 0..MAX_ARCHIVE_BATCHES_PER_TICK {
+                match move_expired_l4(store, &paths, cutoff_ms, ARCHIVE_BATCH_ROWS).await {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        report.archived_l4 = report.archived_l4.saturating_add(count);
+                        report.expired_l4 = report.expired_l4.saturating_add(count);
+                        report.pruned[3] = report.pruned[3].saturating_add(count);
+                    }
+                    Err(error) => {
+                        record_step_error(&mut first_error, "expire L4", error);
+                        break;
+                    }
+                }
             }
-            Err(error) => record_step_error(&mut first_error, "expire L4", error),
+        } else {
+            match store.prune_rollups(Tier::L4, cutoff_ms).await {
+                Ok(count) => {
+                    report.expired_l4 = to_i64_count(count);
+                    report.pruned[3] = report.expired_l4;
+                }
+                Err(error) => record_step_error(&mut first_error, "expire L4", error),
+            }
         }
     }
 
