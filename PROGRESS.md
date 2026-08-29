@@ -2,15 +2,16 @@
 
 ## Current Version
 
-- Version: `0.5.0`
+- Version: `0.5.1`
 - Date: 2026-08-29
-- Status: Phase 4 CLOSED as 0.5.0 — the tiered-history-ladder plan is COMPLETE (T1–T11, four
-  phases, ADRs 0013–0020). T11 OpenTelemetry push export (ADR 0015): off by default, HTTP/protobuf,
-  daemon-driven `ManualReader`, headers from a named environment variable, coverage / `db stats` /
-  dashboard surfaces; two review rounds (luna 630 → fix 632; deep dual-blind sol 633 ∥ luna 634 → fix
-  637). Next = redeploy the live daemon on 0.5.0 (an explicitly ordered step), then the Backlog
-  (stale-check refusal, `--base-path`, ring-only rustls provider, `consecutiveFailures`, the
-  disabled-path cost measurement).
+- Status: Phase 5 (cadence classes + GPU, plan `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md`,
+  ADRs 0021–0023) IN PROGRESS. T12 landed as 0.5.1: the collector owns three cadence classes
+  (fast / slow / static), `statvfs` runs once per mount per `detailIntervalSec` instead of per tick,
+  `/api/snapshot` answers from memory, `topProcessCount` is effective, `cpu.times` is optional;
+  review rounds luna 644 → fix 648. Next = T13 (schema v2: `process_commands` dictionary,
+  `process_samples_fast`, `command_id`, `processFastKeepHours`; brief
+  `docs/plans/2026-08-28-tiered-history-ladder/briefs/T13.md`), then T14–T17 → 0.6.0. The live
+  daemon still runs 0.3.1 — redeploy is an explicitly ordered step.
 
 ## Backlog
 
@@ -36,6 +37,10 @@
   OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
+
+### 0.5.1 - Cadence classes and GPU, Phase 5 lane 1 (T12)
+
+- [x] T12 / 0.5.1: cadence classes owned by the collector (ADR 0021) — `CollectorConfig` + `configure()`, Linux fast/slow/static source split with one `statvfs` site on the slow tick and a cached mount list stamped `filesystemsCapturedAtMs`; `cpu.times` optional (`None` on the sysinfo collectors); `/api/snapshot` + `/snapshot/latest` from the published snapshot (503 `no snapshot yet` only before the first collection); the daemon re-configures the collector only when `topProcessCount` / `detailIntervalSec` changed (next-tick semantics); both hard-coded tens gone; dashboard Filesystem panel shows `as of hh:mm:ss` when its rows are older than one poll (hexe run 643; luna 644; fix 648: sysinfo `totalThreads`/`lastPid` from the full process table, `Filesystem check seconds` label). Gate on main: see `CHANGELOG.md`.
 
 ### 0.5.0 - Tiered history ladder, Phase 4 close (T11)
 
