@@ -32,7 +32,7 @@ The legacy Bun development runtime uses two local processes:
 
 1. `dashboard` on `127.0.0.1:4274`
    - Serves static frontend assets.
-   - Serves `/vendor/echarts.min.js` from `legacy/dashboard/vendor/`.
+   - Serves `/vendor/echarts.min.js` from the shared `agent/assets/dashboard/` tree.
    - Proxies `/api/snapshot` and `/api/history` to the collector process.
    - Never opens SQLite.
 
@@ -75,6 +75,8 @@ PRAGMA foreign_keys = ON;
 ```
 
 `WAL` gives the SQLite owner better read/write behavior. `NORMAL` sync is the pragmatic local-dashboard setting. `busy_timeout` prevents avoidable transient lock failures. `foreign_keys` is enabled now so future child tables can rely on cascading behavior.
+
+**WAL facts (measured 2026-08-29):** source WAL frames are included in the `VACUUM INTO` pre-image; the pre-image uses rollback-journal mode and has no WAL sidecar. Inspection replays a killed writer's WAL. The CLI can exit with the WAL un-checkpointed, and SQLite recovers it on the next open.
 
 ## Current Schema
 
@@ -278,10 +280,10 @@ A populated v0 database is migrated fail-closed:
    again. This makes a crash after the schema commit recoverable and keeps the
    completion idempotent.
 
-The pre-image is never overwritten, replaced, or deleted automatically. Until
-the explicit `db pre-image` operator commands land in the later CLI task, an
-operator must move a pre-existing pre-image aside manually before retrying a
-refused migration.
+The pre-image is never overwritten, replaced, or deleted automatically.
+`tinytop-agent db pre-image status` inspects its canonical path and main-database
+state; `tinytop-agent db pre-image remove --yes` removes only that exact file and
+refuses unless the main database is schema v1 and passes integrity checking.
 
 ## Why Store Snapshot JSON
 

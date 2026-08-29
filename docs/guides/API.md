@@ -252,7 +252,7 @@ The Settings dialog separates browser-local choices from daemon defaults:
 
 Returns persisted recent history from the Rust daemon or legacy Bun collector process. The query parameters bound the read result only; they do not prune SQLite history.
 
-The dashboard timeline uses the explicit `since_ms` and `until_ms` parameters for its Live, 15m, and 1h raw-snapshot presets. Longer 6h, 24h, 7d, and 30d presets use `/api/history/points` so the chart can read one-minute rollups without loading full snapshots.
+The dashboard timeline uses explicit `since_ms` and `until_ms` bounds for its Live, 15m, and 1h raw-snapshot presets. The 6h, 24h, 7d, 30d, 90d, 1y, and All presets use one `/api/history/points?source=auto&limit=10000` request so the server selects the finest retained tier that fits the complete range.
 
 Query parameters:
 
@@ -286,11 +286,11 @@ Response:
 
 Samples are returned oldest first.
 
-Retention note: The dashboard uses explicit `since_ms` and `until_ms` windows for its range presets, while the API default window is 300 seconds when no explicit window is supplied. In the Rust daemon, raw rows are pruned by the saved `retentionHours` setting after successful collection or settings update. The legacy Bun split path keeps raw SQLite rows until manual archive/reset.
+Retention note: The API default window is 300 seconds when no explicit window is supplied. In Rust, `/api/history` returns only rows whose `snapshot_json` remains within `retentionLadder.snapshotJsonKeepMinutes`; L1 typed rows follow the ladder horizon, and `retentionHours` is only the derived L1 compatibility mirror. The legacy Bun split path keeps raw SQLite rows until manual archive/reset.
 
 ### GET /api/history/points
 
-Rust daemon endpoint that returns chart-ready metric points from raw samples or one-minute rollups. This is additive; `/api/history` still returns full raw snapshot samples.
+Rust daemon endpoint that returns chart-ready metric points from L1 raw, L2 one-minute, L3 five-minute, L4 hourly, or the queryable archive. This is additive; `/api/history` still returns recent full raw snapshots.
 
 Query parameters:
 
@@ -300,7 +300,7 @@ Query parameters:
 | `window_seconds` | integer | `300` | Relative time window when `since_ms` is absent |
 | `since_ms` | integer | derived from `window_seconds` | Inclusive lower bound |
 | `until_ms` | integer | none | Inclusive upper bound |
-| `source` | enum | `auto` | `auto`, `raw`, or `rollup` |
+| `source` | enum | `auto` | `auto`, `raw`, `rollup` (one minute), `5m`, `1h`, or `archive` |
 
 Example:
 
@@ -323,9 +323,22 @@ Response:
       "loadPercent": 15.0,
       "rootUsedPercent": 73.0
     }
-  ]
+  ],
+  "source": "rollup",
+  "resolutionMs": 60000,
+  "available": true
 }
 ```
+
+`source` reports the selected tier, `resolutionMs` reports its nominal bucket width, and `available:false` marks the intentionally empty archive response until queryable archive reads land.
+
+### GET /api/history/filesystems
+
+Rust daemon endpoint for typed filesystem history. It accepts inclusive `sinceMs` / `untilMs`, optional exact `mount`, and `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "filesystems": [...] }`, with each row containing `capturedAtMs`, `mount`, `filesystem`, `type`, byte/usage fields, and nullable inode fields.
+
+### GET /api/history/processes
+
+Rust daemon endpoint for typed process history. It accepts inclusive `sinceMs` / `untilMs` and a capture-group `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "captures": [{ "capturedAtMs": ..., "processes": [...] }] }`; each complete capture preserves rank, PID, command, CPU/memory percentages, RSS bytes, and nullable parent/start fields.
 
 ### GET /api/history/markers
 
@@ -382,22 +395,37 @@ Response:
   "targetDatabaseBytes": 134217728,
   "databaseBudgetPercent": 0.78,
   "rollupOldestCapturedAtMs": 1782292546568,
-  "rollupNewestCapturedAtMs": 1782296146568
+  "rollupNewestCapturedAtMs": 1782296146568,
+  "tiers": [
+    { "tier": "l1", "enabled": true, "keepDays": 3, "resolutionMs": 1500, "bucketCount": 120, "oldestMs": 1782292546568, "newestMs": 1782296146568 },
+    { "tier": "l2", "enabled": true, "keepDays": 30, "resolutionMs": 60000, "bucketCount": 60, "oldestMs": 1782292546568, "newestMs": 1782296146568 },
+    { "tier": "l3", "enabled": true, "keepDays": 90, "resolutionMs": 300000, "bucketCount": 12, "oldestMs": 1782292546568, "newestMs": 1782296146568 },
+    { "tier": "l4", "enabled": true, "keepDays": 730, "resolutionMs": 3600000, "bucketCount": 1, "oldestMs": 1782292546568, "newestMs": 1782296146568 }
+  ],
+  "snapshotJsonOldestMs": 1782292546568,
+  "detailIntervalSec": 60,
+  "disk": { "freeBytes": null, "minFreeBytes": 5368709120, "pressure": false, "lastCheckMs": null },
+  "archive": {
+    "queryable": { "enabled": false, "path": "history-archive.sqlite", "bucketCount": 0, "oldestMs": null, "newestMs": null },
+    "cold": { "enabled": false, "directory": "", "exportedUntilMonth": null, "fileCount": 0, "bytes": 0 }
+  },
+  "migration": null
 }
 ```
 
 ### GET /vendor/echarts.min.js
 
-Returns the vendored Apache ECharts browser bundle from the Rust embedded dashboard assets or, in legacy Bun mode, from `legacy/dashboard/vendor/echarts.min.js`.
+Returns `agent/assets/dashboard/vendor/echarts.min.js`, embedded by Rust and served from the same single-source dashboard tree by Bun.
 
 ### Static Assets
 
 | Path | File |
 | --- | --- |
-| `/` | embedded `index.html` or `legacy/dashboard/index.html` |
-| `/index.html` | embedded `index.html` or `legacy/dashboard/index.html` |
-| `/styles.css` | embedded `styles.css` or `legacy/dashboard/styles.css` |
-| `/app.js` | embedded `app.js` or `legacy/dashboard/app.js` |
+| `/` | `agent/assets/dashboard/index.html`, embedded by Rust |
+| `/index.html` | `agent/assets/dashboard/index.html`, embedded by Rust |
+| `/styles.css` | `agent/assets/dashboard/styles.css`, embedded by Rust |
+| `/app.js` | `agent/assets/dashboard/app.js`, embedded by Rust |
+| `/ladder-rules.js` | shared dashboard ladder helpers |
 
 ## Legacy Collector API
 

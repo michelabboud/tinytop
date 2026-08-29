@@ -1,9 +1,11 @@
 import {
   HISTORY_WINDOWS,
+  describeDiskCoverage,
   fallbackWindowKey,
   historyWindowFor,
+  ladderCapabilityFrom,
   settingsPutPayload,
-  settingsRetentionLadderAvailable,
+  shouldFetchCoverage,
   validateRetentionLadder,
 } from "./ladder-rules.js";
 
@@ -209,7 +211,7 @@ const state = {
   settingsBaseline: cloneSettings(DEFAULT_DAEMON_SETTINGS),
   settingsDirty: false,
   settingsErrors: [],
-  retentionLadderAvailable: true,
+  retentionLadderAvailable: false,
   theme: "midnight",
   graphMode: "line",
   historyWindowKey: "live",
@@ -225,6 +227,8 @@ const state = {
   lastSnapshot: null,
   lastSnapshotAtMs: null,
   historyCoverage: null,
+  coverageInFlight: false,
+  coverageFetchedAtMs: 0,
   historyEmptyMessage: null,
   historyMarkers: [],
   historyFetchToken: 0,
@@ -2795,14 +2799,19 @@ async function fetchSettings() {
     const response = await fetch(apiPath("/api/settings"), { cache: "no-store" });
     if (!response.ok) throw new Error(`Settings failed with HTTP ${response.status}`);
     const document = await response.json();
-    state.retentionLadderAvailable = settingsRetentionLadderAvailable(document);
+    state.retentionLadderAvailable = ladderCapabilityFrom(document);
     const settings = normalizeSettings(document);
     populateDaemonSettings(settings);
+    if (!state.retentionLadderAvailable) {
+      setText(elements.historyLadderUnavailable, "History ladder — Rust daemon only.");
+    }
     renderSettingsStatus("Daemon defaults loaded.");
     return settings;
   } catch (error) {
+    state.retentionLadderAvailable = ladderCapabilityFrom(null);
     const settings = cloneSettings(DEFAULT_DAEMON_SETTINGS);
     populateDaemonSettings(settings);
+    setText(elements.historyLadderUnavailable, "Settings unavailable — ladder controls hidden.");
     renderSettingsStatus(error instanceof Error ? error.message : "Settings unavailable.");
     return settings;
   }
@@ -2852,10 +2861,11 @@ function approximateDeletionSummary(candidate, previous) {
       prior[tierName].keepDays !== 0 &&
       next[tierName].keepDays !== 0 &&
       next[tierName].keepDays < prior[tierName].keepDays;
-    if (wasEnabled && (!isEnabled || shrankForever || shrankDays)) {
-      const count = !isEnabled
-        ? Math.max(0, Number(tierCoverage(tierName)?.bucketCount ?? 0))
-        : approximateShrunkCount(tierName, prior[tierName].keepDays, next[tierName].keepDays);
+    if (wasEnabled && !isEnabled) {
+      const count = Math.max(0, Number(tierCoverage(tierName)?.bucketCount ?? 0));
+      deletions.push(`~${Math.round(count)} ${label} kept (table is retained; reads fall through to the next tier)`);
+    } else if (wasEnabled && (shrankForever || shrankDays)) {
+      const count = approximateShrunkCount(tierName, prior[tierName].keepDays, next[tierName].keepDays);
       deletions.push(`~${Math.round(count)} ${label} (approx.)`);
     }
   }
@@ -2883,14 +2893,18 @@ async function saveDaemonSettings() {
     renderSettingsStatus("Fix validation errors before saving.");
     return;
   }
-  const wouldDelete = state.retentionLadderAvailable
+  if (state.retentionLadderAvailable) {
+    await fetchHistoryCoverage({ force: true });
+  }
+  const historyChanges = state.retentionLadderAvailable
     ? approximateDeletionSummary(settings, state.settingsBaseline)
     : [];
-  if (wouldDelete.length > 0) {
+  if (historyChanges.length > 0) {
+    const keepsDisabledTier = historyChanges.some((change) => change.includes(" kept (table is retained;"));
     const accepted = await requestConfirmation({
-      title: "Shrink history retention?",
-      message: `Saving these settings may delete: ${wouldDelete.join("; ")}`,
-      confirmLabel: "Save and shrink",
+      title: keepsDisabledTier ? "Change history retention?" : "Shrink history retention?",
+      message: `Saving these settings changes history retention: ${historyChanges.join("; ")}`,
+      confirmLabel: keepsDisabledTier ? "Save changes" : "Save and shrink",
       tone: "danger",
     });
     if (!accepted) {
@@ -2910,13 +2924,13 @@ async function saveDaemonSettings() {
     });
     if (!response.ok) throw new Error(`Settings save failed with HTTP ${response.status}`);
     const savedDocument = await response.json();
-    state.retentionLadderAvailable = settingsRetentionLadderAvailable(savedDocument);
+    state.retentionLadderAvailable = ladderCapabilityFrom(savedDocument);
     const saved = normalizeSettings(savedDocument);
     populateDaemonSettings(saved);
     state.settingsDirty = false;
     renderSettingsDirtyIndicator();
     restartPollingTimer();
-    fetchHistoryCoverage();
+    await fetchHistoryCoverage({ force: true });
     renderSettingsStatus("Daemon defaults saved.");
   } catch (error) {
     renderSettingsStatus(error instanceof Error ? error.message : "Settings save failed.");
@@ -2937,7 +2951,7 @@ async function fetchSnapshot() {
     setHidden(elements.statusMessage, true);
     renderSnapshot(snapshot);
     renderOperatorStatus(snapshot);
-    fetchHistoryCoverage();
+    void fetchHistoryCoverage();
     setLiveStatus("live", "Live");
   } catch (error) {
     setHidden(elements.statusMessage, false);
@@ -3020,9 +3034,7 @@ function renderDiskCoverage(disk) {
   }
   const pressure = Boolean(disk.pressure);
   elements.historyDiskPressure.dataset.status = pressure ? "critical" : "healthy";
-  elements.historyDiskPressure.textContent = pressure
-    ? `Disk pressure: ${formatBytes(Number(disk.freeBytes ?? 0))} free is below ${formatBytes(Number(disk.minFreeBytes ?? 0))}. Shrink history or free disk before extending retention.`
-    : `History disk check: ${formatBytes(Number(disk.freeBytes ?? 0))} free; minimum ${formatBytes(Number(disk.minFreeBytes ?? 0))}.`;
+  elements.historyDiskPressure.textContent = describeDiskCoverage(disk);
   setHidden(elements.historyDiskPressure, false);
 }
 
@@ -3088,7 +3100,19 @@ function renderHistoryMarkers(markers) {
   );
 }
 
-async function fetchHistoryCoverage() {
+async function fetchHistoryCoverage({ force = false } = {}) {
+  const nowMs = Date.now();
+  if (
+    !shouldFetchCoverage({
+      lastFetchedAtMs: state.coverageFetchedAtMs,
+      nowMs,
+      inFlight: state.coverageInFlight,
+      force,
+    })
+  ) {
+    return state.historyCoverage;
+  }
+  state.coverageInFlight = true;
   try {
     const response = await fetch(apiPath("/api/history/coverage"), { cache: "no-store" });
     if (!response.ok) throw new Error(`History coverage failed with HTTP ${response.status}`);
@@ -3099,6 +3123,9 @@ async function fetchHistoryCoverage() {
     const coverage = { unavailable: true };
     renderHistoryCoverage({ unavailable: true });
     return coverage;
+  } finally {
+    state.coverageFetchedAtMs = Date.now();
+    state.coverageInFlight = false;
   }
 }
 
@@ -3213,7 +3240,7 @@ function setHistoryWindow(key, { fetch = true, persist = true } = {}) {
   updateHistoryControls();
   if (fetch) {
     fetchHistoryWindow();
-    fetchHistoryCoverage();
+    void fetchHistoryCoverage({ force: true });
   }
 }
 

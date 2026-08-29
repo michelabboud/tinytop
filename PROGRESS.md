@@ -375,15 +375,11 @@
 ## Known Limitations
 
 - Legacy Bun split mode does not enforce durable retention or rollups; use the Rust daemon for automatic pruning and coverage.
-- Longer-than-one-minute rollup tiers are planned but not implemented.
-- Normalized filesystem/process/pressure child tables are planned but not implemented.
+- Typed filesystem/process history is implemented; normalized pressure-history child rows remain future work.
 - The app is designed for loopback/local use, not remote multi-user deployment.
 - Native Windows and macOS collectors are feature-gated first slices; full parity, package-manager distribution, Windows release asset publication, and live-host verification are still future work.
 
 ## Recommended Next Work
 
-- [ ] Add optional normalized child tables for process/filesystem history if the UI starts querying those independently.
-- [ ] Add wider rollup tiers if 30d browsing needs fewer points than one-minute buckets.
 - [ ] Build and upload a real Windows `.exe` release asset, then add Scoop and winget manifests.
 - [ ] Add live macOS and Windows CI/host verification plus release packaging.
-- [ ] Add process/filesystem historical detail backed by normalized child tables if the UI starts querying those independently.

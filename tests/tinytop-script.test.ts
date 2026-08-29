@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -35,6 +35,14 @@ async function runTinytop(args: string[], env: Record<string, string | undefined
 }
 
 describe("tinytop command center", () => {
+  test("version prints the trimmed repository VERSION", async () => {
+    const result = await runTinytop(["version"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe(readFileSync(join(repoRoot, "VERSION"), "utf8").trim());
+    expect(result.stderr).toBe("");
+  });
+
   test("help works before Bun-specific commands and documents operations", async () => {
     const result = await runTinytop(["help"]);
 

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-TINYTOP_VERSION="0.2.0"
 INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
 INSTALL_RUST_COMMAND='curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh'
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+TINYTOP_FALLBACK_VERSION="0.2.11"
+if [[ -f "$ROOT_DIR/VERSION" ]]; then
+  TINYTOP_VERSION="$(<"$ROOT_DIR/VERSION")"
+  TINYTOP_VERSION="${TINYTOP_VERSION#"${TINYTOP_VERSION%%[![:space:]]*}"}"
+  TINYTOP_VERSION="${TINYTOP_VERSION%"${TINYTOP_VERSION##*[![:space:]]}"}"
+else
+  TINYTOP_VERSION="$TINYTOP_FALLBACK_VERSION"
+fi
 PLAIN=0
 if [[ "${NO_COLOR:-}" != "" ]]; then PLAIN=1; fi
 if [[ "${1:-}" == "--plain" ]]; then PLAIN=1; shift; fi
@@ -271,6 +278,7 @@ print_help() {
 
 Usage:
   ./tinytop help
+  ./tinytop version
   ./tinytop setup
   ./tinytop install-bun [--print-only|--yes]
   ./tinytop install-rust [--print-only]
@@ -1050,6 +1058,7 @@ cmd_monitor() {
 
 case "$command_name" in
   help|-h|--help) print_help ;;
+  version|--version) say "$TINYTOP_VERSION" ;;
   setup) cmd_setup "$@" ;;
   install-bun) cmd_install_bun "$@" ;;
   install-rust) cmd_install_rust "$@" ;;

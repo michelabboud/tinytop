@@ -10,6 +10,39 @@ const TIER_ORDER = new Map([
   ["l4", 4],
 ]);
 
+function formatCoverageBytes(bytes) {
+  const numeric = Number(bytes);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let value = numeric;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(value >= 10 || unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+export function shouldFetchCoverage(
+  { lastFetchedAtMs, nowMs, inFlight, force },
+  minIntervalMs = 15_000,
+) {
+  if (inFlight) return false;
+  if (force) return true;
+  return Number(nowMs) - Number(lastFetchedAtMs) >= minIntervalMs;
+}
+
+export function describeDiskCoverage(disk) {
+  const minimum = formatCoverageBytes(disk?.minFreeBytes);
+  if (disk?.freeBytes == null) {
+    return `History disk check: not measured yet; minimum ${minimum}.`;
+  }
+  if (disk?.pressure) {
+    return `Disk pressure: ${formatCoverageBytes(disk.freeBytes)} free is below ${minimum}. Shrink history or free disk before extending retention.`;
+  }
+  return `History disk check: ${formatCoverageBytes(disk.freeBytes)} free; minimum ${minimum}.`;
+}
+
 export const HISTORY_WINDOWS = Object.freeze({
   live: { label: "Live", durationMs: 5 * 60 * 1000, pageSize: 240, source: "raw" },
   "15m": { label: "15m", durationMs: 15 * 60 * 1000, pageSize: 900, source: "raw" },
@@ -118,12 +151,11 @@ export function fallbackWindowKey(key, coverage) {
   return "live";
 }
 
-export function settingsRetentionLadderAvailable(settings) {
+export function ladderCapabilityFrom(settingsOrNull) {
   return Boolean(
-    settings &&
-      typeof settings === "object" &&
-      Object.hasOwn(settings, "retentionLadder") &&
-      settings.retentionLadder != null,
+    settingsOrNull &&
+      typeof settingsOrNull === "object" &&
+      Object.hasOwn(settingsOrNull, "retentionLadder"),
   );
 }
 

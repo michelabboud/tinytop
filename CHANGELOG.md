@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Coalesced history-coverage requests and throttled routine dashboard polling to one request per 15 seconds while forcing preset, confirmation-estimate, and post-save refreshes.
+- Made retention-ladder capability fail closed until settings prove support, hiding Rust-only controls and stripping `retentionLadder` from unavailable-runtime saves.
+- Corrected tier-disable confirmation copy to report retained buckets and read fallback instead of predicting deletion.
+- Rendered an unmeasured history-disk check as unknown instead of inventing `0 B` free.
+- Made Bash and PowerShell wrappers read the adjacent `VERSION`, with a current `0.2.11` fallback for copied standalone scripts and explicit version commands.
+- Updated Phase 1 architecture, API, operator, migration/WAL, progress, guide, spec, and ADR documentation to match the landed four-tier implementation.
 - Expanded `tinytop-agent db stats --json` with four-tier ladder coverage, the JSON-bearing raw-sample count, and archive/disk state while preserving the existing `StoreStats` field names.
 - Added `tinytop-agent db pre-image status` and guarded `db pre-image remove --yes`. Removal refuses unless the exact canonical pre-image exists, the main database reports `user_version >= 1`, and `PRAGMA integrity_check` returns `ok`; refusal is structured JSON on stdout and never deletes a directory or glob.
 - Added black-box temp-database CLI coverage for the stats shape, absent status, all removal refusal paths, successful exact-file removal, and post-removal database integrity, plus pure predicate tests for the non-confirmed, absent, pre-v1, and failed-integrity checks.

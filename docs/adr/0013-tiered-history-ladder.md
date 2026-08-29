@@ -1,6 +1,6 @@
 # ADR 0013 — A four-tier history ladder with fold-not-decimate and promote-before-prune
 
-**Status:** Proposed (2026-08-28) — awaiting Michel's go; supersedes the "no multiple rollup tables" rejection in [ADR 0009](0009-additive-history-points-and-markers-api.md) and amends [ADR 0002](0002-initial-snapshot-json-history.md) (full `snapshot_json` per sample).
+**Status:** Accepted (2026-08-28, Michel's go 17:20Z) — implemented in Phase 1 (0.3.0: 0.2.7–0.2.11 + T6); supersedes the "no multiple rollup tables" rejection in [ADR 0009](0009-additive-history-points-and-markers-api.md) and amends [ADR 0002](0002-initial-snapshot-json-history.md) (full `snapshot_json` per sample).
 
 ## Context
 
