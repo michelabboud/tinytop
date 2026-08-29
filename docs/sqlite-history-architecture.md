@@ -80,10 +80,12 @@ PRAGMA foreign_keys = ON;
 
 ## Current Schema
 
-Fresh databases are created directly at schema v1. The DDL below is also the
+Fresh databases are created directly at schema v2. The DDL below is also the
 post-migration shape; the six minimum/root-maximum columns appear at the end of
 `metric_rollups_1m` because SQLite appends them when upgrading a populated v0
-database.
+database. Schema v2 keeps recent snapshot JSON for compatibility; the later
+typed-history migration will remove that payload after history assembly is
+available.
 
 ```sql
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -225,17 +227,42 @@ CREATE TABLE IF NOT EXISTS process_samples (
   captured_at_ms INTEGER NOT NULL,
   rank INTEGER NOT NULL,
   pid INTEGER NOT NULL,
-  command TEXT NOT NULL,
   cpu_percent REAL NOT NULL,
   memory_percent REAL NOT NULL,
   rss_bytes INTEGER NOT NULL,
   parent_pid INTEGER,
   started_at TEXT,
+  command_id INTEGER REFERENCES process_commands(command_id),
   PRIMARY KEY (captured_at_ms, rank)
 );
 
 CREATE INDEX IF NOT EXISTS idx_process_samples_time
   ON process_samples (captured_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_command
+  ON process_samples (command_id);
+
+CREATE TABLE IF NOT EXISTS process_commands (
+  command_id INTEGER PRIMARY KEY,
+  command TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS process_samples_fast (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  command_id INTEGER NOT NULL REFERENCES process_commands(command_id),
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at TEXT,
+  gpu_percent REAL,
+  PRIMARY KEY (captured_at_ms, rank)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_fast_command
+  ON process_samples_fast (command_id);
 
 CREATE TABLE IF NOT EXISTS app_events (
   event_id INTEGER PRIMARY KEY,
@@ -248,15 +275,34 @@ CREATE TABLE IF NOT EXISTS app_events (
 CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 ```
+
+`process_samples_fast` is the per-tick process history table. Its `command_id`
+references the dictionary, so repeated command text is stored once. The fast
+table's `started_at` intentionally remains `TEXT` in v2; identity interning is
+reserved for the later schema-v3 work. Both process tables index `command_id`
+because orphan-command pruning probes each table by that key.
 
 ## Schema Versions And Migration
 
 `SqliteHistoryStore::connect` applies the SQLite pragmas, reads
-`PRAGMA user_version`, and ensures schema v1 before it runs the older runtime
-name canonicalization. A new or empty database is built directly at v1. A v1
+`PRAGMA user_version`, and ensures schema v2 before it runs the older runtime
+name canonicalization. A new or empty database is built directly at v2. A v2
 database only receives idempotent `CREATE ... IF NOT EXISTS` checks.
+
+A v1 database migrates to v2 in one transaction. Before any write, the store
+checks that the linked SQLite version is at least 3.35.0, which is required by
+`ALTER TABLE ... DROP COLUMN`; an older library is refused with
+`schema migration requires SQLite ≥ 3.35.0 (linked: <version>)`. The
+transaction creates the dictionary and fast table, adds and backfills
+`process_samples.command_id`, verifies that no row remains unmapped, creates
+both command indexes, drops the old command column, writes a
+`schemaMigrated` app-event marker, and sets `PRAGMA user_version = 2`. The
+backfill guard rolls the transaction back on any failure. There is deliberately
+no pre-image and no post-migration `VACUUM`: SQLite's transaction provides the
+atomicity, and the design is recorded in
+[ADR 0023](adr/0023-schema-v2-migration-one-transaction-no-pre-image.md).
 
 A populated v0 database is migrated fail-closed:
 
@@ -280,7 +326,10 @@ A populated v0 database is migrated fail-closed:
    again. This makes a crash after the schema commit recoverable and keeps the
    completion idempotent.
 
-The pre-image is never overwritten, replaced, or deleted automatically.
+The v0 path still performs its existing pre-image/VACUUM migration first and
+then chains into v1→v2. Unsupported schema versions are refused with
+`unsupported SQLite schema version <version> at <path> (supported version is
+2)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
 `tinytop-agent db pre-image status` inspects its canonical path and main-database
 state; `tinytop-agent db pre-image remove --yes` removes only that exact file and
 refuses unless the main database is schema v1 and passes integrity checking.
@@ -295,35 +344,39 @@ Typed columns are still stored for graph values and future rollups, so history i
 
 1. The Rust daemon collection loop runs every `HISTORY_POLL_MS` milliseconds. In legacy Bun mode, the collector timer calls `/snapshot/collect`.
 2. The collector reads local Linux/WSL sources.
-3. `tinytop-store` or `openHistoryStore().insertSnapshot()` writes the sample in SQLite.
-4. The insert uses `captured_at_ms` as a unique timestamp key.
-5. If a sample with the same timestamp exists, the row is updated.
+3. `tinytop-store` writes the metric sample and then writes the per-tick process rows in a separate transaction. Each process command is interned with `INSERT OR IGNORE` followed by a dictionary lookup; the resulting `command_id` is used by both process tables.
+4. The fast process transaction replaces rows at the same `captured_at_ms`, preserving idempotent collection while keeping metric readers independent.
+5. Once per detail interval, the existing minute-tier `process_samples` capture is written with the same dictionary IDs.
 
 ## Read Path
 
-Latest sample:
+Latest sample and history windows are assembled from typed tables by the later
+schema-v3 migration. In v2, process history is read from the process table
+selected by its retention window:
 
 ```sql
-SELECT captured_at_ms, snapshot_json
-FROM metric_samples
-WHERE snapshot_json IS NOT NULL
-ORDER BY captured_at_ms DESC
-LIMIT 1;
+SELECT p.captured_at_ms, p.rank, p.pid, c.command,
+       p.cpu_percent, p.memory_percent, p.rss_bytes,
+       p.parent_pid, p.started_at
+FROM process_samples_fast AS p
+JOIN process_commands AS c ON c.command_id = p.command_id
+ORDER BY p.captured_at_ms DESC, p.rank;
 ```
 
 History window:
 
 ```sql
-SELECT captured_at_ms, snapshot_json
-FROM metric_samples
-WHERE snapshot_json IS NOT NULL
-  AND captured_at_ms >= ?
-  AND captured_at_ms <= ?
-ORDER BY captured_at_ms DESC
-LIMIT ?;
+-- The same query shape is used with process_samples for minute history.
+-- Table choice is made from the requested since_ms and processFastKeepHours.
 ```
 
-The SQLite owner reverses the selected rows before returning them so the browser receives oldest-to-newest samples. Both the Rust and Bun stores apply the `snapshot_json IS NOT NULL` rule. Raw `/api/history` and legacy `/history` reads therefore expose only complete snapshots, and their horizon is `retentionLadder.snapshotJsonKeepMinutes` rather than the longer typed-row retention horizon. Rust history endpoints accept camelCase range parameters (`sinceMs`, `untilMs`) and retain the existing snake_case aliases.
+For `/api/history/processes`, the source is `fast` iff `since_ms` is present
+and `since_ms >= now_ms - processFastKeepHours × 3,600,000`; an open-ended or
+older window uses the minute table. The `until_ms` value needs no additional
+check because the handler's contract does not allow it beyond now. The SQLite
+owner reverses selected captures before returning them so callers receive
+oldest-to-newest data. Rust history endpoints accept camelCase range parameters
+(`sinceMs`, `untilMs`) and retain the existing snake_case aliases.
 
 ## Frontend Hydration
 
@@ -410,7 +463,9 @@ Rust maintenance runs after each insert in this order:
 - Each successful promotion advances `history_state.l3FoldedUntilMs` or `l4FoldedUntilMs` to the promoted bucket's end. Pruning uses the watermarks visible at the start of the tick, so a newly promoted range becomes deletion authority on the next tick.
 - At most 500 rows per tick have `snapshot_json` stripped when they are outside the recent JSON window; typed L1 metrics remain until the L1 horizon.
 - L1 rows are deleted after their horizon without rebuilding any L2 bucket.
-- Filesystem and process detail rows are written on the configured cadence (60 seconds by default) and deleted after the L2 horizon.
+- Filesystem and minute-tier process detail rows are written on the configured cadence (60 seconds by default) and deleted after the L2 horizon.
+- Per-tick process rows are retained for `retentionLadder.processFastKeepHours` (1–72 hours, default 24); older process windows fall back to the minute tier. Fast rows are deleted in LIMIT-bounded batches using a row-value `IN` query because `process_samples_fast` is `WITHOUT ROWID`.
+- Orphan dictionary commands are pruned in a bounded batch only after process rows were deleted in that maintenance pass. The indexed `command_id` probes cover both process tables.
 - An L2 bucket can be deleted only when its end is older than the L2 horizon and no later than the nearest enabled coarser watermark. L3 uses the same rule against L4. L4 expires by its own horizon; `0` means forever.
 - A disabled L3 or L4 table is neither written nor pruned. It is removed from the dependency chain, while its existing rows remain untouched until the tier is re-enabled.
 - `/api/history` and `/history` select bounded windows for callers and return only rows whose `snapshot_json` is present in both runtimes. Their raw-snapshot horizon is the JSON keep window; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
@@ -580,7 +635,10 @@ Potential future normalized tables:
 
 - `pressure_samples`
 
-Schema v1 provides `fs_samples` and `process_samples` for the typed detail rows now populated and retained by ladder maintenance. Pressure detail remains inside recent snapshot JSON in this phase. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
+The next schema migration (v3) will add the normalized identity and on-change
+filesystem tables needed to assemble typed history snapshots, then remove the
+remaining per-sample JSON payload. Pressure detail remains outside the typed
+history model until a consumer requires it. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
 
 ## Operational Notes
 
