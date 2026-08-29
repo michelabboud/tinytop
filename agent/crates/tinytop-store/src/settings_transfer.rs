@@ -104,13 +104,11 @@ pub async fn plan_import(
             "settings is required and must be an object".to_string(),
         ]));
     };
-    let mut candidate = match DashboardSettings::from_document(
-        settings_value.clone(),
-        Some(&previous.retention_ladder),
-    ) {
-        Ok(candidate) => candidate,
-        Err(error) => return Ok(invalid_plan(vec![error.to_string()])),
-    };
+    let mut candidate =
+        match DashboardSettings::from_document(settings_value.clone(), Some(&previous)) {
+            Ok(candidate) => candidate,
+            Err(error) => return Ok(invalid_plan(vec![error.to_string()])),
+        };
     candidate.normalize_legacy_mirrors();
 
     let mut errors = Vec::new();

@@ -220,6 +220,7 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 | `TINYTOP_SYSTEMD_UNIT_DIR` | `~/.config/systemd/user` | command center | Bash command-center systemd user-unit directory override |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running legacy Bun collector |
 | `TINYTOP_PUBLIC_DIR` | unset | Rust daemon | Optional development override for dashboard assets; unset uses embedded assets |
+| `TINYTOP_OTEL_HEADERS` | unset | Rust daemon | OTLP request headers (`k1=v1,k2=v2`) when `otel.headersEnvVar` names this variable; never stored in settings |
 | `XDG_DATA_HOME` | `~/.local/share` | Legacy Bun collector | Base directory for default SQLite path |
 
 ## SQLite Location
@@ -368,6 +369,8 @@ TINYTOP_RELEASE_OS=windows ./tinytop rust build --print-command
 
 Cross-compiling the full daemon can require platform toolchains for SQLite. On Linux, the Windows collector crate can be checked without the daemon's SQLite C toolchain by targeting `tinytop-collectors` directly.
 
+Since 0.5.0, compiling the Rust daemon locally requires CMake and a C compiler on Linux, WSL, macOS, and Windows because `aws-lc-sys` builds native code. On Debian or Ubuntu, install them with `sudo apt install cmake build-essential`; on macOS with Homebrew, use `brew install cmake` (the Xcode Command Line Tools provide the compiler); on Windows, install Visual Studio Build Tools with the C++ workload and CMake. If CMake is missing, Cargo fails inside the `aws-lc-sys` build script with an error such as `failed to run custom build command for aws-lc-sys` followed by `cmake: command not found`.
+
 ## Reset Local History
 
 Stop the dashboard and collector first, then move the database files aside:
@@ -391,6 +394,8 @@ Install persistent user services:
 `./tinytop systemd install` defaults to the Rust daemon. Use
 `./tinytop systemd install --bun` only when you explicitly want the legacy Bun
 dashboard/collector split.
+
+To provide OpenTelemetry authentication headers to the Rust user service, put an `Environment="TINYTOP_OTEL_HEADERS=authorization=Bearer <token>"` entry in a `tinytop.service.d` systemd drop-in. Keep the header value in the service environment, not in the exported settings document; `otel.headersEnvVar` stores only the variable name. The daemon reads the value when it builds the exporter pipeline. After rotating it, restart the daemon, toggle export off and on, or change the `otel` settings block so the pipeline is rebuilt.
 
 Check or follow them:
 

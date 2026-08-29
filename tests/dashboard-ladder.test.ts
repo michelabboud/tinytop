@@ -8,7 +8,13 @@ import {
   fallbackWindowKey,
   historyWindowFor,
   isValidImportPlan,
+  describeOtelCoverage,
+  formatResourceAttributes,
+  otelCapabilityFrom,
+  parseResourceAttributes,
   shouldFetchCoverage,
+  settingsPutPayload,
+  validateOtelSettings,
   validateRetentionLadder,
 } from "../agent/assets/dashboard/ladder-rules.js";
 
@@ -430,6 +436,119 @@ describe("retention ladder validation mirror", () => {
         minFreeBytes: 200,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("OpenTelemetry dashboard rules", () => {
+  test("detects OTel capability only when settings has an otel object", () => {
+    expect(otelCapabilityFrom(null)).toBe(false);
+    expect(otelCapabilityFrom({})).toBe(false);
+    expect(otelCapabilityFrom({ otel: null })).toBe(false);
+    expect(otelCapabilityFrom({ otel: { enabled: false } })).toBe(true);
+  });
+
+  test("parses resource attributes while ignoring blank lines", () => {
+    expect(parseResourceAttributes("\nservice.version=1\n\ndeployment.environment=test\n")).toEqual({
+      attributes: { "deployment.environment": "test", "service.version": "1" },
+      errors: [],
+    });
+  });
+
+  test("reports malformed resource attributes with their line number", () => {
+    const result = parseResourceAttributes("good=value\nbad line\n");
+    expect(result.attributes).toEqual({ good: "value" });
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("line 2");
+  });
+
+  test("preserves valid leading and trailing spaces in resource attribute values", () => {
+    // Break caught: the settings UI silently changes an otherwise valid server value.
+    expect(parseResourceAttributes("deployment.note=  keep these spaces  ")).toEqual({
+      attributes: { "deployment.note": "  keep these spaces  " },
+      errors: [],
+    });
+  });
+
+  test("rejects C1 control characters in resource attribute values", () => {
+    // Break caught: the browser accepts a value that Rust char::is_control refuses.
+    const result = parseResourceAttributes("deployment.note=before\u0085after");
+    expect(result.attributes).toEqual({});
+    expect(result.errors).toEqual([
+      "line 1: otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+    ]);
+  });
+
+  test("names the line that introduces a thirty-third resource attribute", () => {
+    // Break caught: the textarea reports the block limit without identifying the offending line.
+    const text = Array.from({ length: 33 }, (_, index) => `key.${index}=value`).join("\n");
+    const result = parseResourceAttributes(text);
+    expect(Object.keys(result.attributes)).toHaveLength(32);
+    expect(result.errors).toEqual([
+      "line 33: otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+    ]);
+  });
+
+  test("formats resource attributes in sorted-key order and round-trips", () => {
+    const attributes = { "z.last": "2", "a.first": "1", "m.middle": "x=y" };
+    const formatted = formatResourceAttributes(attributes);
+    expect(formatted).toBe("a.first=1\nm.middle=x=y\nz.last=2");
+    expect(parseResourceAttributes(formatted)).toEqual({ attributes, errors: [] });
+  });
+
+  test("mirrors each OTel validation rule and its server message", () => {
+    const base = {
+      enabled: false,
+      endpoint: "http://127.0.0.1:4318/v1/metrics",
+      protocol: "http/protobuf",
+      intervalSec: 60,
+      headersEnvVar: "TINYTOP_OTEL_HEADERS",
+      serviceName: "tinytop",
+      resourceAttributes: {},
+    };
+    const cases = [
+      [{ ...base, protocol: "grpc" }, "otel.protocol must be one of http/protobuf"],
+      [{ ...base, endpoint: "collector:4318" }, "otel.endpoint must be an http:// or https:// URL with a host"],
+      [{ ...base, endpoint: "http:///v1/metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
+      [{ ...base, endpoint: "https://bad host/v1/metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
+      [{ ...base, endpoint: "https://collector.example/v1 /metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
+      [{ ...base, intervalSec: 4 }, "otel.intervalSec must be between 5 and 3600"],
+      [{ ...base, intervalSec: 3601 }, "otel.intervalSec must be between 5 and 3600"],
+      [{ ...base, headersEnvVar: "tinytop_headers" }, "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$"],
+      [{ ...base, headersEnvVar: "1TINYTOP_HEADERS" }, "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$"],
+      [{ ...base, serviceName: "" }, "otel.serviceName must be 1–128 characters without control characters"],
+      [{ ...base, serviceName: "x".repeat(129) }, "otel.serviceName must be 1–128 characters without control characters"],
+      [{ ...base, resourceAttributes: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`key.${i}`, "v"])) }, "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
+      [{ ...base, resourceAttributes: { "Bad-Key": "v" } }, "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
+    ];
+    for (const [candidate, message] of cases) expect(validateOtelSettings(candidate)).toEqual([message]);
+    expect(validateOtelSettings(base)).toEqual([]);
+  });
+
+  test("describes OTel coverage as off, healthy, and failing", () => {
+    expect(describeOtelCoverage({ enabled: false })).toBe("OTel — off");
+    expect(describeOtelCoverage({
+      enabled: true,
+      endpoint: "http://collector:4318/v1/metrics",
+      intervalSec: 60,
+      lastSuccessMs: Date.UTC(2026, 7, 29, 10, 11, 12),
+      lastFailureMs: null,
+      failures: 0,
+    })).toContain("OTel → http://collector:4318/v1/metrics every 60 s · last success 10:11:12 · failures 0");
+    expect(describeOtelCoverage({
+      enabled: true,
+      endpoint: "http://collector:4318/v1/metrics",
+      intervalSec: 5,
+      lastSuccessMs: Date.UTC(2026, 7, 29, 10, 11, 12),
+      lastFailureMs: Date.UTC(2026, 7, 29, 10, 11, 13),
+      failures: 1,
+      lastError: "connection refused",
+    })).toContain(" · last error: connection refused");
+  });
+
+  test("settings payload third argument controls OTel omission", () => {
+    const settings = { otel: { enabled: true }, retentionLadder: { l1: { keepDays: 3 } } };
+    expect(settingsPutPayload(settings, true, false)).toEqual({ retentionLadder: settings.retentionLadder });
+    expect(settingsPutPayload(settings, true, true)).toEqual(settings);
   });
 });
 

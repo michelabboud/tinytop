@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Dependencies: added exact-pinned OpenTelemetry metric exporter dependencies for Rust HTTP/protobuf push export.
+- Store: added the additive, secret-free `otel` settings block and persisted-value compatibility for imports that omit it.
+- Exporter: added Rust-daemon-only latest-snapshot OTLP gauges, environment-provided headers, independent task execution, and rate-limited failure handling.
+- API/coverage: exposed OTel status, interval, last success/failure, error, and failure count through `/api/history/coverage`.
+- CLI: extended `db stats` with OTel exporter status and the headers environment-variable name/presence, never its value.
+- Dashboard: added the Rust settings dialog's OpenTelemetry group and coverage status while keeping Bun without an exporter.
+- Docs: documented OTLP metrics, units and attributes, systemd environment setup, collector configuration, settings transfer, and two-runtime behavior.
 - Dashboard: the import confirmation now names a retention-ladder change that affects no stored history (`retention ladder changes — no stored history is affected`) and an imported document identical to the current settings, instead of listing only the other keys or opening empty; the save path still shows no dialog for a zero-impact change (T10-fix2, hexe run 626; found by the 0.4.1 acceptance pass).
 
 ## 0.4.1 - 2026-08-29

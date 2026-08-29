@@ -241,6 +241,38 @@ fn db_stats_json_reports_the_ladder() {
 }
 
 #[tokio::test]
+async fn db_stats_reports_otel_presence_only() {
+    // Break caught: db stats omits OTel configuration or leaks the configured header value.
+    let fixture = TempDatabase::new("stats-otel-presence");
+    let store = SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fixture store should connect");
+    let mut settings = store.get_settings().await.expect("default settings");
+    settings.otel.headers_env_var = "TINYTOP_TEST_HEADER_THAT_IS_NOT_SET".to_string();
+    store
+        .put_settings(&settings)
+        .await
+        .expect("OTel settings should persist");
+    store.close().await.expect("fixture store should close");
+
+    let output = fixture.run(&["db", "stats", "--json"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    let otel = json["value"]["otel"]
+        .as_object()
+        .expect("db stats should include an OTel object");
+    assert_eq!(otel["headersEnvVarSet"], false);
+    assert_eq!(otel["headersEnvVar"], "TINYTOP_TEST_HEADER_THAT_IS_NOT_SET");
+    assert!(
+        !otel.iter().any(|(key, value)| {
+            key.contains("Value") || value.as_str() == Some("sekrit-value")
+        }),
+        "OTel stats must expose presence only: {otel:?}"
+    );
+}
+
+#[tokio::test]
 async fn db_stats_shows_disk_pressure_after_a_check() {
     // Break caught: db stats loses the state written by the real disk provider after reopen.
     let fixture = TempDatabase::new("stats-disk-pressure");

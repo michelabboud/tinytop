@@ -174,7 +174,7 @@ fn validation_message(error: StoreError) -> String {
 }
 
 #[tokio::test]
-async fn export_document_carries_the_envelope_and_no_secret_shaped_key() {
+async fn export_document_carries_the_otel_block_and_still_no_secret_shaped_key() {
     // Break caught: exports omit envelope provenance or begin carrying credentials.
     let fixture = TempDatabase::new("export-envelope");
     let store = fixture.store().await;
@@ -188,6 +188,11 @@ async fn export_document_carries_the_envelope_and_no_secret_shaped_key() {
     assert_eq!(
         value["settings"],
         serde_json::to_value(settings).expect("settings should serialize")
+    );
+    assert!(value["settings"]["otel"].is_object());
+    assert_eq!(
+        value["settings"]["otel"]["headersEnvVar"],
+        "TINYTOP_OTEL_HEADERS"
     );
 
     fn assert_no_secret_key(value: &JsonValue, path: &str) {
@@ -646,6 +651,74 @@ async fn legacy_document_without_a_ladder_is_decoded_through_from_document() {
     assert_eq!(candidate.retention_ladder.l2.keep_days, 14);
     assert_eq!(candidate.retention_ladder.l3, persisted.retention_ladder.l3);
     assert_eq!(candidate.retention_ladder.l4, persisted.retention_ladder.l4);
+}
+
+#[tokio::test]
+async fn import_without_otel_keeps_the_persisted_block() {
+    // Break caught: a 0.4.1 settings import disables or rewrites live OTel export.
+    let fixture = TempDatabase::new("legacy-without-otel");
+    let store = fixture.store().await;
+    let mut persisted = DashboardSettings::default();
+    persisted.otel.enabled = true;
+    persisted.otel.endpoint = "https://collector.example/v1/metrics".to_string();
+    persisted
+        .otel
+        .resource_attributes
+        .insert("deployment.environment".to_string(), "test".to_string());
+    let persisted = store
+        .put_settings(&persisted)
+        .await
+        .expect("OTel settings should save");
+    let mut legacy_settings = serde_json::to_value(&persisted).unwrap();
+    legacy_settings.as_object_mut().unwrap().remove("otel");
+    let input = json!({
+        "tinytopConfigVersion": 1,
+        "settings": legacy_settings,
+    });
+
+    let plan = plan_import(&store, &input, 0).await.unwrap();
+
+    assert!(plan.valid);
+    assert!(
+        plan.warnings
+            .iter()
+            .all(|warning| !warning.contains("otel"))
+    );
+    assert!(plan.changed_keys.iter().all(|key| key != "otel"));
+    assert_eq!(plan.candidate.as_ref().unwrap().otel, persisted.otel);
+
+    let outcome = apply_import(&store, &input, 0)
+        .await
+        .expect("legacy import should apply");
+    assert_eq!(outcome.settings.otel, persisted.otel);
+    assert_eq!(store.get_settings().await.unwrap().otel, persisted.otel);
+}
+
+#[tokio::test]
+async fn import_with_an_invalid_otel_block_is_refused() {
+    // Break caught: invalid endpoints are accepted by dry-run or partially persisted.
+    let fixture = TempDatabase::new("invalid-otel");
+    let store = fixture.store().await;
+    let before = store.get_settings().await.unwrap();
+    let mut candidate = before.clone();
+    candidate.otel.endpoint = "collector:4318/v1/metrics".to_string();
+
+    let plan = plan_import(&store, &document(&candidate), 0).await.unwrap();
+
+    assert!(!plan.valid);
+    assert_eq!(
+        plan.errors,
+        ["otel.endpoint must be an http:// or https:// URL with a host"]
+    );
+    assert_eq!(
+        validation_message(
+            apply_import(&store, &document(&candidate), 0)
+                .await
+                .unwrap_err()
+        ),
+        "otel.endpoint must be an http:// or https:// URL with a host"
+    );
+    assert_eq!(store.get_settings().await.unwrap(), before);
 }
 
 #[test]

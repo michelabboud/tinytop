@@ -4,6 +4,8 @@ TinyTop's default persistent runtime is a single local Rust daemon. It serves th
 
 The original Bun dashboard and legacy collector remain in the repo for TypeScript development and fallback.
 
+OpenTelemetry export is Rust-daemon-only. The daemon pushes the latest snapshot over OTLP/HTTP; the Bun runtime neither exports to nor reads from OTel.
+
 ## Runtime Topology
 
 ```text
@@ -50,7 +52,8 @@ The supported Linux/WSL operator entrypoint is the root `./tinytop` Bash command
 11. `tinytop-agent serve` returns the latest stored sample or collects a fresh one.
 12. The Rust daemon collects telemetry on a timer and stores samples through `tinytop-store`.
 13. `tinytop-store` writes raw samples, all enabled rollup tiers, typed detail rows, daemon timeline events, and daemon defaults into SQLite through SQLx.
-14. The frontend pages raw ranges, reads tier-selected points for long ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, computes threshold states, and redraws ECharts views.
+14. `collect_and_store` publishes the latest snapshot through a Tokio `watch` channel; the daemon's independent OTel exporter task reads that channel and pushes gauges on its configured interval without recollecting.
+15. The frontend pages raw ranges, reads tier-selected points for long ranges, deduplicates samples by timestamp, down-samples only for browser rendering, updates CPU/RAM/swap/load gauges, computes threshold states, and redraws ECharts views.
 
 ## Modules
 
@@ -88,6 +91,8 @@ cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve-writer
 ```
 
 The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun collector while using Rust crates for host access. It uses `procfs` for Linux kernel metrics such as CPU ticks, memory, load, uptime, and pressure stall information, and `sysinfo` for disk, process, hostname, OS, and kernel metadata. Per-filesystem inode counts, which `sysinfo` does not expose, are read directly with the `statvfs(2)` syscall via `rustix` (ADR 0012). It does not shell out to `df`, `ps`, or `uname`. The live collector keeps a reusable `sysinfo::System` across samples so process and CPU refreshes have previous state and avoid rebuilding all collector state on every interval. The Rust store uses SQLx with SQLite today, with SQL isolated in `tinytop-store` so future PostgreSQL/MySQL support does not leak into collector code.
+
+The daemon task set includes collection/history maintenance, disk checking, cold archive export, and the OTel exporter. Collection publishes each freshly collected snapshot on a Tokio `watch` channel before attempting SQLite persistence; the exporter task samples the most recent value at export time, applies configured resource attributes and environment-provided headers, and never delays collection when persistence or an export fails.
 
 The collector crate exposes `NativeCollector` behind target and Cargo feature gates:
 

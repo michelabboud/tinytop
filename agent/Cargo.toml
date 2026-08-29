@@ -16,6 +16,11 @@ repository = "https://github.com/michelabboud/tinytop"
 [workspace.dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "json", "original-uri", "query", "tokio"] }
 flate2 = "=1.1.10"
+opentelemetry = { version = "=0.32.0", default-features = false, features = ["metrics"] }
+opentelemetry_sdk = { version = "=0.32.1", default-features = false, features = ["metrics", "experimental_metrics_custom_reader"] }
+opentelemetry-otlp = { version = "=0.32.0", default-features = false, features = ["metrics", "http-proto", "reqwest-client", "reqwest-rustls"] }
+opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic-messages", "metrics"] }
+prost = "=0.14.3"
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
 sha2 = "=0.11.0"

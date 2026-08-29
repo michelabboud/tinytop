@@ -160,10 +160,144 @@ export function ladderCapabilityFrom(settingsOrNull) {
   );
 }
 
-export function settingsPutPayload(settings, retentionLadderAvailable) {
+export function otelCapabilityFrom(settingsOrNull) {
+  return Boolean(
+    settingsOrNull &&
+      typeof settingsOrNull === "object" &&
+      settingsOrNull.otel &&
+      typeof settingsOrNull.otel === "object" &&
+      !Array.isArray(settingsOrNull.otel),
+  );
+}
+
+export function settingsPutPayload(settings, retentionLadderAvailable, otelAvailable = retentionLadderAvailable) {
   const payload = { ...settings };
   if (!retentionLadderAvailable) delete payload.retentionLadder;
+  if (!otelAvailable) delete payload.otel;
   return payload;
+}
+
+const OTEL_PROTOCOL_ERROR = "otel.protocol must be one of http/protobuf";
+const OTEL_ENDPOINT_ERROR = "otel.endpoint must be an http:// or https:// URL with a host";
+const OTEL_INTERVAL_ERROR = "otel.intervalSec must be between 5 and 3600";
+const OTEL_HEADERS_ERROR = "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$";
+const OTEL_SERVICE_ERROR = "otel.serviceName must be 1–128 characters without control characters";
+const OTEL_ATTRIBUTES_ERROR =
+  "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters";
+
+function hasControlCharacters(value) {
+  return /\p{Cc}/u.test(value);
+}
+
+function validResourceAttributeKey(key) {
+  const characters = Array.from(key);
+  return characters.length <= 64 && /^[a-z][a-z0-9._]*$/.test(key);
+}
+
+function validResourceAttributes(attributes) {
+  if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) return false;
+  const entries = Object.entries(attributes);
+  if (entries.length > 32) return false;
+  return entries.every(([key, value]) => {
+    const valueCharacters = typeof value === "string" ? Array.from(value) : [];
+    return (
+      validResourceAttributeKey(key) &&
+      typeof value === "string" &&
+      valueCharacters.length <= 256 &&
+      !hasControlCharacters(value)
+    );
+  });
+}
+
+export function validateOtelSettings(otel) {
+  const settings = otel && typeof otel === "object" && !Array.isArray(otel) ? otel : {};
+  if (settings.protocol !== "http/protobuf") return [OTEL_PROTOCOL_ERROR];
+
+  const endpoint = typeof settings.endpoint === "string" ? settings.endpoint : "";
+  const endpointMatch = /^(?:http|https):\/\/([^/?#]*)/u.exec(endpoint);
+  if (
+    !endpointMatch ||
+    endpointMatch[1].length === 0 ||
+    /\s|\p{Cc}/u.test(endpoint)
+  ) {
+    return [OTEL_ENDPOINT_ERROR];
+  }
+
+  if (!Number.isInteger(settings.intervalSec) || settings.intervalSec < 5 || settings.intervalSec > 3600) {
+    return [OTEL_INTERVAL_ERROR];
+  }
+  if (typeof settings.headersEnvVar !== "string" || !/^[A-Z][A-Z0-9_]*$/u.test(settings.headersEnvVar)) {
+    return [OTEL_HEADERS_ERROR];
+  }
+  if (
+    typeof settings.serviceName !== "string" ||
+    Array.from(settings.serviceName).length < 1 ||
+    Array.from(settings.serviceName).length > 128 ||
+    hasControlCharacters(settings.serviceName)
+  ) {
+    return [OTEL_SERVICE_ERROR];
+  }
+  if (!validResourceAttributes(settings.resourceAttributes)) return [OTEL_ATTRIBUTES_ERROR];
+  return [];
+}
+
+export function parseResourceAttributes(text) {
+  const attributes = {};
+  const errors = [];
+  const lines = String(text ?? "").split(/\r?\n/u);
+  for (const [index, rawLine] of lines.entries()) {
+    if (rawLine.trim().length === 0) continue;
+    const separator = rawLine.indexOf("=");
+    const lineNumber = index + 1;
+    if (separator < 1) {
+      errors.push(`line ${lineNumber}: expected key=value`);
+      continue;
+    }
+    const key = rawLine.slice(0, separator).trim();
+    const value = rawLine.slice(separator + 1);
+    if (!validResourceAttributeKey(key) || typeof value !== "string" || Array.from(value).length > 256 || hasControlCharacters(value)) {
+      errors.push(`line ${lineNumber}: ${OTEL_ATTRIBUTES_ERROR}`);
+      continue;
+    }
+    if (!Object.hasOwn(attributes, key) && Object.keys(attributes).length >= 32) {
+      errors.push(`line ${lineNumber}: ${OTEL_ATTRIBUTES_ERROR}`);
+      continue;
+    }
+    attributes[key] = value;
+  }
+  return { attributes, errors };
+}
+
+export function formatResourceAttributes(attributes) {
+  if (!attributes || typeof attributes !== "object" || Array.isArray(attributes)) return "";
+  return Object.entries(attributes)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+}
+
+function formatOtelTime(timestampMs) {
+  const timestamp = Number(timestampMs);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "-";
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+export function describeOtelCoverage(otel) {
+  if (!otel || typeof otel !== "object" || otel.enabled !== true) return "OTel — off";
+  const endpoint = typeof otel.endpoint === "string" ? otel.endpoint : "-";
+  const interval = Number.isFinite(Number(otel.intervalSec)) ? Number(otel.intervalSec) : "-";
+  const lastSuccess = Number(otel.lastSuccessMs);
+  const lastFailure = Number(otel.lastFailureMs);
+  let description = `OTel → ${endpoint} every ${interval} s · last success ${formatOtelTime(lastSuccess)} · failures ${Number(otel.failures ?? 0)}`;
+  if (Number.isFinite(lastFailure) && (!Number.isFinite(lastSuccess) || lastFailure > lastSuccess) && otel.lastError) {
+    description += ` · last error: ${otel.lastError}`;
+  }
+  return description;
 }
 
 export function exportFilenameFrom(headerValue, fallback) {
