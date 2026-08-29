@@ -938,17 +938,18 @@ function trimHistory() {
 }
 
 function pushHistory(snapshot, capturedAtMs = snapshotCapturedAtMs(snapshot)) {
-  const capturedAt = Number.isFinite(Number(capturedAtMs)) ? Number(capturedAtMs) : snapshotCapturedAtMs(snapshot);
-  const existingIndex = state.snapshots.findIndex((sample) => sample.capturedAt === capturedAt);
+  const [entry] = normalizeHistorySamples([{ capturedAtMs, snapshot }], "raw");
+  if (!entry) return;
+  const existingIndex = state.snapshots.findIndex((sample) => sample.capturedAt === entry.capturedAt);
 
   if (existingIndex !== -1) {
-    state.snapshots[existingIndex] = { capturedAt, snapshot };
+    state.snapshots[existingIndex] = entry;
     state.snapshots.sort((left, right) => left.capturedAt - right.capturedAt);
     rebuildHistoryValues();
     return;
   }
 
-  state.snapshots.push({ capturedAt, snapshot });
+  state.snapshots.push(entry);
   state.snapshots.sort((left, right) => left.capturedAt - right.capturedAt);
   rebuildHistoryValues();
   trimHistory();
@@ -2179,6 +2180,7 @@ function computeSnapshotStatus(snapshot, nowMs = Date.now()) {
     pressureValue(snapshot, "memory"),
     pressureValue(snapshot, "io"),
   ]);
+  const formattedPressure = formatPressureValue(pressureMax);
   const candidates = [
     {
       name: "CPU",
@@ -2224,7 +2226,7 @@ function computeSnapshotStatus(snapshot, nowMs = Date.now()) {
       name: "PSI",
       key: "pressure",
       value: pressureMax,
-      formatted: pressureMax === null ? "—" : `${formatPressureValue(pressureMax)} avg10`,
+      formatted: formattedPressure === "—" ? formattedPressure : `${formattedPressure} avg10`,
       warn: thresholds.pressureWarn,
       critical: thresholds.pressureCritical,
       trend: { label: "current", delta: 0 },

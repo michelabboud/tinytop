@@ -42,6 +42,22 @@ describe("history sample normalization", () => {
       { capturedAt: 3_000, snapshot: replacement, source: "archive" },
     ]);
   });
+
+  test("builds a single live sample as a raw entry the way pushHistory does", () => {
+    const snapshot = { timestamp: "2026-08-29T12:00:01.000Z" };
+
+    expect(ladderRules.normalizeHistorySamples([{ capturedAtMs: 1_000, snapshot }], "raw")).toEqual([
+      { capturedAt: 1_000, snapshot, source: "raw" },
+    ]);
+
+    const timestamp = "2026-08-30T00:00:00.000Z";
+    const timestampedSnapshot = { ...snapshot, timestamp };
+    expect(ladderRules.normalizeHistorySamples([{ snapshot: timestampedSnapshot }], "raw")).toEqual([
+      { capturedAt: Date.parse(timestamp), snapshot: timestampedSnapshot, source: "raw" },
+    ]);
+
+    expect(ladderRules.normalizeHistorySamples([{}], "raw")).toEqual([]);
+  });
 });
 
 describe("history no-data formatting", () => {
