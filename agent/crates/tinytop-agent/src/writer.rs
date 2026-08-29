@@ -1,4 +1,5 @@
 use std::{
+    io,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -16,9 +17,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tinytop_collectors::NativeCollector;
 use tinytop_store::{
-    DashboardSettings, HistoryFilesystemSample, HistoryMarker, HistoryMarkerType, HistoryPoint,
-    HistoryPointMode, HistoryPointsQuery, HistoryProcessCapture, HistoryQuery, HistorySample,
-    SqliteHistoryStore, resolve_history_point_source_with_poll,
+    DashboardSettings, DiskTransition, FreeBytesProvider, HistoryFilesystemSample, HistoryMarker,
+    HistoryMarkerType, HistoryPoint, HistoryPointMode, HistoryPointsQuery, HistoryProcessCapture,
+    HistoryQuery, HistorySample, SqliteHistoryStore, SysinfoFreeBytes, apply_disk_measurement,
+    resolve_history_point_source_with_poll,
 };
 use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 
@@ -224,6 +226,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
         .await?;
     let _collection_task = spawn_collection_loop(state.clone(), options.poll_ms);
     let _cold_export_task = spawn_cold_export_loop(state.clone());
+    let _disk_check_task = spawn_disk_check_loop(state.clone());
 
     let app = router(state);
     let address: SocketAddr = format!("{}:{}", options.host, options.port).parse()?;
@@ -585,6 +588,71 @@ fn spawn_collection_loop(state: AppState, poll_ms: u64) -> JoinHandle<()> {
             if let Err(error) = collect_and_store(&state).await {
                 eprintln!("scheduled collection failed: {error}");
             }
+        }
+    })
+}
+
+fn spawn_disk_check_loop(state: AppState) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            let settings = match state.store.get_settings().await {
+                Ok(settings) => settings,
+                Err(error) => {
+                    eprintln!("disk check skipped: cannot read settings: {error}");
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    continue;
+                }
+            };
+            let dir = match state.store.database_path().parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+                _ => PathBuf::from("."),
+            };
+            let measurement_dir = dir.clone();
+            let measurement = match tokio::task::spawn_blocking(move || {
+                SysinfoFreeBytes.free_bytes(&measurement_dir)
+            })
+            .await
+            {
+                Ok(measurement) => measurement,
+                Err(error) => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("disk measurement task failed: {error}"),
+                )),
+            };
+            match now_ms() {
+                Ok(now) => {
+                    match apply_disk_measurement(
+                        &state.store,
+                        &dir,
+                        measurement,
+                        &settings.retention_ladder,
+                        now,
+                    )
+                    .await
+                    {
+                        Ok(report) if report.transition != DiskTransition::Unchanged => eprintln!(
+                            "disk check info: {:?}: free {} vs minFreeBytes {} at {}",
+                            report.transition,
+                            report.free_bytes,
+                            report.min_free_bytes,
+                            report.path.display()
+                        ),
+                        Ok(_) => {}
+                        Err(error) => eprintln!("disk check completed with an error: {error}"),
+                    }
+                }
+                Err(error) => eprintln!("disk check completed with an error: {error}"),
+            }
+            // Keep this defensive clamp aligned with RetentionLadder::validate's 5..=1_440 range;
+            // the persisted document may have been edited outside the validated settings API.
+            let stored_interval_minutes = settings.retention_ladder.disk_check.interval_minutes;
+            let interval_minutes = stored_interval_minutes.clamp(5, 1_440);
+            if interval_minutes != stored_interval_minutes {
+                eprintln!(
+                    "disk check interval out of range: stored {stored_interval_minutes} minutes; using {interval_minutes} minutes (validated range 5..=1440)"
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(interval_minutes as u64 * 60)).await;
         }
     })
 }
@@ -1132,7 +1200,28 @@ mod tests {
         http::{Request, StatusCode},
     };
     use http_body_util::BodyExt;
+    use std::{collections::VecDeque, io, sync::Mutex as StdMutex};
+    use tinytop_store::{DiskTransition, FreeBytesProvider, check_disk};
     use tower::ServiceExt;
+
+    struct ScriptedFreeBytes(StdMutex<VecDeque<Result<u64, io::ErrorKind>>>);
+
+    impl ScriptedFreeBytes {
+        fn new(readings: impl IntoIterator<Item = Result<u64, io::ErrorKind>>) -> Self {
+            Self(StdMutex::new(readings.into_iter().collect()))
+        }
+    }
+
+    impl FreeBytesProvider for ScriptedFreeBytes {
+        fn free_bytes(&self, _path: &Path) -> io::Result<u64> {
+            self.0
+                .lock()
+                .expect("scripted provider mutex should not be poisoned")
+                .pop_front()
+                .expect("scripted provider should have a reading")
+                .map_err(|kind| io::Error::new(kind, "scripted free-bytes failure"))
+        }
+    }
 
     struct TempDatabase {
         directory: PathBuf,
@@ -1705,7 +1794,13 @@ mod tests {
         }
         assert_eq!(
             sorted_object_keys(&body["disk"]),
-            ["freeBytes", "lastCheckMs", "minFreeBytes", "pressure"]
+            [
+                "freeBytes",
+                "lastCheckMs",
+                "minFreeBytes",
+                "pressure",
+                "pressureSinceMs",
+            ]
         );
         assert_eq!(
             sorted_object_keys(&body["archive"]["queryable"]),
@@ -1725,6 +1820,29 @@ mod tests {
             body["migration"].is_null(),
             "fresh database migration must be null: {body}"
         );
+    }
+
+    #[tokio::test]
+    async fn coverage_reports_pressure_since_after_a_breach() {
+        // Break caught: the HTTP coverage shape drops the persisted breach start/check time.
+        let (_fixture, state) = test_state("coverage-pressure-since").await;
+        let provider = ScriptedFreeBytes::new([Ok(100)]);
+        let mut ladder = tinytop_store::retention_ladder::RetentionLadder::default();
+        ladder.disk_check.min_free_bytes = 200;
+        let now = 1_234_567;
+        let report = check_disk(&state.store, &provider, &ladder, now)
+            .await
+            .expect("scripted breach should succeed");
+        assert_eq!(report.transition, DiskTransition::Breached);
+
+        let (status, body) = request_json(router(state), "/api/history/coverage").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["disk"]["pressure"], true);
+        assert!(body["disk"]["pressureSinceMs"].is_number(), "{body}");
+        assert_eq!(body["disk"]["pressureSinceMs"], now);
+        assert!(body["disk"]["lastCheckMs"].is_number(), "{body}");
+        assert_eq!(body["disk"]["lastCheckMs"], now);
     }
 
     #[tokio::test]

@@ -1136,6 +1136,8 @@ function drawTimelineMarkers(context, first, span, width, height) {
     daemonStart: cssColor("--cyan") || "#38bdf8",
     settingsChange: cssColor("--violet") || "#a78bfa",
     coverageGap: cssColor("--amber") || "#f59e0b",
+    diskPressure: cssColor("--red") || "#ef4444",
+    diskRecovered: cssColor("--green") || "#22c55e",
   };
   context.save();
   context.lineWidth = 2;

@@ -396,7 +396,7 @@ Each insert compares the affected L2 minute's existing `sample_count` with the n
 - a `tiers` entry for each of L1 through L4 with enabled state, retention days, resolution, count, and oldest/newest bucket timestamps
 - the oldest raw timestamp that still carries `snapshot_json`
 - configured detail sampling interval
-- last persisted disk free-space/check/pressure state and configured minimum free bytes
+- last persisted disk state as `freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, and `lastCheckMs`
 - queryable archive configuration plus real bucket count/range, and cold archive configuration/state
 - the persisted schema-migration document, or `null` on a fresh v1 database
 
@@ -424,13 +424,30 @@ Rust maintenance runs after each insert in this order:
 - L3 defaults to enabled for 90 days and must be at least L2 when enabled. L4 defaults to enabled for 730 days; `0` means forever, otherwise it must be at least L3, or L2 when L3 is disabled.
 - Snapshot JSON defaults to 60 minutes (range 60–1,440). Typed filesystem/process rows default to a 60-second cadence (range 15–3,600 seconds).
 - Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute. Queryable moves and reads are implemented; cold file export remains a later phase.
-- Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB. The disk phase implements the check itself.
+- Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB.
 
 Every explicit settings save validates the complete block and writes `retentionHours = l1.keepDays × 24` plus `rollupRetentionDays = l2.keepDays` for Bun compatibility. These legacy fields are derived mirrors: a typed save that edits only `retentionHours` or `rollupRetentionDays` is overwritten from the authoritative ladder. The save transaction also updates `history_state.l3Enabled` and `l4Enabled`, so a late insert immediately after disabling a tier cannot refold into it before the next maintenance tick.
 
 `DashboardSettings::from_document` is the only decoder for settings documents that may lack `retentionLadder`. It derives a stored pre-ladder document in memory from the legacy fields (`ceil(retentionHours / 24)`, floored at 3 days; rollup days floored at 7) without rewriting it, and merges a legacy-only update onto the persisted ladder. The Task 10 import endpoint must use this decoder.
 
 If `history_state.diskPressure.active` is present, saves that extend a horizon, enable L3/L4, or enable an archive are refused with `disk pressure active: free X < minFreeBytes Y; shrink first or free disk`; shrinking remains allowed. The ladder validator owns this rule for both pure validation and the persisted settings path.
+
+## Disk check
+
+The Rust daemon checks immediately when its disk task starts, then sleeps for the current `retentionLadder.diskCheck.intervalMinutes`. Settings are read again at the start of every iteration, so a changed interval applies after the current sleep, on the next tick. The check measures the main database's parent directory using the longest matching mount prefix from ADR 0017. Mount enumeration and its per-mount `statvfs` work run on a Tokio blocking thread so a slow network mount cannot stall the HTTP runtime. The report also includes SQLite's current database bytes.
+
+The state machine uses the exact boundary `freeBytes < minFreeBytes`, with no hysteresis:
+
+- An inactive state that crosses below the minimum becomes active, records `sinceMs`, and emits one `diskPressure` timeline marker.
+- A continuing breach refreshes `freeBytes` and `minFreeBytes`, preserves `sinceMs`, and emits no additional marker.
+- An active state at or above the minimum becomes inactive, clears `sinceMs`, and emits one `diskRecovered` marker.
+- A continuing healthy state refreshes the measured bytes without emitting a marker.
+
+Without hysteresis, a flapping filesystem emits at most one transition marker per configured check interval during a continuous daemon run. Because every daemon start performs an immediate check, a restart may emit a marker sooner than one interval after the previous run's last marker.
+
+Each successful check writes `diskPressure`, `lastDiskCheckMs`, and any transition marker in one SQLite transaction. A stopped process therefore cannot commit only part of a transition. If free space is undeterminable, ADR 0020 requires no write at all: the last pressure state and check time remain visible, no marker is emitted, and the daemon logs the path-specific error. A daemon restart runs another check immediately.
+
+Disk pressure never deletes history. While active, it only refuses the growth operations described in [Retention](#retention)—extending a horizon or enabling a tier/archive—while allowing shrink operations. The dashboard shows the pressure banner, and `/api/history/coverage` plus `db stats --json` expose `freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, and `lastCheckMs`.
 
 ## Archive
 

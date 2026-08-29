@@ -54,10 +54,11 @@ pub struct DiskCheckSettings {
     pub min_free_bytes: i64,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DiskPressureState {
     pub active: bool,
+    pub since_ms: Option<i64>,
     pub free_bytes: i64,
     pub min_free_bytes: i64,
 }
