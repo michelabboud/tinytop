@@ -3,7 +3,49 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use serde::Serialize;
+use serde_json::json;
 use sysinfo::Disks;
+
+use crate::{
+    HistoryMarkerType, SqliteHistoryStore, StoreError, history_state_set_on, record_event_on,
+    retention_ladder::{DiskPressureState, RetentionLadder},
+};
+
+/// Supplies free-byte measurements for the filesystem containing a path.
+pub trait FreeBytesProvider: Send + Sync {
+    fn free_bytes(&self, path: &Path) -> io::Result<u64>;
+}
+
+/// Production free-byte provider backed by [`free_bytes_at`].
+pub struct SysinfoFreeBytes;
+
+impl FreeBytesProvider for SysinfoFreeBytes {
+    fn free_bytes(&self, path: &Path) -> io::Result<u64> {
+        free_bytes_at(path)
+    }
+}
+
+/// State transition produced by a successful disk check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DiskTransition {
+    Unchanged,
+    Breached,
+    Recovered,
+}
+
+/// Successful disk-check measurement and the transition it applied.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiskCheckReport {
+    pub path: PathBuf,
+    pub free_bytes: i64,
+    pub min_free_bytes: i64,
+    pub database_bytes: i64,
+    pub pressure: bool,
+    pub transition: DiskTransition,
+}
 
 /// Return the available bytes on the filesystem that contains `path`.
 ///
@@ -34,6 +76,109 @@ pub fn free_bytes_at(path: &Path) -> io::Result<u64> {
         })
         .collect::<Vec<_>>();
     free_bytes_from_mounts(&canonical_path, &mounts)
+}
+
+/// Measure the database directory and atomically apply its pressure state.
+pub async fn check_disk(
+    store: &SqliteHistoryStore,
+    provider: &dyn FreeBytesProvider,
+    ladder: &RetentionLadder,
+    now_ms: i64,
+) -> Result<DiskCheckReport, StoreError> {
+    let path = match store.database_path().parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    apply_disk_measurement(store, path, provider.free_bytes(path), ladder, now_ms).await
+}
+
+/// Atomically apply an already-taken free-byte measurement.
+///
+/// An indeterminate measurement writes nothing and returns [`StoreError::DiskCheck`].
+pub async fn apply_disk_measurement(
+    store: &SqliteHistoryStore,
+    path: &Path,
+    measurement: io::Result<u64>,
+    ladder: &RetentionLadder,
+    now_ms: i64,
+) -> Result<DiskCheckReport, StoreError> {
+    let free_bytes = measurement
+        .map(|bytes| bytes.min(i64::MAX as u64) as i64)
+        .map_err(|source| StoreError::DiskCheck {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let database_bytes = store.database_bytes().await?;
+    let min_free_bytes = ladder.disk_check.min_free_bytes;
+    let pressure = free_bytes < min_free_bytes;
+    let previous = store
+        .history_state_get::<DiskPressureState>("diskPressure")
+        .await?
+        .unwrap_or_default();
+    let transition = match (previous.active, pressure) {
+        (false, true) => DiskTransition::Breached,
+        (true, false) => DiskTransition::Recovered,
+        _ => DiskTransition::Unchanged,
+    };
+    let state = DiskPressureState {
+        active: pressure,
+        since_ms: if pressure {
+            if previous.active {
+                previous.since_ms
+            } else {
+                Some(now_ms)
+            }
+        } else {
+            None
+        },
+        free_bytes,
+        min_free_bytes,
+    };
+    let details = json!({
+        "freeBytes": free_bytes,
+        "minFreeBytes": min_free_bytes,
+        "databaseBytes": database_bytes,
+        "path": path.display().to_string(),
+    });
+
+    let mut transaction = store.pool.begin().await?;
+    history_state_set_on(&mut *transaction, "diskPressure", &state, now_ms).await?;
+    history_state_set_on(&mut *transaction, "lastDiskCheckMs", &now_ms, now_ms).await?;
+    match transition {
+        DiskTransition::Breached => {
+            record_event_on(
+                &mut *transaction,
+                now_ms,
+                HistoryMarkerType::DiskPressure,
+                &format!("Disk pressure: free {free_bytes} < minFreeBytes {min_free_bytes}"),
+                details,
+            )
+            .await?;
+        }
+        DiskTransition::Recovered => {
+            record_event_on(
+                &mut *transaction,
+                now_ms,
+                HistoryMarkerType::DiskRecovered,
+                &format!(
+                    "Disk pressure cleared: free {free_bytes} ≥ minFreeBytes {min_free_bytes}"
+                ),
+                details,
+            )
+            .await?;
+        }
+        DiskTransition::Unchanged => {}
+    }
+    transaction.commit().await?;
+
+    Ok(DiskCheckReport {
+        path: path.to_path_buf(),
+        free_bytes,
+        min_free_bytes,
+        database_bytes,
+        pressure,
+        transition,
+    })
 }
 
 pub(crate) fn free_bytes_from_mounts(path: &Path, mounts: &[(PathBuf, u64)]) -> io::Result<u64> {

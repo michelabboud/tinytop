@@ -233,6 +233,7 @@ fn validate_emits_the_spec_disk_pressure_message() {
     growing.l2.keep_days += 1;
     let active_pressure = DiskPressureState {
         active: true,
+        since_ms: None,
         free_bytes: 1_000,
         min_free_bytes: 5_000,
     };
@@ -247,6 +248,7 @@ fn validate_emits_the_spec_disk_pressure_message() {
 
     let inactive_pressure = DiskPressureState {
         active: false,
+        since_ms: None,
         ..active_pressure
     };
     growing
@@ -367,11 +369,13 @@ fn disk_pressure_rule_table() {
     ];
     let active_pressure = DiskPressureState {
         active: true,
+        since_ms: None,
         free_bytes: 1_000,
         min_free_bytes: 5_000,
     };
     let inactive_pressure = DiskPressureState {
         active: false,
+        since_ms: None,
         free_bytes: 1_000,
         min_free_bytes: 5_000,
     };

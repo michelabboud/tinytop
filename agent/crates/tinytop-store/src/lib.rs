@@ -19,6 +19,10 @@ use sqlx::{
 };
 use tinytop_types::SystemSnapshot;
 
+pub use crate::disk::{
+    DiskCheckReport, DiskTransition, FreeBytesProvider, SysinfoFreeBytes, apply_disk_measurement,
+    check_disk,
+};
 use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, fold, raw_is_partial, raw_to_bucket};
 pub use crate::migration::pre_image_path;
 pub use crate::retention_ladder::DiskPressureState;
@@ -304,6 +308,7 @@ pub struct HistoryDiskCoverage {
     pub free_bytes: Option<i64>,
     pub min_free_bytes: i64,
     pub pressure: bool,
+    pub pressure_since_ms: Option<i64>,
     pub last_check_ms: Option<i64>,
 }
 
@@ -481,6 +486,8 @@ pub enum HistoryMarkerType {
     SettingsChange,
     CoverageGap,
     SchemaMigrated,
+    DiskPressure,
+    DiskRecovered,
 }
 
 impl HistoryMarkerType {
@@ -490,6 +497,8 @@ impl HistoryMarkerType {
             Self::SettingsChange => "settingsChange",
             Self::CoverageGap => "coverageGap",
             Self::SchemaMigrated => "schemaMigrated",
+            Self::DiskPressure => "diskPressure",
+            Self::DiskRecovered => "diskRecovered",
         }
     }
 
@@ -499,6 +508,8 @@ impl HistoryMarkerType {
             "settingsChange" => Ok(Self::SettingsChange),
             "coverageGap" => Ok(Self::CoverageGap),
             "schemaMigrated" => Ok(Self::SchemaMigrated),
+            "diskPressure" => Ok(Self::DiskPressure),
+            "diskRecovered" => Ok(Self::DiskRecovered),
             other => Err(StoreError::Validation(format!(
                 "unknown history marker type {other}"
             ))),
@@ -540,6 +551,33 @@ pub(crate) async fn history_state_set_on<T: Serialize>(
     .bind(key)
     .bind(value_json)
     .bind(now_ms)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn record_event_on(
+    connection: &mut SqliteConnection,
+    occurred_at_ms: i64,
+    marker_type: HistoryMarkerType,
+    label: &str,
+    details: JsonValue,
+) -> Result<(), StoreError> {
+    let details_json = serde_json::to_string(&details)?;
+    sqlx::query(
+        r#"
+        INSERT INTO app_events (
+          occurred_at_ms,
+          marker_type,
+          label,
+          details_json
+        ) VALUES (?, ?, ?, ?)
+        "#,
+    )
+    .bind(occurred_at_ms)
+    .bind(marker_type.as_str())
+    .bind(label)
+    .bind(details_json)
     .execute(&mut *connection)
     .await?;
     Ok(())
@@ -1398,24 +1436,8 @@ impl SqliteHistoryStore {
         label: &str,
         details: JsonValue,
     ) -> Result<(), StoreError> {
-        let details_json = serde_json::to_string(&details)?;
-        sqlx::query(
-            r#"
-            INSERT INTO app_events (
-              occurred_at_ms,
-              marker_type,
-              label,
-              details_json
-            ) VALUES (?, ?, ?, ?)
-            "#,
-        )
-        .bind(occurred_at_ms)
-        .bind(marker_type.as_str())
-        .bind(label)
-        .bind(details_json)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        let mut connection = self.pool.acquire().await?;
+        record_event_on(&mut connection, occurred_at_ms, marker_type, label, details).await
     }
 
     pub async fn read_history_markers(
@@ -1597,7 +1619,11 @@ impl SqliteHistoryStore {
             disk: HistoryDiskCoverage {
                 free_bytes: disk_pressure.as_ref().map(|state| state.free_bytes),
                 min_free_bytes: settings.retention_ladder.disk_check.min_free_bytes,
-                pressure: disk_pressure.is_some_and(|state| state.active),
+                pressure: disk_pressure.as_ref().is_some_and(|state| state.active),
+                pressure_since_ms: disk_pressure
+                    .as_ref()
+                    .filter(|state| state.active)
+                    .and_then(|state| state.since_ms),
                 last_check_ms,
             },
             archive: HistoryArchiveCoverage {
@@ -2151,6 +2177,10 @@ pub enum StoreError {
         step: &'static str,
         source: ArchiveErrorSource,
     },
+    DiskCheck {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     Validation(String),
 }
 
@@ -2194,6 +2224,11 @@ impl std::fmt::Display for StoreError {
                 "archive step {step} failed: {source}; remedy: {}",
                 archive::archive_remedy(step)
             ),
+            Self::DiskCheck { path, source } => write!(
+                formatter,
+                "disk check: cannot determine free bytes at {}: {source}; the last known disk-pressure state is kept — check the mount or set retentionLadder.diskCheck.minFreeBytes",
+                path.display()
+            ),
             Self::Validation(message) => write!(formatter, "{message}"),
         }
     }
@@ -2208,6 +2243,7 @@ impl std::error::Error for StoreError {
                 ArchiveErrorSource::Sqlx(error) => Some(error),
                 ArchiveErrorSource::Io(error) => Some(error),
             },
+            Self::DiskCheck { source, .. } => Some(source),
             Self::IntegerOverflow { .. } | Self::Migration { .. } | Self::Validation(_) => None,
         }
     }

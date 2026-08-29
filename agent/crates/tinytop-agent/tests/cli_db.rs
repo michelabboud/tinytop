@@ -9,8 +9,9 @@ use std::{
 
 use serde_json::{Map, Value};
 use tinytop_store::{
-    DashboardSettings, SqliteHistoryStore,
+    DashboardSettings, SqliteHistoryStore, SysinfoFreeBytes,
     archive::{archive_paths, move_expired_l4},
+    check_disk,
     ladder::{Stat, Tier, TierBucket},
 };
 
@@ -203,7 +204,13 @@ fn db_stats_json_reports_the_ladder() {
     let disk = value["disk"].as_object().expect("disk should be an object");
     assert_eq!(
         key_set(disk),
-        BTreeSet::from(["freeBytes", "lastCheckMs", "minFreeBytes", "pressure"])
+        BTreeSet::from([
+            "freeBytes",
+            "lastCheckMs",
+            "minFreeBytes",
+            "pressure",
+            "pressureSinceMs",
+        ])
     );
     let archive = value["archive"]
         .as_object()
@@ -231,6 +238,40 @@ fn db_stats_json_reports_the_ladder() {
             "fileCount",
         ])
     );
+}
+
+#[tokio::test]
+async fn db_stats_shows_disk_pressure_after_a_check() {
+    // Break caught: db stats loses the state written by the real disk provider after reopen.
+    let fixture = TempDatabase::new("stats-disk-pressure");
+    let store = SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fixture store should connect");
+    let mut ladder = tinytop_store::retention_ladder::RetentionLadder::default();
+    ladder.disk_check.min_free_bytes = i64::MAX;
+    let now = 1_234_567_890;
+    check_disk(&store, &SysinfoFreeBytes, &ladder, now)
+        .await
+        .expect("real disk check should succeed");
+    store.close().await.expect("fixture store should close");
+
+    let output = fixture.run(&["db", "stats", "--json"]);
+
+    assert_success(&output);
+    eprintln!(
+        "db stats disk-pressure acceptance JSON:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let json = stdout_json(&output);
+    assert_eq!(json["value"]["disk"]["pressure"], true);
+    assert!(
+        json["value"]["disk"]["freeBytes"]
+            .as_i64()
+            .unwrap_or_default()
+            > 0
+    );
+    assert_eq!(json["value"]["disk"]["lastCheckMs"], now);
+    assert_eq!(json["value"]["disk"]["pressureSinceMs"], now);
 }
 
 #[test]
