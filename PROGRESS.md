@@ -2,16 +2,24 @@
 
 ## Current Version
 
-- Version: `0.3.2`
+- Version: `0.3.3`
 - Date: 2026-08-29
-- Status: Phase 2 in progress — T7 (queryable archive, ADRs 0018/0019) shipped as 0.3.1,
-  T8 (cold CSV export + CLI carry-overs) as 0.3.2; T9 (disk check + pressure banner, ADR 0020)
-  next; 0.4.0 = Phase 2 close.
+- Status: Phase 2 complete on main — T7 (queryable archive, ADRs 0018/0019) shipped as 0.3.1,
+  T8 (cold CSV export + CLI carry-overs) as 0.3.2, T9 (disk check, ADR 0020) as 0.3.3; next =
+  the Phase 2 close: deep dual-blind review over `v0.3.0..HEAD`, fix round, 0.4.0 + GitHub
+  release with audits.
   Deploying 0.3.x onto the live database is a separate, explicitly ordered step
   (pre-image + backup first).
 
 ## Backlog
 
+- **Stale-check refusal (from the T9 blind review, luna run 600)** — ADR 0020 keeps the last known
+  disk-pressure state when a measurement is undeterminable, so a persistent measurement failure
+  after a real disk fill leaves `active:false` and growth is still permitted; `lastCheckMs` is a
+  signal, not a boundary. Candidate rule: refuse horizon growth / tier or archive enables when no
+  successful check has happened for more than 2 × `retentionLadder.diskCheck.intervalMinutes`,
+  with a message naming the staleness. Additive to §5; needs a spec sentence and an ADR that
+  supplements 0020.
 - **First-class `--base-path` / `TINYTOP_BASE_PATH` serving** — mount dashboard/assets/APIs
   under `{base}/...` with a bare-mount redirect, removing the trailing-slash requirement for
   subpath deployments. Polish, not needed by any current deployment (v0.2.2's base-relative
@@ -19,6 +27,10 @@
   closed PR #1 (superseded; VERSION/ADR-number/dashboard-file conflicts made it unmergeable).
 
 ## Completed
+
+### 0.3.3 - Tiered history ladder, Phase 2 (T9)
+
+- [x] T9 / 0.3.3: hourly disk check on the database's filesystem (first check at daemon start, measurement on a blocking thread) writing `history_state.diskPressure` / `lastDiskCheckMs` and the `diskPressure` / `diskRecovered` timeline markers as a four-transition state machine inside one `BEGIN IMMEDIATE` transaction; pressure refuses growth only, never deletes; undeterminable measurements keep the last state (ADR 0020); `pressureSinceMs` in coverage and `db stats`; marker colours in the dashboard. Fix round after luna run 600 (atomic read-modify-write, marker read-back test, full-row assertions, interval clamp). Run 596 escalated correctly on a brief that excluded a test file needing the new field.
 
 ### 0.3.2 - Tiered history ladder, Phase 2 (T8)
 
