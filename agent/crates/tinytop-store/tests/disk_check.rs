@@ -10,8 +10,8 @@ use serde_json::Value;
 use sqlx::{Row, SqlitePool};
 use tinytop_store::{
     DashboardSettings, DiskCheckReport, DiskPressureState, DiskTransition, FreeBytesProvider,
-    SqliteHistoryStore, StoreError, SysinfoFreeBytes, check_disk,
-    retention_ladder::RetentionLadder,
+    HistoryMarkerType, HistoryQuery, SqliteHistoryStore, StoreError, SysinfoFreeBytes,
+    apply_disk_measurement, check_disk, retention_ladder::RetentionLadder,
 };
 
 struct TempDatabase {
@@ -99,11 +99,51 @@ async fn last_check_ms(store: &SqliteHistoryStore) -> Option<i64> {
         .expect("last disk-check time should read")
 }
 
-async fn state_json(pool: &SqlitePool) -> String {
-    sqlx::query_scalar("SELECT value_json FROM history_state WHERE state_key = 'diskPressure'")
+async fn disk_history_state_rows(pool: &SqlitePool) -> Vec<(String, String, i64)> {
+    sqlx::query(
+        "SELECT state_key, value_json, updated_at_ms FROM history_state WHERE state_key IN ('diskPressure', 'lastDiskCheckMs') ORDER BY state_key",
+    )
+        .fetch_all(pool)
+        .await
+        .expect("full disk history-state rows should read")
+        .into_iter()
+        .map(|row| {
+            (
+                row.try_get("state_key").expect("state key should read"),
+                row.try_get("value_json").expect("state JSON should read"),
+                row.try_get("updated_at_ms")
+                    .expect("state timestamp should read"),
+            )
+        })
+        .collect()
+}
+
+async fn app_events_snapshot(pool: &SqlitePool) -> (i64, Vec<(i64, i64, String, String, String)>) {
+    let count = sqlx::query_scalar("SELECT COUNT(*) FROM app_events")
         .fetch_one(pool)
         .await
-        .expect("raw disk-pressure state should read")
+        .expect("app event count should read");
+    let rows = sqlx::query(
+        "SELECT event_id, occurred_at_ms, marker_type, label, details_json FROM app_events ORDER BY event_id",
+    )
+    .fetch_all(pool)
+    .await
+    .expect("full app event rows should read")
+    .into_iter()
+    .map(|row| {
+        (
+            row.try_get("event_id").expect("event id should read"),
+            row.try_get("occurred_at_ms")
+                .expect("event timestamp should read"),
+            row.try_get("marker_type")
+                .expect("event marker type should read"),
+            row.try_get("label").expect("event label should read"),
+            row.try_get("details_json")
+                .expect("event details JSON should read"),
+        )
+    })
+    .collect();
+    (count, rows)
 }
 
 async fn app_events(pool: &SqlitePool) -> Vec<(i64, String, String, Value)> {
@@ -251,6 +291,89 @@ async fn recovery_deactivates_and_records_recovered_marker() {
 }
 
 #[tokio::test]
+async fn concurrent_checks_record_one_marker() {
+    // Break caught: concurrent public callers both decide the same transition before either write.
+    let fixture = TempDatabase::new("concurrent");
+    let store = fixture.store().await;
+    let ladder = ladder_with_min_free_bytes(200);
+    let now = 1_000;
+
+    let (first, second) = tokio::join!(
+        apply_disk_measurement(&store, &fixture.dir, Ok(100), &ladder, now),
+        apply_disk_measurement(&store, &fixture.dir, Ok(100), &ladder, now),
+    );
+    first.expect("first concurrent breach should succeed");
+    second.expect("second concurrent breach should succeed");
+
+    let events = app_events(&fixture.pool().await).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.1 == "diskPressure")
+            .count(),
+        1
+    );
+    assert_eq!(
+        pressure_state(&store).await,
+        DiskPressureState {
+            active: true,
+            since_ms: Some(now),
+            free_bytes: 100,
+            min_free_bytes: 200,
+        }
+    );
+
+    let (first, second) = tokio::join!(
+        apply_disk_measurement(&store, &fixture.dir, Ok(300), &ladder, now + 1),
+        apply_disk_measurement(&store, &fixture.dir, Ok(300), &ladder, now + 1),
+    );
+    first.expect("first concurrent recovery should succeed");
+    second.expect("second concurrent recovery should succeed");
+
+    let events = app_events(&fixture.pool().await).await;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.1 == "diskRecovered")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn disk_markers_read_back_through_the_markers_api() {
+    // Break caught: stored disk marker names are rejected by HistoryMarkerType::from_storage.
+    let fixture = TempDatabase::new("marker-api");
+    let store = fixture.store().await;
+    let ladder = ladder_with_min_free_bytes(200);
+
+    apply_disk_measurement(&store, &fixture.dir, Ok(100), &ladder, 1_000)
+        .await
+        .expect("breach should succeed");
+    apply_disk_measurement(&store, &fixture.dir, Ok(300), &ladder, 2_000)
+        .await
+        .expect("recovery should succeed");
+
+    let markers = store
+        .read_history_markers(
+            HistoryQuery {
+                since_ms: None,
+                until_ms: None,
+                limit: Some(10),
+            },
+            60_000,
+        )
+        .await
+        .expect("disk markers should decode through the markers API");
+
+    assert_eq!(markers.len(), 2);
+    assert_eq!(markers[0].occurred_at_ms, 1_000);
+    assert_eq!(markers[0].marker_type, HistoryMarkerType::DiskPressure);
+    assert_eq!(markers[1].occurred_at_ms, 2_000);
+    assert_eq!(markers[1].marker_type, HistoryMarkerType::DiskRecovered);
+}
+
+#[tokio::test]
 async fn healthy_check_refreshes_free_bytes_without_markers() {
     // Break caught: a healthy first check fails to refresh coverage or invents a transition.
     let fixture = TempDatabase::new("healthy");
@@ -291,7 +414,8 @@ async fn undeterminable_free_bytes_keeps_state_and_returns_error() {
         .await
         .expect("breach should succeed");
     let pool = fixture.pool().await;
-    let before = state_json(&pool).await;
+    let state_before = disk_history_state_rows(&pool).await;
+    let events_before = app_events_snapshot(&pool).await;
 
     let error = check_disk(&store, &provider, &ladder, now2)
         .await
@@ -307,9 +431,8 @@ async fn undeterminable_free_bytes_keeps_state_and_returns_error() {
     let message = error.to_string();
     assert!(message.contains(&fixture.dir.display().to_string()));
     assert!(message.contains("last known"));
-    assert_eq!(state_json(&pool).await, before);
-    assert_eq!(last_check_ms(&store).await, Some(now1));
-    assert_eq!(app_events(&pool).await.len(), 1);
+    assert_eq!(disk_history_state_rows(&pool).await, state_before);
+    assert_eq!(app_events_snapshot(&pool).await, events_before);
 }
 
 #[tokio::test]

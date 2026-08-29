@@ -443,6 +443,8 @@ The state machine uses the exact boundary `freeBytes < minFreeBytes`, with no hy
 - An active state at or above the minimum becomes inactive, clears `sinceMs`, and emits one `diskRecovered` marker.
 - A continuing healthy state refreshes the measured bytes without emitting a marker.
 
+Without hysteresis, a flapping filesystem emits at most one transition marker per configured check interval during a continuous daemon run. Because every daemon start performs an immediate check, a restart may emit a marker sooner than one interval after the previous run's last marker.
+
 Each successful check writes `diskPressure`, `lastDiskCheckMs`, and any transition marker in one SQLite transaction. A stopped process therefore cannot commit only part of a transition. If free space is undeterminable, ADR 0020 requires no write at all: the last pressure state and check time remain visible, no marker is emitted, and the daemon logs the path-specific error. A daemon restart runs another check immediately.
 
 Disk pressure never deletes history. While active, it only refuses the growth operations described in [Retention](#retention)—extending a horizon or enabling a tier/archive—while allowing shrink operations. The dashboard shows the pressure banner, and `/api/history/coverage` plus `db stats --json` expose `freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, and `lastCheckMs`.

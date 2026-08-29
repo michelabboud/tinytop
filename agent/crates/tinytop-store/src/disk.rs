@@ -8,7 +8,8 @@ use serde_json::json;
 use sysinfo::Disks;
 
 use crate::{
-    HistoryMarkerType, SqliteHistoryStore, StoreError, history_state_set_on, record_event_on,
+    HistoryMarkerType, SqliteHistoryStore, StoreError, history_state_get_on, history_state_set_on,
+    record_event_on,
     retention_ladder::{DiskPressureState, RetentionLadder},
 };
 
@@ -108,68 +109,83 @@ pub async fn apply_disk_measurement(
             path: path.to_path_buf(),
             source,
         })?;
+    // Database size is marker metadata, not a transition decision input, so it need not hold the
+    // write lock used for the pressure-state read-modify-write below.
     let database_bytes = store.database_bytes().await?;
     let min_free_bytes = ladder.disk_check.min_free_bytes;
     let pressure = free_bytes < min_free_bytes;
-    let previous = store
-        .history_state_get::<DiskPressureState>("diskPressure")
-        .await?
-        .unwrap_or_default();
-    let transition = match (previous.active, pressure) {
-        (false, true) => DiskTransition::Breached,
-        (true, false) => DiskTransition::Recovered,
-        _ => DiskTransition::Unchanged,
-    };
-    let state = DiskPressureState {
-        active: pressure,
-        since_ms: if pressure {
-            if previous.active {
-                previous.since_ms
-            } else {
-                Some(now_ms)
-            }
-        } else {
-            None
-        },
-        free_bytes,
-        min_free_bytes,
-    };
-    let details = json!({
-        "freeBytes": free_bytes,
-        "minFreeBytes": min_free_bytes,
-        "databaseBytes": database_bytes,
-        "path": path.display().to_string(),
-    });
+    let mut connection = store.pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *connection)
+        .await?;
 
-    let mut transaction = store.pool.begin().await?;
-    history_state_set_on(&mut *transaction, "diskPressure", &state, now_ms).await?;
-    history_state_set_on(&mut *transaction, "lastDiskCheckMs", &now_ms, now_ms).await?;
-    match transition {
-        DiskTransition::Breached => {
-            record_event_on(
-                &mut *transaction,
-                now_ms,
-                HistoryMarkerType::DiskPressure,
-                &format!("Disk pressure: free {free_bytes} < minFreeBytes {min_free_bytes}"),
-                details,
-            )
-            .await?;
+    let transaction_result = async {
+        let previous = history_state_get_on::<DiskPressureState>(&mut *connection, "diskPressure")
+            .await?
+            .unwrap_or_default();
+        let transition = match (previous.active, pressure) {
+            (false, true) => DiskTransition::Breached,
+            (true, false) => DiskTransition::Recovered,
+            _ => DiskTransition::Unchanged,
+        };
+        let state = DiskPressureState {
+            active: pressure,
+            since_ms: if pressure {
+                if previous.active {
+                    previous.since_ms
+                } else {
+                    Some(now_ms)
+                }
+            } else {
+                None
+            },
+            free_bytes,
+            min_free_bytes,
+        };
+        let details = json!({
+            "freeBytes": free_bytes,
+            "minFreeBytes": min_free_bytes,
+            "databaseBytes": database_bytes,
+            "path": path.display().to_string(),
+        });
+
+        history_state_set_on(&mut *connection, "diskPressure", &state, now_ms).await?;
+        history_state_set_on(&mut *connection, "lastDiskCheckMs", &now_ms, now_ms).await?;
+        match transition {
+            DiskTransition::Breached => {
+                record_event_on(
+                    &mut *connection,
+                    now_ms,
+                    HistoryMarkerType::DiskPressure,
+                    &format!("Disk pressure: free {free_bytes} < minFreeBytes {min_free_bytes}"),
+                    details,
+                )
+                .await?;
+            }
+            DiskTransition::Recovered => {
+                record_event_on(
+                    &mut *connection,
+                    now_ms,
+                    HistoryMarkerType::DiskRecovered,
+                    &format!(
+                        "Disk pressure cleared: free {free_bytes} ≥ minFreeBytes {min_free_bytes}"
+                    ),
+                    details,
+                )
+                .await?;
+            }
+            DiskTransition::Unchanged => {}
         }
-        DiskTransition::Recovered => {
-            record_event_on(
-                &mut *transaction,
-                now_ms,
-                HistoryMarkerType::DiskRecovered,
-                &format!(
-                    "Disk pressure cleared: free {free_bytes} ≥ minFreeBytes {min_free_bytes}"
-                ),
-                details,
-            )
-            .await?;
-        }
-        DiskTransition::Unchanged => {}
+        Ok::<DiskTransition, StoreError>(transition)
     }
-    transaction.commit().await?;
+    .await;
+    let transition = match transaction_result {
+        Ok(transition) => transition,
+        Err(error) => return rollback_disk_transaction(&mut connection, error).await,
+    };
+    if let Err(source) = sqlx::query("COMMIT").execute(&mut *connection).await {
+        return rollback_disk_transaction(&mut connection, StoreError::from(source)).await;
+    }
 
     Ok(DiskCheckReport {
         path: path.to_path_buf(),
@@ -179,6 +195,16 @@ pub async fn apply_disk_measurement(
         pressure,
         transition,
     })
+}
+
+async fn rollback_disk_transaction<T>(
+    connection: &mut sqlx::SqliteConnection,
+    error: StoreError,
+) -> Result<T, StoreError> {
+    if let Err(source) = sqlx::query("ROLLBACK").execute(&mut *connection).await {
+        eprintln!("disk check rollback failed after {error}: {source}");
+    }
+    Err(error)
 }
 
 pub(crate) fn free_bytes_from_mounts(path: &Path, mounts: &[(PathBuf, u64)]) -> io::Result<u64> {

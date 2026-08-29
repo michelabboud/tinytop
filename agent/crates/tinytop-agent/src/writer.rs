@@ -643,10 +643,16 @@ fn spawn_disk_check_loop(state: AppState) -> JoinHandle<()> {
                 }
                 Err(error) => eprintln!("disk check completed with an error: {error}"),
             }
-            tokio::time::sleep(Duration::from_secs(
-                settings.retention_ladder.disk_check.interval_minutes as u64 * 60,
-            ))
-            .await;
+            // Keep this defensive clamp aligned with RetentionLadder::validate's 5..=1_440 range;
+            // the persisted document may have been edited outside the validated settings API.
+            let stored_interval_minutes = settings.retention_ladder.disk_check.interval_minutes;
+            let interval_minutes = stored_interval_minutes.clamp(5, 1_440);
+            if interval_minutes != stored_interval_minutes {
+                eprintln!(
+                    "disk check interval out of range: stored {stored_interval_minutes} minutes; using {interval_minutes} minutes (validated range 5..=1440)"
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(interval_minutes as u64 * 60)).await;
         }
     })
 }

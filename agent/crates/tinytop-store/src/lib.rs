@@ -532,6 +532,21 @@ pub struct SqliteHistoryStore {
     database_path: PathBuf,
 }
 
+pub(crate) async fn history_state_get_on<T: DeserializeOwned>(
+    connection: &mut SqliteConnection,
+    key: &str,
+) -> Result<Option<T>, StoreError> {
+    let value_json: Option<String> =
+        sqlx::query_scalar("SELECT value_json FROM history_state WHERE state_key = ?")
+            .bind(key)
+            .fetch_optional(&mut *connection)
+            .await?;
+    value_json
+        .map(|value| serde_json::from_str(&value))
+        .transpose()
+        .map_err(StoreError::from)
+}
+
 pub(crate) async fn history_state_set_on<T: Serialize>(
     connection: &mut SqliteConnection,
     key: &str,
@@ -690,15 +705,8 @@ impl SqliteHistoryStore {
         &self,
         key: &str,
     ) -> Result<Option<T>, StoreError> {
-        let value_json: Option<String> =
-            sqlx::query_scalar("SELECT value_json FROM history_state WHERE state_key = ?")
-                .bind(key)
-                .fetch_optional(&self.pool)
-                .await?;
-        value_json
-            .map(|value| serde_json::from_str(&value))
-            .transpose()
-            .map_err(StoreError::from)
+        let mut connection = self.pool.acquire().await?;
+        history_state_get_on(&mut connection, key).await
     }
 
     pub async fn history_state_set<T: Serialize>(

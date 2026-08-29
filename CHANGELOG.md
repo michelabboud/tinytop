@@ -10,6 +10,8 @@ Phase 2 Task 9 adds the Rust daemon's disk-pressure check (spec §9; ADRs 0017 a
 - Exposed `pressureSinceMs` alongside `freeBytes`, `minFreeBytes`, `pressure`, and `lastCheckMs` through history coverage and `db stats --json`.
 - Added red/green timeline colors for the two disk markers and kept the existing coverage-driven pressure banner Bun-neutral. Rendering “since …” in the banner is deferred to a later UI task; this release exposes the timestamp through the API and CLI only.
 - Added temp-database integration coverage for breach, continuing breach, recovery, healthy refresh, undeterminable measurements, settings refusal/recovery, HTTP coverage, CLI reopen, and real-directory measurement.
+- Serialized the disk-pressure read-modify-write under `BEGIN IMMEDIATE` on one connection, preventing concurrent callers from recording duplicate transition markers.
+- Clamp hand-edited disk-check intervals to the validated 5–1,440 minute range before sleeping and log an out-of-range stored value once per tick.
 
 ## 0.3.2 - 2026-08-29
 

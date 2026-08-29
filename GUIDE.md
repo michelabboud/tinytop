@@ -165,7 +165,7 @@ Persisted in SQLite:
 - full snapshot JSON for UI hydration
 - daemon dashboard defaults
 - one-minute metric rollups in the Rust daemon
-- daemon timeline events for starts and settings changes
+- daemon timeline events for starts, settings changes, disk-pressure breaches (`diskPressure`), and recoveries (`diskRecovered`)
 
 SQLite retention:
 

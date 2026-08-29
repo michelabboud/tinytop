@@ -245,7 +245,7 @@ For persistent background collection, install user-space systemd services:
 - Responsive Bar mode that keeps a minimum bar width and rolls the visible window left as new samples arrive
 - SQLite-backed recent history so browser refreshes refill History instead of starting empty
 - Timestamp-based timeline with Live, 15m, 1h, 6h, 24h, 7d, 30d, 90d, 1y, and All range presets
-- Tier-selected 6h-through-All timeline browsing with daemon-start, settings-change, migration, and coverage-gap markers
+- Tier-selected 6h-through-All timeline browsing with daemon-start, settings-change, migration, coverage-gap, `diskPressure`, and `diskRecovered` markers
 - Timeline rail with overview trace, selected datetime context, compact metric values, history coverage, DB budget status, and a return-to-now control
 - Operator status strip with Healthy, Warning, Critical, and Stale states from saved thresholds plus a detail drawer explaining metric values, thresholds, age, trend, and recent changes
 - Critical, Warning, and Stale operator states use stronger full-strip visual treatment and text labels so the state is obvious at a glance
