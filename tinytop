@@ -319,8 +319,9 @@ Default URLs:
   Dashboard: http://127.0.0.1:4274
   Legacy collector API: http://127.0.0.1:4276
 
-Default SQLite:
-  ~/.local/share/tinytop/history.sqlite
+Environment:
+  TINYTOP_HISTORY_DB          SQLite path (default: ~/.local/share/tinytop/history.sqlite)
+  TINYTOP_SYSTEMD_UNIT_DIR    systemd user-unit directory (default: ~/.config/systemd/user)
 EOF
 }
 
@@ -558,8 +559,12 @@ systemd_user_available() {
   command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1
 }
 
+systemd_unit_dir() {
+  printf '%s\n' "${TINYTOP_SYSTEMD_UNIT_DIR:-$HOME/.config/systemd/user}"
+}
+
 unit_path() {
-  printf '%s/.config/systemd/user/%s\n' "$HOME" "$1"
+  printf '%s/%s\n' "$(systemd_unit_dir)" "$1"
 }
 
 unit_installed() {
@@ -774,16 +779,17 @@ systemd_mode_from_args() {
 }
 
 cmd_systemd_render() {
-  local mode
+  local mode unit_dir
   mode="$(systemd_mode_from_args "$@")"
+  unit_dir="$(systemd_unit_dir)"
   if [[ "$mode" == "bun" ]]; then
-    say "# ~/.config/systemd/user/tinytop-collector.service"
+    say "# $unit_dir/tinytop-collector.service"
     render_bun_collector_unit
     say
-    say "# ~/.config/systemd/user/tinytop-dashboard.service"
+    say "# $unit_dir/tinytop-dashboard.service"
     render_dashboard_unit
   else
-    say "# ~/.config/systemd/user/tinytop.service"
+    say "# $unit_dir/tinytop.service"
     render_rust_daemon_unit
   fi
 }
@@ -801,9 +807,9 @@ ensure_rust_agent_for_systemd() {
 
 cmd_systemd_install() {
   command -v systemctl >/dev/null 2>&1 || die "systemctl is not available."
-  local mode
+  local mode unit_dir
   mode="$(systemd_mode_from_args "$@")"
-  local unit_dir="$HOME/.config/systemd/user"
+  unit_dir="$(systemd_unit_dir)"
   mkdir -p "$unit_dir"
   if [[ "$mode" == "bun" ]]; then
     require_bun

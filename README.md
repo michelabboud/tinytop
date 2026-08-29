@@ -367,6 +367,7 @@ TinyTop is licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE
 | `HISTORY_POLL_MS` | `1500` | Collector sampling interval |
 | `TINYTOP_RUNTIME` | `auto` | Runtime selection for `./tinytop start`: `auto`, `rust`, `legacy`, or `bun` |
 | `TINYTOP_HISTORY_DB` | Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite` | SQLite database path |
+| `TINYTOP_SYSTEMD_UNIT_DIR` | `~/.config/systemd/user` | Bash command-center systemd user-unit directory override |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | Set to `1` when starting the legacy Bun collector separately |
 | `TINYTOP_PUBLIC_DIR` | unset | Optional development override for Rust dashboard assets; unset uses embedded assets |
 | `TINYTOP_EMBED_FRAME_ANCESTORS` | `'self'` | CSP `frame-ancestors` value for `/embed` only, for example `'self' http://127.0.0.1:9323` |
