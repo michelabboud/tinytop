@@ -25,3 +25,13 @@ Michel: *"we should also support emitting metrics to OpenTelemetry, but we do no
 
 - One optional feature with a real dependency footprint; the crates are pre-1.0 and must be pinned exactly and upgraded deliberately.
 - Operators get the machine's metrics into any OTLP collector without a sidecar; tinytop's own storage and UI are unaffected when it is off.
+
+## Amendment 2026-08-29 (Phase 4 close)
+
+The implementation pins `opentelemetry` 0.32.0, `opentelemetry_sdk` 0.32.1,
+and `opentelemetry-otlp` 0.32.0. It uses the SDK's `ManualReader` behind the
+`experimental_metrics_custom_reader` feature, driven by the daemon's own task,
+because the SDK's `PeriodicReader` hosts a thread. Header values are read from
+the named environment variable only when the exporter pipeline is built or
+rebuilt (on enable or an `otel`-block change), never while export is disabled.
+Status remains Accepted.

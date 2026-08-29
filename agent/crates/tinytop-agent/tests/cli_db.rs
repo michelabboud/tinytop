@@ -51,6 +51,17 @@ impl TempDatabase {
         run_database_command(&self.database_url, args)
     }
 
+    fn run_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"));
+        command.args(args).args(["--sqlite", &self.database_url]);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command
+            .output()
+            .expect("tinytop-agent database command should run")
+    }
+
     fn initialize_v1(&self) {
         // Inspection commands deliberately refuse missing databases; collection owns creation.
         let output = self.run(&["collect", "--json"]);
@@ -270,6 +281,36 @@ async fn db_stats_reports_otel_presence_only() {
         }),
         "OTel stats must expose presence only: {otel:?}"
     );
+
+    let store = SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fixture store should reconnect");
+    let mut settings = store.get_settings().await.expect("stored settings");
+    settings.otel.headers_env_var = "TINYTOP_TEST_HEADER_THAT_IS_SET".to_string();
+    store
+        .put_settings(&settings)
+        .await
+        .expect("updated OTel settings should persist");
+    store.close().await.expect("fixture store should close");
+
+    let output = fixture.run_with_env(
+        &["db", "stats", "--json"],
+        &[(
+            "TINYTOP_TEST_HEADER_THAT_IS_SET",
+            "authorization=sekrit-value",
+        )],
+    );
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    let otel = json["value"]["otel"]
+        .as_object()
+        .expect("db stats should include an OTel object");
+    assert_eq!(otel["headersEnvVarSet"], true);
+    assert_eq!(otel["headersEnvVar"], "TINYTOP_TEST_HEADER_THAT_IS_SET");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("sekrit-value"), "{stdout}");
+    assert!(!stdout.contains("authorization="), "{stdout}");
 }
 
 #[tokio::test]

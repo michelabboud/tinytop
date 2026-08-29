@@ -219,4 +219,4 @@ If history is unavailable, the dashboard still works from live polling, but the 
 
 ## Privacy And Safety
 
-The dashboard is local by default. It binds to `127.0.0.1`, reads local system telemetry, and writes local SQLite history. It does not send telemetry to an external service.
+The dashboard is local by default. It binds to `127.0.0.1`, reads local system telemetry, and writes local SQLite history. Nothing leaves the box by default. The only outbound path is the OpenTelemetry export, which is off by default; after the operator enables it in the Settings dialog or with `config import`, it sends the §12 system metrics (never process names, settings, or header values) to the endpoint the operator configures.

@@ -189,7 +189,6 @@ fn headers_for_otlp_builder(headers: HashMap<String, String>) -> HashMap<String,
 }
 
 fn preflight_standard_header_env(
-    settings: &OtelSettings,
     metrics_headers_present: bool,
     general_headers_present: bool,
 ) -> Result<(), String> {
@@ -197,18 +196,17 @@ fn preflight_standard_header_env(
         (OTLP_METRICS_HEADERS_ENV, metrics_headers_present),
         (OTLP_HEADERS_ENV, general_headers_present),
     ] {
-        if present && settings.headers_env_var != name {
+        if present {
             return Err(format!(
-                "{name} is present but is not the selected otel.headersEnvVar"
+                "{name} is present; tinytop reads OTLP headers only from otel.headersEnvVar"
             ));
         }
     }
     Ok(())
 }
 
-fn preflight_process_header_env(settings: &OtelSettings) -> Result<(), String> {
+fn preflight_process_header_env() -> Result<(), String> {
     preflight_standard_header_env(
-        settings,
         std::env::var_os(OTLP_METRICS_HEADERS_ENV).is_some(),
         std::env::var_os(OTLP_HEADERS_ENV).is_some(),
     )
@@ -338,7 +336,7 @@ pub fn build_pipeline(
     hostname: &str,
     timeout: Duration,
 ) -> Result<OtelPipeline, String> {
-    preflight_process_header_env(settings)?;
+    preflight_process_header_env()?;
     let exporter = MetricExporter::builder()
         .with_http()
         .with_endpoint(settings.endpoint.clone())
@@ -517,7 +515,7 @@ fn record_pressure(gauge: &Gauge<f64>, resource: &'static str, value: Option<f64
 mod tests {
     use std::{
         collections::{BTreeMap, HashMap},
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -693,35 +691,27 @@ mod tests {
 
     #[test]
     fn standard_header_environment_is_fail_closed() {
-        let mut settings = OtelSettings {
-            headers_env_var: "TINYTOP_HEADERS".to_string(),
-            ..OtelSettings::default()
-        };
-        assert!(preflight_standard_header_env(&settings, false, false).is_ok());
+        assert!(preflight_standard_header_env(false, false).is_ok());
 
-        let refusal = preflight_standard_header_env(&settings, true, false)
-            .expect_err("an unselected standard variable must be refused");
+        let refusal = preflight_standard_header_env(true, false)
+            .expect_err("the metrics standard variable must always be refused");
         assert_eq!(
             refusal,
-            "OTEL_EXPORTER_OTLP_METRICS_HEADERS is present but is not the selected otel.headersEnvVar"
+            "OTEL_EXPORTER_OTLP_METRICS_HEADERS is present; tinytop reads OTLP headers only from otel.headersEnvVar"
         );
 
-        settings.headers_env_var = "OTEL_EXPORTER_OTLP_METRICS_HEADERS".to_string();
-        assert!(preflight_standard_header_env(&settings, true, false).is_ok());
-        let refusal = preflight_standard_header_env(&settings, true, true)
-            .expect_err("the other standard variable must remain absent");
+        let refusal = preflight_standard_header_env(false, true)
+            .expect_err("the general standard variable must always be refused");
         assert_eq!(
             refusal,
-            "OTEL_EXPORTER_OTLP_HEADERS is present but is not the selected otel.headersEnvVar"
+            "OTEL_EXPORTER_OTLP_HEADERS is present; tinytop reads OTLP headers only from otel.headersEnvVar"
         );
 
-        settings.headers_env_var = "OTEL_EXPORTER_OTLP_HEADERS".to_string();
-        assert!(preflight_standard_header_env(&settings, false, true).is_ok());
-        let refusal = preflight_standard_header_env(&settings, true, true)
-            .expect_err("the other standard variable must remain absent");
+        let refusal = preflight_standard_header_env(true, true)
+            .expect_err("the metrics variable must be reported first when both are present");
         assert_eq!(
             refusal,
-            "OTEL_EXPORTER_OTLP_METRICS_HEADERS is present but is not the selected otel.headersEnvVar"
+            "OTEL_EXPORTER_OTLP_METRICS_HEADERS is present; tinytop reads OTLP headers only from otel.headersEnvVar"
         );
         assert!(!refusal.contains('=') && !refusal.contains("value"));
     }
@@ -979,8 +969,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn export_failure_increments_the_counter_and_never_stalls_collection() {
-        // Break caught: an unreachable receiver blocks native collection or leaks a header value.
+    async fn export_failure_increments_the_counter_and_sanitizes_the_error() {
+        // Break caught: an immediate connection refusal is not counted or leaks a header value.
         let settings = OtelSettings {
             enabled: true,
             endpoint: "http://127.0.0.1:1/v1/metrics".to_string(),
@@ -1025,6 +1015,83 @@ mod tests {
                 .contains("sekrit-value")
         );
         assert_eq!(collections.sample_count, 2);
+    }
+
+    #[tokio::test]
+    async fn serve_otel_hung_receiver_never_stalls_collection() {
+        // Break caught: an export awaiting a hung receiver stalls the independent
+        // collector/store path or preserves request-header data in status.
+        let listener = Arc::new(
+            tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("serve_ tests require sandbox permission to bind loopback"),
+        );
+        let address = listener
+            .local_addr()
+            .expect("listener should have an address");
+        let held_sockets = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let acceptor_listener = Arc::clone(&listener);
+        let acceptor_sockets = Arc::clone(&held_sockets);
+        let acceptor = tokio::spawn(async move {
+            loop {
+                let (socket, _) = acceptor_listener
+                    .accept()
+                    .await
+                    .expect("hung receiver should accept connections");
+                acceptor_sockets.lock().await.push(socket);
+            }
+        });
+
+        let settings = OtelSettings {
+            enabled: true,
+            endpoint: format!("http://{address}/v1/metrics"),
+            ..OtelSettings::default()
+        };
+        let header_name = "x-tinytop-test-header";
+        let headers = parse_otlp_headers(Some(&format!("{header_name}=sekrit-value")))
+            .expect("fixture header should parse");
+        let pipeline = build_pipeline(&settings, headers, "fixture-host", Duration::from_secs(2))
+            .expect("pipeline should build without exporting");
+        pipeline.record_snapshot(&fixture_snapshot());
+        let (_fixture, state) = crate::writer::tests::test_state("otel-hung-collection").await;
+        let export_started = Instant::now();
+
+        let ((failure, export_resolved), (second_collection_completed, stats)) = tokio::join!(
+            async {
+                let failure = pipeline.collect_and_export().await;
+                (failure, Instant::now())
+            },
+            async {
+                crate::writer::collect_and_store(&state)
+                    .await
+                    .expect("first collection should complete");
+                crate::writer::collect_and_store(&state)
+                    .await
+                    .expect("second collection should complete");
+                let completed = Instant::now();
+                let stats = crate::writer::tests::test_store(&state)
+                    .stats()
+                    .await
+                    .expect("store stats should read");
+                (completed, stats)
+            }
+        );
+
+        acceptor.abort();
+        let _ = acceptor.await;
+        drop(listener);
+        drop(held_sockets);
+
+        let failure = failure.expect_err("the hung receiver must time out the export");
+        assert!(second_collection_completed < export_resolved);
+        assert!(export_resolved.duration_since(export_started) >= Duration::from_secs(2));
+        assert_eq!(stats.sample_count, 2);
+        let mut status = OtelStatus::from_settings(&settings);
+        let mut last_warn_ms = None;
+        record_failure(&mut status, &mut last_warn_ms, 1_000, &failure);
+        let last_error = status.last_error.expect("failure should be recorded");
+        assert!(!last_error.contains("sekrit-value"));
+        assert!(!last_error.contains(header_name));
     }
 
     #[test]

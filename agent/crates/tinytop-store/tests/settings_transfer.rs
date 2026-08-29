@@ -12,6 +12,7 @@ use tinytop_store::{
     DashboardSettings, DiskPressureState, FreeBytesProvider, SqliteHistoryStore, StoreError,
     check_disk,
     ladder::{Stat, Tier, TierBucket},
+    otel_settings::SECRET_SHAPED_KEY_WORDS,
     settings_transfer::{
         MAX_CONFIG_VERSION, apply_import, export_document, export_filename, import_marker,
         plan_import,
@@ -196,23 +197,14 @@ async fn export_document_carries_the_otel_block_and_still_no_secret_shaped_key()
     );
 
     fn assert_no_secret_key(value: &JsonValue, path: &str) {
-        const FORBIDDEN: [&str; 9] = [
-            "secret",
-            "token",
-            "password",
-            "passwd",
-            "apikey",
-            "api_key",
-            "authorization",
-            "bearer",
-            "credential",
-        ];
         match value {
             JsonValue::Object(object) => {
                 for (key, child) in object {
                     let lower = key.to_ascii_lowercase();
                     assert!(
-                        FORBIDDEN.iter().all(|needle| !lower.contains(needle)),
+                        SECRET_SHAPED_KEY_WORDS
+                            .iter()
+                            .all(|needle| !lower.contains(needle)),
                         "secret-shaped key exported at {path}.{key}"
                     );
                     assert_no_secret_key(child, &format!("{path}.{key}"));
@@ -708,7 +700,7 @@ async fn import_with_an_invalid_otel_block_is_refused() {
     assert!(!plan.valid);
     assert_eq!(
         plan.errors,
-        ["otel.endpoint must be an http:// or https:// URL with a host"]
+        ["otel.endpoint must be an http:// or https:// URL with a host and without credentials"]
     );
     assert_eq!(
         validation_message(
@@ -716,9 +708,59 @@ async fn import_with_an_invalid_otel_block_is_refused() {
                 .await
                 .unwrap_err()
         ),
-        "otel.endpoint must be an http:// or https:// URL with a host"
+        "otel.endpoint must be an http:// or https:// URL with a host and without credentials"
     );
     assert_eq!(store.get_settings().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn put_settings_document_merges_against_the_in_transaction_previous() {
+    // Break caught: document decoding before BEGIN IMMEDIATE captures stale
+    // settings and reverts an OTel block that the document never carried.
+    let fixture = TempDatabase::new("settings-document-transactional-merge");
+    let store = fixture.store().await;
+    let mut enabled_document =
+        serde_json::to_value(DashboardSettings::default()).expect("settings should serialize");
+    enabled_document["otel"]["enabled"] = json!(true);
+    let enabled = store
+        .put_settings_document(&enabled_document)
+        .await
+        .expect("document should enable OTel");
+    assert!(enabled.saved.otel.enabled);
+
+    let mut legacy_document =
+        serde_json::to_value(&enabled.saved).expect("settings should serialize");
+    legacy_document.as_object_mut().unwrap().remove("otel");
+    let write = store
+        .put_settings_document(&legacy_document)
+        .await
+        .expect("legacy document should merge and save");
+
+    assert!(write.previous.otel.enabled);
+    assert!(write.saved.otel.enabled);
+    assert!(!DashboardSettings::changed_keys(&write.previous, &write.saved).contains(&"otel"));
+}
+
+#[tokio::test]
+async fn put_settings_document_refuses_an_invalid_document_and_writes_nothing() {
+    // Break caught: document validation happens after persistence or leaves a
+    // partial settings write behind on refusal.
+    let fixture = TempDatabase::new("settings-document-invalid");
+    let store = fixture.store().await;
+    let before = store.get_settings().await.expect("default settings");
+    let mut document = serde_json::to_value(&before).expect("settings should serialize");
+    document["otel"]["endpoint"] = json!("http://:4318/v1/metrics");
+
+    let error = store
+        .put_settings_document(&document)
+        .await
+        .expect_err("invalid endpoint should be refused");
+
+    assert_eq!(
+        validation_message(error),
+        "otel.endpoint must be an http:// or https:// URL with a host and without credentials"
+    );
+    assert_eq!(store.get_settings().await.expect("stored settings"), before);
 }
 
 #[test]

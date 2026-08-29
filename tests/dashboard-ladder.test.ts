@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import * as ladderRules from "../agent/assets/dashboard/ladder-rules.js";
 
 import {
   HISTORY_WINDOWS,
@@ -440,6 +441,30 @@ describe("retention ladder validation mirror", () => {
 });
 
 describe("OpenTelemetry dashboard rules", () => {
+  const endpointError =
+    "otel.endpoint must be an http:// or https:// URL with a host and without credentials";
+  const attributesError =
+    "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters";
+  const secretShapedKeyError =
+    "otel.resourceAttributes keys must not be secret-shaped (no segment may be secret, token, password, passwd, apikey, api_key, authorization, bearer or credential)";
+  const reservedHeadersError =
+    "otel.headersEnvVar must not be OTEL_EXPORTER_OTLP_HEADERS or OTEL_EXPORTER_OTLP_METRICS_HEADERS; tinytop reads headers only from its own variable";
+
+  test("exports the shared secret-shaped key words and reserved-header message", () => {
+    expect(ladderRules.SECRET_SHAPED_KEY_WORDS).toEqual([
+      "secret",
+      "token",
+      "password",
+      "passwd",
+      "apikey",
+      "api_key",
+      "authorization",
+      "bearer",
+      "credential",
+    ]);
+    expect(ladderRules.OTEL_HEADERS_RESERVED_ERROR).toBe(reservedHeadersError);
+  });
+
   test("detects OTel capability only when settings has an otel object", () => {
     expect(otelCapabilityFrom(null)).toBe(false);
     expect(otelCapabilityFrom({})).toBe(false);
@@ -461,12 +486,45 @@ describe("OpenTelemetry dashboard rules", () => {
     expect(result.errors[0]).toContain("line 2");
   });
 
+  test("reports a secret-shaped resource attribute key with its line number", () => {
+    expect(parseResourceAttributes("auth.token=value")).toEqual({
+      attributes: {},
+      errors: ["line 1: " + secretShapedKeyError],
+    });
+  });
+
   test("preserves valid leading and trailing spaces in resource attribute values", () => {
     // Break caught: the settings UI silently changes an otherwise valid server value.
     expect(parseResourceAttributes("deployment.note=  keep these spaces  ")).toEqual({
       attributes: { "deployment.note": "  keep these spaces  " },
       errors: [],
     });
+  });
+
+  test("refuses secret-shaped resource attribute key segments while accepting ordinary keys", () => {
+    for (const key of ["auth.token", "api_key", "service.api_key", "my_token"]) {
+      const result = validateOtelSettings({
+        enabled: false,
+        endpoint: "http://127.0.0.1:4318/v1/metrics",
+        protocol: "http/protobuf",
+        intervalSec: 60,
+        headersEnvVar: "TINYTOP_OTEL_HEADERS",
+        serviceName: "tinytop",
+        resourceAttributes: { [key]: "value" },
+      });
+      expect(result).toEqual([secretShapedKeyError]);
+    }
+    expect(
+      validateOtelSettings({
+        enabled: false,
+        endpoint: "http://127.0.0.1:4318/v1/metrics",
+        protocol: "http/protobuf",
+        intervalSec: 60,
+        headersEnvVar: "TINYTOP_OTEL_HEADERS",
+        serviceName: "tinytop",
+        resourceAttributes: { "deployment.environment": "production" },
+      }),
+    ).toEqual([]);
   });
 
   test("rejects C1 control characters in resource attribute values", () => {
@@ -507,20 +565,34 @@ describe("OpenTelemetry dashboard rules", () => {
     };
     const cases = [
       [{ ...base, protocol: "grpc" }, "otel.protocol must be one of http/protobuf"],
-      [{ ...base, endpoint: "collector:4318" }, "otel.endpoint must be an http:// or https:// URL with a host"],
-      [{ ...base, endpoint: "http:///v1/metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
-      [{ ...base, endpoint: "https://bad host/v1/metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
-      [{ ...base, endpoint: "https://collector.example/v1 /metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
+      [{ ...base, endpoint: "collector:4318" }, endpointError],
+      [{ ...base, endpoint: "http:///v1/metrics" }, endpointError],
+      [{ ...base, endpoint: "https://bad host/v1/metrics" }, endpointError],
+      [{ ...base, endpoint: "https://collector.example/v1 /metrics" }, endpointError],
+      [{ ...base, endpoint: "http://:4318/v1/metrics" }, endpointError],
+      [{ ...base, endpoint: "https://user:sekrit@collector/v1/metrics" }, endpointError],
+      [{ ...base, endpoint: "https://@collector/v1/metrics" }, endpointError],
       [{ ...base, intervalSec: 4 }, "otel.intervalSec must be between 5 and 3600"],
       [{ ...base, intervalSec: 3601 }, "otel.intervalSec must be between 5 and 3600"],
       [{ ...base, headersEnvVar: "tinytop_headers" }, "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$"],
       [{ ...base, headersEnvVar: "1TINYTOP_HEADERS" }, "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$"],
+      [{ ...base, headersEnvVar: "OTEL_EXPORTER_OTLP_HEADERS" }, reservedHeadersError],
+      [{ ...base, headersEnvVar: "OTEL_EXPORTER_OTLP_METRICS_HEADERS" }, reservedHeadersError],
       [{ ...base, serviceName: "" }, "otel.serviceName must be 1–128 characters without control characters"],
       [{ ...base, serviceName: "x".repeat(129) }, "otel.serviceName must be 1–128 characters without control characters"],
-      [{ ...base, resourceAttributes: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`key.${i}`, "v"])) }, "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
-      [{ ...base, resourceAttributes: { "Bad-Key": "v" } }, "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
+      [{ ...base, resourceAttributes: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`key.${i}`, "v"])) }, attributesError],
+      [{ ...base, resourceAttributes: { "Bad-Key": "v" } }, attributesError],
+      [{ ...base, resourceAttributes: { ["a".repeat(65)]: "v" } }, attributesError],
     ];
     for (const [candidate, message] of cases) expect(validateOtelSettings(candidate)).toEqual([message]);
+    for (const endpoint of [
+      "http://[::1]:4318/v1/metrics",
+      "https://collector.example/v1/metrics",
+      "http://collector:4318",
+    ]) {
+      expect(validateOtelSettings({ ...base, endpoint })).toEqual([]);
+    }
+    expect(validateOtelSettings({ ...base, resourceAttributes: { ["a".repeat(64)]: "v" } })).toEqual([]);
     expect(validateOtelSettings(base)).toEqual([]);
   });
 
@@ -533,7 +605,14 @@ describe("OpenTelemetry dashboard rules", () => {
       lastSuccessMs: Date.UTC(2026, 7, 29, 10, 11, 12),
       lastFailureMs: null,
       failures: 0,
-    })).toContain("OTel → http://collector:4318/v1/metrics every 60 s · last success 10:11:12 · failures 0");
+    })).toContain(
+      `OTel → http://collector:4318/v1/metrics every 60 s · last success ${new Date(Date.UTC(2026, 7, 29, 10, 11, 12)).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      })} · failures 0`,
+    );
     expect(describeOtelCoverage({
       enabled: true,
       endpoint: "http://collector:4318/v1/metrics",
@@ -717,7 +796,7 @@ describe("settings transfer plan description", () => {
         { retentionLadder: ladder() },
       ),
     ).toEqual([
-      "1,234 L1 rows",
+      `${(1234).toLocaleString()} L1 rows`,
       "56 L2 buckets",
       "7 L3 buckets",
       "8 L4 buckets (moved to the queryable archive)",
