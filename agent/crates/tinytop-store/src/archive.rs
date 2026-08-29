@@ -20,6 +20,7 @@ use crate::{
 
 pub const ARCHIVE_BATCH_ROWS: usize = 1_000;
 pub const MAX_ARCHIVE_BATCHES_PER_TICK: usize = 10;
+pub const MAX_COLD_MONTHS_PER_PASS: usize = 12;
 
 const ARCHIVE_SCHEMA_SQL: &str = r#"
 BEGIN;
@@ -327,7 +328,7 @@ pub async fn move_expired_l4(
         return Ok(0);
     }
     let mut connection = acquire_attached(store, paths).await?;
-    let batch = batch.min(ARCHIVE_BATCH_ROWS).max(1) as i64;
+    let batch = batch.clamp(1, ARCHIVE_BATCH_ROWS) as i64;
     let result = match copy_attached_batch(&mut connection, cutoff_ms, batch).await {
         Ok(Some(archive_batch)) => delete_attached_batch(&mut connection, archive_batch).await,
         Ok(None) => Ok(0),
@@ -348,7 +349,7 @@ pub async fn copy_expired_l4_batch(
         return Ok(None);
     }
     let mut connection = acquire_attached(store, paths).await?;
-    let batch = batch.min(ARCHIVE_BATCH_ROWS).max(1) as i64;
+    let batch = batch.clamp(1, ARCHIVE_BATCH_ROWS) as i64;
     let result = copy_attached_batch(&mut connection, cutoff_ms, batch).await;
     detach_after(&mut connection, result).await
 }
@@ -362,6 +363,13 @@ pub async fn read_archive_points(
     let Some(mut connection) = open_archive_read_only(paths, "read open").await? else {
         return Ok(Vec::new());
     };
+    let inspection = inspect_archive_schema(&mut connection).await?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        return Err(error);
+    }
+    if !inspection.current() {
+        return Ok(Vec::new());
+    }
     let rows = sqlx::query(
         r#"
         SELECT
@@ -486,6 +494,39 @@ pub fn exportable_months(
     months
 }
 
+pub async fn months_ready_to_export(
+    store: &SqliteHistoryStore,
+    months: &[String],
+) -> Result<Vec<String>, StoreError> {
+    let mut ready = Vec::with_capacity(months.len());
+    for month in months {
+        let (start_ms, next_start_ms) = month_bounds(month).ok_or_else(|| StoreError::Archive {
+            step: "cold months",
+            source: ArchiveErrorSource::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("archive month {month:?} is not UTC YYYY-MM"),
+            )),
+        })?;
+        let main_rows: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM metric_rollups_1h
+            WHERE bucket_start_ms >= ?1 AND bucket_start_ms < ?2
+            "#,
+        )
+        .bind(start_ms)
+        .bind(next_start_ms)
+        .fetch_one(&store.pool)
+        .await
+        .map_err(|source| archive_sqlx("cold months", source))?;
+        if main_rows != 0 {
+            break;
+        }
+        ready.push(month.clone());
+    }
+    Ok(ready)
+}
+
 pub async fn export_cold_months(
     store: &SqliteHistoryStore,
     paths: &ArchivePaths,
@@ -531,7 +572,9 @@ pub async fn export_cold_months(
         .history_state_get::<String>("coldExportedUntilMonth")
         .await
         .map_err(|error| archive_store_error("cold watermark", error))?;
-    let months = exportable_months(&months_present, ladder, exported_until.as_deref(), now_ms);
+    let candidates = exportable_months(&months_present, ladder, exported_until.as_deref(), now_ms);
+    let candidate_count = candidates.len().min(MAX_COLD_MONTHS_PER_PASS);
+    let months = months_ready_to_export(store, &candidates[..candidate_count]).await?;
     let mut written = Vec::with_capacity(months.len());
     for month in months {
         let (start_ms, next_start_ms) =
@@ -891,6 +934,7 @@ fn parse_rfc4180(csv: &str) -> std::io::Result<Vec<Vec<String>>> {
     let mut field = String::new();
     let mut chars = csv.chars().peekable();
     let mut quoted = false;
+    let mut after_closing_quote = false;
     while let Some(ch) = chars.next() {
         if quoted {
             if ch == '"' {
@@ -899,15 +943,34 @@ fn parse_rfc4180(csv: &str) -> std::io::Result<Vec<Vec<String>>> {
                     field.push('"');
                 } else {
                     quoted = false;
+                    after_closing_quote = true;
                 }
             } else {
                 field.push(ch);
             }
             continue;
         }
+        let record_number = rows.len() + 1;
+        if after_closing_quote && !matches!(ch, ',' | '\r') {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "cold CSV record {record_number} has character {ch:?} after a closing quote"
+                ),
+            ));
+        }
         match ch {
             '"' if field.is_empty() => quoted = true,
-            ',' => row.push(std::mem::take(&mut field)),
+            '"' => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("cold CSV record {record_number} has a quote inside an unquoted field"),
+                ));
+            }
+            ',' => {
+                row.push(std::mem::take(&mut field));
+                after_closing_quote = false;
+            }
             '\r' => {
                 if chars.next() != Some('\n') {
                     return Err(std::io::Error::new(
@@ -917,6 +980,7 @@ fn parse_rfc4180(csv: &str) -> std::io::Result<Vec<Vec<String>>> {
                 }
                 row.push(std::mem::take(&mut field));
                 rows.push(std::mem::take(&mut row));
+                after_closing_quote = false;
             }
             '\n' => {
                 return Err(std::io::Error::new(
@@ -1021,8 +1085,8 @@ async fn open_archive_read_only(
         .map_err(|source| archive_sqlx(step, source))
 }
 
-async fn acquire_attached<'a>(
-    store: &'a SqliteHistoryStore,
+async fn acquire_attached(
+    store: &SqliteHistoryStore,
     paths: &ArchivePaths,
 ) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, StoreError> {
     ensure_archive_schema(paths).await?;
@@ -1235,7 +1299,7 @@ async fn delete_attached_batch(
     if deleted == batch.row_count {
         let moved_until_ms = batch.max_ms.saturating_add(Tier::L4.resolution_ms());
         if let Err(error) = crate::history_state_set_on(
-            &mut **connection,
+            &mut *connection,
             "archiveMovedUntilMs",
             &moved_until_ms,
             crate::now_ms(),

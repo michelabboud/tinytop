@@ -58,6 +58,8 @@ impl From<StoreError> for MaintenanceError {
     }
 }
 
+// StoreError boxing is a Phase-3 refactor.
+#[allow(clippy::result_large_err)]
 pub async fn maintain(
     store: &SqliteHistoryStore,
     settings: &DashboardSettings,
@@ -76,6 +78,8 @@ pub async fn maintain(
 }
 
 #[doc(hidden)]
+// StoreError boxing is a Phase-3 refactor.
+#[allow(clippy::result_large_err)]
 pub async fn maintain_with_config(
     store: &SqliteHistoryStore,
     config: &LadderConfig,
@@ -84,6 +88,8 @@ pub async fn maintain_with_config(
     maintain_with_archive(store, config, &ArchiveSettings::default(), now_ms).await
 }
 
+// StoreError boxing is a Phase-3 refactor.
+#[allow(clippy::result_large_err)]
 async fn maintain_with_archive(
     store: &SqliteHistoryStore,
     config: &LadderConfig,
@@ -384,6 +390,8 @@ pub(crate) async fn refold_ancestors_for_late_write(
     Ok(())
 }
 
+// The struct-of-args refactor touches the T2 fold contract.
+#[allow(clippy::too_many_arguments)]
 async fn refold_one(
     store: &SqliteHistoryStore,
     source_tier: Tier,

@@ -217,6 +217,7 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 | `HISTORY_POLL_MS` | `1500` | Rust daemon and legacy Bun collector | Collection interval in milliseconds |
 | `TINYTOP_RUNTIME` | `auto` | command center | Runtime selection for `./tinytop start`: `auto`, `rust`, `legacy`, or `bun` |
 | `TINYTOP_HISTORY_DB` | Linux/WSL `~/.local/share/tinytop/history.sqlite`; Windows `%LOCALAPPDATA%\TinyTop\state\history.sqlite` | Rust daemon and legacy Bun collector | SQLite database path |
+| `TINYTOP_SYSTEMD_UNIT_DIR` | `~/.config/systemd/user` | command center | Bash command-center systemd user-unit directory override |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running legacy Bun collector |
 | `TINYTOP_PUBLIC_DIR` | unset | Rust daemon | Optional development override for dashboard assets; unset uses embedded assets |
 | `XDG_DATA_HOME` | `~/.local/share` | Legacy Bun collector | Base directory for default SQLite path |
@@ -256,6 +257,12 @@ History retention:
 - The Rust daemon stores `targetDatabaseBytes` in `/api/settings` and reports current database budget usage through `/api/history/coverage`.
 - The dashboard's recent history window limits what it reads and renders; the retention settings control database pruning.
 - Legacy Bun split mode keeps raw samples until you manually archive or reset the database.
+
+When `retentionLadder.archive.queryable` is enabled, expired hourly history moves into `history-archive.sqlite` beside the main database (or the configured archive directory); archive reads remain read-only. See GUIDE.md and README.md for settings and read behavior.
+
+With `retentionLadder.archive.cold`, completed fully moved months are written as `tinytop-1h-YYYY-MM.csv.gz` plus `.sha256`; verify a copy with `sha256sum -c`. Use `tinytop-agent db archive status` to inspect manifest state or `tinytop-agent db archive export-now` for one pass; GUIDE.md and README.md cover the format and retention rules.
+
+`retentionLadder.diskCheck` monitors free space on the database filesystem. Active pressure refuses retention growth and archive/tier enables, but not shrinkage, and records `diskPressure` and `diskRecovered` markers; see GUIDE.md and README.md for the operator workflow.
 
 Dashboard settings:
 

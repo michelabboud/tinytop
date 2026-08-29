@@ -158,6 +158,24 @@ fn read_csv_gz(path: &std::path::Path) -> String {
     csv
 }
 
+fn write_csv_gz(path: &std::path::Path, csv: &str) {
+    let file = std::fs::File::create(path).expect("cold fixture should create");
+    let mut encoder = GzEncoder::new(file, Compression::new(6));
+    encoder
+        .write_all(csv.as_bytes())
+        .expect("cold fixture CSV should compress");
+    encoder
+        .finish()
+        .expect("cold fixture gzip should finish")
+        .sync_all()
+        .expect("cold fixture gzip should sync");
+}
+
+fn verifier_fixture_csv(first_field: &str) -> String {
+    let header = "bucket_start_ms,first_captured_at_ms,newest_captured_at_ms,sample_count,avg_cpu_usage_percent,min_cpu_usage_percent,max_cpu_usage_percent,avg_memory_used_percent,min_memory_used_percent,max_memory_used_percent,avg_swap_used_percent,min_swap_used_percent,max_swap_used_percent,avg_load_percent,min_load_percent,max_load_percent,avg_root_used_percent,min_root_used_percent,max_root_used_percent";
+    format!("{header}\r\n{first_field},{}\r\n", ["1"; 18].join(","))
+}
+
 fn parse_rfc4180(csv: &str) -> Vec<Vec<String>> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
@@ -369,7 +387,7 @@ async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() 
         match &error {
             StoreError::Archive { step, .. } => {
                 assert!(
-                    ["attach", "insert", "commit copy"].contains(&step),
+                    ["attach", "insert", "commit copy"].contains(step),
                     "unexpected step {step}"
                 );
             }
@@ -573,10 +591,14 @@ async fn archive_directory_setting_relocates_the_file() {
     // Break caught: archive.directory is ignored and the archive lands beside the main DB.
     let fixture = TempDatabase::new("directory");
     let store = fixture.store().await;
-    let mut settings = DashboardSettings::default();
-    settings.retention_ladder.archive.queryable = true;
+    let mut ladder = tinytop_store::retention_ladder::RetentionLadder::default();
+    ladder.archive.queryable = true;
     let relocated = fixture.dir.join("relocated");
-    settings.retention_ladder.archive.directory = relocated.display().to_string();
+    ladder.archive.directory = relocated.display().to_string();
+    let settings = DashboardSettings {
+        retention_ladder: ladder,
+        ..DashboardSettings::default()
+    };
     let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
     seed_l4(&store, &[0]).await;
 
@@ -720,8 +742,12 @@ async fn auto_falls_through_to_archive_for_ranges_older_than_l4() {
     // Break caught: auto selects Archive but the store returns an empty stub or L4-labelled points.
     let fixture = TempDatabase::new("auto");
     let store = fixture.store().await;
-    let mut settings = DashboardSettings::default();
-    settings.retention_ladder.archive.queryable = true;
+    let mut ladder = tinytop_store::retention_ladder::RetentionLadder::default();
+    ladder.archive.queryable = true;
+    let settings = DashboardSettings {
+        retention_ladder: ladder,
+        ..DashboardSettings::default()
+    };
     store
         .put_settings(&settings)
         .await
@@ -986,13 +1012,60 @@ async fn incomplete_archive_schema_is_reported_while_reads_stay_lenient() {
         .close()
         .await
         .expect("archive fixture should close again");
-    let mut settings = DashboardSettings::default();
-    settings.retention_ladder = ladder;
+    let settings = DashboardSettings {
+        retention_ladder: ladder,
+        ..DashboardSettings::default()
+    };
     let coverage = store
         .history_coverage(&settings)
         .await
         .expect("coverage should stay lenient for every incomplete archive shape");
     assert_eq!(coverage.archive.queryable.bucket_count, 0);
+    assert!(
+        read_archive_points(&paths, i64::MIN, i64::MAX, 10)
+            .await
+            .expect("archive point reads should stay lenient for an incomplete v1 archive")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn archive_points_refuse_a_newer_user_version() {
+    // Break caught: archive point reads serve a foreign/newer file that happens to have the table.
+    let fixture = TempDatabase::new("archive-points-newer");
+    let store = fixture.store().await;
+    let mut settings = DashboardSettings::default();
+    settings.retention_ladder.archive.queryable = true;
+    let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
+    seed_archive(&store, &paths, &[JAN_2023_MS]).await;
+    let mut connection = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new()
+            .filename(&paths.db)
+            .create_if_missing(false),
+    )
+    .await
+    .expect("archive fixture should open read-write");
+    sqlx::query("PRAGMA user_version = 2")
+        .execute(&mut connection)
+        .await
+        .expect("archive fixture should become a newer version");
+    connection
+        .close()
+        .await
+        .expect("archive fixture should close");
+
+    assert!(matches!(
+        read_archive_points(&paths, i64::MIN, i64::MAX, 10).await,
+        Err(StoreError::Archive { step: "schema", .. })
+    ));
+    assert!(matches!(
+        store.history_coverage(&settings).await,
+        Err(StoreError::Archive { .. })
+    ));
+    assert!(matches!(
+        read_archive_manifest(&paths).await,
+        Err(StoreError::Archive { .. })
+    ));
 }
 
 #[tokio::test]
@@ -1055,8 +1128,10 @@ async fn cold_export_writes_verified_month_files() {
         }
     }
     assert_eq!(read_archive_manifest(&paths).await.unwrap(), written);
-    let mut settings = DashboardSettings::default();
-    settings.retention_ladder = ladder.clone();
+    let settings = DashboardSettings {
+        retention_ladder: ladder.clone(),
+        ..DashboardSettings::default()
+    };
     let coverage = store.history_coverage(&settings).await.unwrap();
     assert_eq!(coverage.archive.cold.file_count, 3);
     assert_eq!(
@@ -1197,6 +1272,44 @@ async fn corrupted_record_width_fails_verification() {
     );
 }
 
+#[test]
+fn verify_rejects_a_quote_inside_an_unquoted_field() {
+    // Break caught: the verifier treats a quote in an unquoted value as ordinary field data.
+    let fixture = TempDatabase::new("cold-unquoted-quote");
+    let path = fixture.dir.join("unquoted-quote.csv.gz");
+    write_csv_gz(&path, &verifier_fixture_csv("1672531200000\""));
+
+    let error = verify_cold_file(&path, 1, JAN_2023_MS, JAN_2023_MS)
+        .expect_err("a quote inside an unquoted field must fail verification");
+    assert!(matches!(
+        &error,
+        StoreError::Archive {
+            step: "cold verify",
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("record 2"));
+}
+
+#[test]
+fn verify_rejects_junk_after_a_closing_quote() {
+    // Break caught: the verifier accepts arbitrary bytes between a closing quote and delimiter.
+    let fixture = TempDatabase::new("cold-post-quote-junk");
+    let path = fixture.dir.join("post-quote-junk.csv.gz");
+    write_csv_gz(&path, &verifier_fixture_csv("\"1672531200000\"x"));
+
+    let error = verify_cold_file(&path, 1, JAN_2023_MS, JAN_2023_MS)
+        .expect_err("junk after a closing quote must fail verification");
+    assert!(matches!(
+        &error,
+        StoreError::Archive {
+            step: "cold verify",
+            ..
+        }
+    ));
+    assert!(error.to_string().contains("record 2"));
+}
+
 #[tokio::test]
 async fn csv_round_trip_is_row_exact() {
     // Break caught: CSV column order, numeric formatting, NULL encoding, or row order drifts.
@@ -1308,6 +1421,149 @@ async fn cold_export_never_deletes_archive_rows() {
         .expect("cold export should succeed");
 
     assert_eq!(archive_l4_count(&paths).await, before);
+}
+
+#[tokio::test]
+async fn cold_export_waits_until_main_holds_no_rows_for_the_month() {
+    // Break caught: a partially moved month is sealed while one of its rows remains in main.
+    let fixture = TempDatabase::new("cold-waits-for-main");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_l4(&store, &[JAN_2023_MS, JAN_2023_MS + HOUR_MS]).await;
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 1)
+            .await
+            .expect("first old bucket should move"),
+        1
+    );
+
+    assert!(
+        export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+            .await
+            .expect("an incomplete month should wait normally")
+            .is_empty()
+    );
+    assert!(!paths.directory.join("tinytop-1h-2023-01.csv.gz").exists());
+    assert!(read_archive_manifest(&paths).await.unwrap().is_empty());
+    assert_eq!(
+        store
+            .history_state_get::<String>("coldExportedUntilMonth")
+            .await
+            .expect("cold watermark should read"),
+        None
+    );
+
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 1)
+            .await
+            .expect("second old bucket should move"),
+        1
+    );
+    let written = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("fully moved month should export");
+    assert_eq!(written.len(), 1);
+    assert_eq!(written[0].row_count, 2);
+}
+
+#[tokio::test]
+async fn cold_export_stops_at_the_first_month_still_in_main() {
+    // Break caught: a pass jumps the watermark beyond the first month that is still filling.
+    let fixture = TempDatabase::new("cold-stops-at-incomplete");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    seed_l4(&store, &[JAN_2023_MS, FEB_2023_MS, FEB_2023_MS + HOUR_MS]).await;
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 2)
+            .await
+            .expect("January and one February bucket should move"),
+        2
+    );
+
+    let first = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("pass should stop normally at incomplete February");
+    assert_eq!(
+        first
+            .iter()
+            .map(|row| row.month.as_str())
+            .collect::<Vec<_>>(),
+        ["2023-01"]
+    );
+    assert_eq!(
+        store
+            .history_state_get::<String>("coldExportedUntilMonth")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("2023-01")
+    );
+
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 1)
+            .await
+            .expect("last February bucket should move"),
+        1
+    );
+    let second = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("February should export on the next pass");
+    assert_eq!(
+        second
+            .iter()
+            .map(|row| (row.month.as_str(), row.row_count))
+            .collect::<Vec<_>>(),
+        [("2023-02", 2)]
+    );
+}
+
+#[tokio::test]
+async fn cold_export_exports_at_most_twelve_months_per_pass() {
+    // Break caught: one scheduler/export-now call performs an unbounded number of file exports.
+    let fixture = TempDatabase::new("cold-twelve-month-cap");
+    let store = fixture.store().await;
+    let ladder = cold_ladder();
+    let paths = archive_paths(store.database_path(), &ladder.archive);
+    let starts = [
+        1_672_531_200_000,
+        1_675_209_600_000,
+        1_677_628_800_000,
+        1_680_307_200_000,
+        1_682_899_200_000,
+        1_685_577_600_000,
+        1_688_169_600_000,
+        1_690_848_000_000,
+        1_693_526_400_000,
+        1_696_118_400_000,
+        1_698_796_800_000,
+        1_701_388_800_000,
+        1_704_067_200_000,
+    ];
+    seed_archive(&store, &paths, &starts).await;
+
+    let first = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("first bounded pass should succeed");
+    assert_eq!(first.len(), 12);
+    assert_eq!(first.last().map(|row| row.month.as_str()), Some("2023-12"));
+    assert_eq!(read_archive_manifest(&paths).await.unwrap().len(), 12);
+    assert_eq!(
+        store
+            .history_state_get::<String>("coldExportedUntilMonth")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("2023-12")
+    );
+
+    let second = export_cold_months(&store, &paths, &ladder, AUG_29_2026_MS)
+        .await
+        .expect("remaining month should export on the second pass");
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].month, "2024-01");
+    assert_eq!(read_archive_manifest(&paths).await.unwrap().len(), 13);
 }
 
 #[tokio::test]

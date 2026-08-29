@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use tinytop_store::{
-    DashboardSettings, SqliteHistoryStore, StoreError,
+    DashboardSettings, SqliteHistoryStore, StoreError, apply_disk_measurement,
     ladder::Tier,
     retention_ladder::{DiskPressureState, RetentionLadder},
 };
@@ -885,6 +885,125 @@ async fn disk_pressure_refuses_enabling_a_tier_or_archive() {
         archive_error.to_string(),
         "disk pressure active: free 100 < minFreeBytes 200; shrink first or free disk"
     );
+}
+
+#[tokio::test]
+async fn settings_growth_and_a_breach_serialize_on_one_transaction() {
+    // Break caught: settings growth commits after disk pressure becomes active because the
+    // pressure read and settings write do not share one transaction.
+    let (dir, database_url) = temp_database("settings-growth-disk-breach");
+    let store = SqliteHistoryStore::connect(&database_url)
+        .await
+        .expect("store should connect");
+    let observer = sqlx::SqlitePool::connect(&database_url)
+        .await
+        .expect("observer should connect");
+    for statement in [
+        "CREATE TABLE settings_pressure_order (sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation TEXT NOT NULL)",
+        "CREATE TRIGGER audit_dashboard_settings_insert AFTER INSERT ON app_settings WHEN NEW.setting_key = 'dashboard' BEGIN INSERT INTO settings_pressure_order (operation) VALUES ('settings'); END",
+        "CREATE TRIGGER audit_dashboard_settings_update AFTER UPDATE OF value_json ON app_settings WHEN NEW.setting_key = 'dashboard' BEGIN INSERT INTO settings_pressure_order (operation) VALUES ('settings'); END",
+        "CREATE TRIGGER audit_disk_pressure_insert AFTER INSERT ON history_state WHEN NEW.state_key = 'diskPressure' BEGIN INSERT INTO settings_pressure_order (operation) VALUES ('pressure'); END",
+        "CREATE TRIGGER audit_disk_pressure_update AFTER UPDATE OF value_json ON history_state WHEN NEW.state_key = 'diskPressure' BEGIN INSERT INTO settings_pressure_order (operation) VALUES ('pressure'); END",
+    ] {
+        sqlx::query(statement)
+            .execute(&observer)
+            .await
+            .expect("write-order observer should install");
+    }
+
+    let baseline = DashboardSettings::default();
+    let mut grown = baseline.clone();
+    grown.retention_ladder.l2.keep_days += 1;
+    grown.rollup_retention_days += 1;
+    let inactive = DiskPressureState {
+        active: false,
+        since_ms: None,
+        free_bytes: 300,
+        min_free_bytes: 200,
+    };
+    let mut breach_ladder = RetentionLadder::default();
+    breach_ladder.disk_check.min_free_bytes = 200;
+    let refusal = "disk pressure active: free 100 < minFreeBytes 200; shrink first or free disk";
+    let mut settings_first = 0;
+    let mut breach_first = 0;
+
+    for iteration in 0..20 {
+        store
+            .put_settings(&baseline)
+            .await
+            .expect("baseline settings should save");
+        store
+            .history_state_set("diskPressure", &inactive, iteration)
+            .await
+            .expect("inactive pressure state should save");
+        sqlx::query("DELETE FROM settings_pressure_order")
+            .execute(&observer)
+            .await
+            .expect("write-order observer should reset");
+
+        let (growth, breach) = tokio::join!(
+            store.put_settings(&grown),
+            apply_disk_measurement(&store, &dir, Ok(100), &breach_ladder, 1_000 + iteration,),
+        );
+        breach.expect("disk breach should commit");
+
+        let stored = store
+            .get_settings()
+            .await
+            .expect("stored settings should load");
+        let pressure = store
+            .history_state_get::<DiskPressureState>("diskPressure")
+            .await
+            .expect("pressure state should load")
+            .expect("pressure state should exist");
+        assert!(
+            pressure.active,
+            "iteration {iteration}: breach must be active"
+        );
+        let operations = sqlx::query_scalar::<_, String>(
+            "SELECT operation FROM settings_pressure_order ORDER BY sequence",
+        )
+        .fetch_all(&observer)
+        .await
+        .expect("write order should load");
+
+        match growth {
+            Ok(saved) => {
+                settings_first += 1;
+                assert_eq!(saved, grown, "iteration {iteration}: saved growth");
+                assert_eq!(stored, grown, "iteration {iteration}: stored growth");
+                assert_eq!(
+                    operations,
+                    ["settings", "pressure"],
+                    "iteration {iteration}: successful growth must commit before the breach",
+                );
+            }
+            Err(StoreError::Validation(message)) if message == refusal => {
+                breach_first += 1;
+                assert_eq!(
+                    stored, baseline,
+                    "iteration {iteration}: refused growth must leave settings unchanged",
+                );
+                assert_eq!(
+                    operations,
+                    ["pressure"],
+                    "iteration {iteration}: a prior breach must refuse growth before its write",
+                );
+            }
+            result => panic!(
+                "iteration {iteration}: expected committed growth or the exact disk-pressure refusal, observed {result:?}"
+            ),
+        }
+    }
+
+    println!(
+        "observed orders across 20 iterations: settings-first={settings_first}, breach-first={breach_first}"
+    );
+    assert_eq!(settings_first + breach_first, 20);
+
+    store.close().await.expect("store should close");
+    observer.close().await;
+    std::fs::remove_dir_all(dir).expect("owned temp fixture should be removable");
 }
 
 #[tokio::test]

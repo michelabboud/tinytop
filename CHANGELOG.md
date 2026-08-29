@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Prevented cold export from sealing a month until every row has left the main database; candidate evaluation now stops at the first month still being moved.
+- Made command-center test runs hermetic by isolating home/XDG paths and system command stubs per invocation.
+- Tightened cold CSV verification to reject quotes in unquoted fields and characters after a closing quote.
+- Made archive-point reads apply the same schema inspection and newer-schema refusal as archive coverage and manifests.
+- Bound one cold-export pass to twelve oldest eligible months while leaving archive-status manifest listings unbounded.
+- Enforced Rust formatting, warning-free Clippy, and workspace tests in `check:rust`; removed the remaining mechanical Clippy findings.
+- Serialized settings growth validation with the persisted disk-pressure state in one immediate transaction.
+
 ## 0.3.3 - 2026-08-29
 
 Phase 2 Task 9: the disk check (spec §9 hourly block, §5 pressure rule; ADRs 0017 and 0020). The Rust daemon now measures free space on the filesystem holding the database — once immediately at start, then every `retentionLadder.diskCheck.intervalMinutes`, on a blocking thread so a hung mount cannot stall the HTTP runtime — and keeps `history_state.diskPressure` as a four-transition state machine: crossing below `minFreeBytes` activates pressure, records `sinceMs` and writes one `diskPressure` timeline marker; a continuing breach refreshes the numbers and writes nothing; recovery clears it with one `diskRecovered` marker. Pressure never deletes anything; it only refuses extending a horizon or enabling a tier or archive, exactly the rule Phase 1 already enforced from a state nobody was writing. ADR 0020 settles what the spec left open: an undeterminable measurement writes nothing and keeps the last known state (the migration's one-shot guard fails closed; a standing check must not refuse valid settings after a transient enumeration failure), there is no hysteresis, and the previous state is read and the new state, `lastDiskCheckMs` and any marker are written inside one `BEGIN IMMEDIATE` transaction. The first lane (hexe run 596) escalated correctly on a brief that had excluded the test file whose `DiskPressureState` literals needed the new `sinceMs` field; the blind review (luna, run 600) found the read-modify-write outside the transaction and two test gaps, fixed in the fix round (run 603). Coverage and `db stats --json` gain `pressureSinceMs`; the dashboard gains red/green colours for the two markers. Follow-up recorded in the backlog: refuse growth when no successful check has happened for more than two intervals (a stale healthy state is a signal, not a boundary). No on-disk schema change; `Cargo.lock` unchanged.

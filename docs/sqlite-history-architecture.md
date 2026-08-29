@@ -423,7 +423,7 @@ Rust maintenance runs after each insert in this order:
 - L1 defaults to 3 days (range 3–3,650) and L2 to 30 days (range 7–3,650); both are always enabled.
 - L3 defaults to enabled for 90 days and must be at least L2 when enabled. L4 defaults to enabled for 730 days; `0` means forever, otherwise it must be at least L3, or L2 when L3 is disabled.
 - Snapshot JSON defaults to 60 minutes (range 60–1,440). Typed filesystem/process rows default to a 60-second cadence (range 15–3,600 seconds).
-- Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute. Queryable moves and reads are implemented; cold file export remains a later phase.
+- Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute.
 - Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB.
 
 Every explicit settings save validates the complete block and writes `retentionHours = l1.keepDays × 24` plus `rollupRetentionDays = l2.keepDays` for Bun compatibility. These legacy fields are derived mirrors: a typed save that edits only `retentionHours` or `rollupRetentionDays` is overwritten from the authoritative ladder. The save transaction also updates `history_state.l3Enabled` and `l4Enabled`, so a late insert immediately after disabling a tier cannot refold into it before the next maintenance tick.
@@ -509,20 +509,19 @@ are returned oldest first with one-hour resolution.
 ### Cold export
 
 When `retentionLadder.archive.cold` and `queryable` are enabled, the daemon
-checks once an hour for complete UTC calendar months in the queryable archive.
+checks once an hour for complete, fully moved UTC calendar months in the queryable archive.
 A month is exportable only when it is at least `coldAfterMonths` old, every hour
 in it has expired from main (`end_of_month_ms + l4_keep_ms + one day <= now`),
-and it is later than `coldExportedUntilMonth`. The extra day lets the bounded
-archive move catch up before the monotone watermark seals the month. Disabled
-L4 and `l4.keepDays: 0` (forever) therefore have no exportable months. Eligible
-months are exported oldest first in one pass. A row that arrives late for an
+it is later than `coldExportedUntilMonth`, and main holds no rows for that
+month. The pass checks candidates in order and stops at the first month that
+still has main rows, so the monotone watermark never seals a month while its
+bounded archive move is still catching up. Disabled L4 and `l4.keepDays: 0`
+(forever) therefore have no exportable months. Eligible months are exported
+oldest first, at most 12 per pass; `db archive status` lists recorded manifest
+months without that per-pass bound. A row that arrives late for an
 already exported month remains queryable in `history-archive.sqlite`; the
 sealed CSV is not silently rewritten on a later pass.
-A month with no archived rows is not exportable and is skipped; because L4
-hours expire and move in ascending order and eligibility requires the month's
-last hour to have expired at least a day earlier, a later month cannot become
-exportable while an earlier one still has unmoved rows — a row that appears for
-a skipped month afterwards is a late row and stays queryable-only.
+A month with no archived rows is not exportable and is skipped.
 
 Each month produces `tinytop-1h-YYYY-MM.csv.gz` and
 `tinytop-1h-YYYY-MM.csv.gz.sha256` in the archive directory. The gzip level is

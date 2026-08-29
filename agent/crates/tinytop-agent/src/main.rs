@@ -9,8 +9,9 @@ use tinytop_store::{
     HistoryArchiveCoverage, HistoryColdArchiveCoverage, HistoryDiskCoverage,
     HistoryQueryableArchiveCoverage, HistoryTierCoverage, SqliteHistoryStore, StoreStats,
     archive::{
-        ArchiveManifestRow, ArchiveSchemaState, archive_months_present, archive_paths,
-        archive_schema_state, export_cold_months, exportable_months, read_archive_manifest,
+        ArchiveManifestRow, ArchiveSchemaState, MAX_COLD_MONTHS_PER_PASS, archive_months_present,
+        archive_paths, archive_schema_state, export_cold_months, exportable_months,
+        months_ready_to_export, read_archive_manifest,
     },
     database_path_from_url, inspect_database_path, pre_image_path,
 };
@@ -390,13 +391,17 @@ async fn db_archive(action: &str, sqlite_url: &str) -> Result<(), Box<dyn std::e
                     )
                 } else {
                     let months_present = archive_months_present(&paths).await?;
+                    let candidates = exportable_months(
+                        &months_present,
+                        &settings.retention_ladder,
+                        coverage.archive.cold.exported_until_month.as_deref(),
+                        now_ms()?,
+                    );
+                    let candidate_count = candidates.len().min(MAX_COLD_MONTHS_PER_PASS);
                     (
-                        Some(exportable_months(
-                            &months_present,
-                            &settings.retention_ladder,
-                            coverage.archive.cold.exported_until_month.as_deref(),
-                            now_ms()?,
-                        )),
+                        Some(
+                            months_ready_to_export(&store, &candidates[..candidate_count]).await?,
+                        ),
                         None,
                     )
                 };
