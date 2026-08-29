@@ -17,6 +17,7 @@ Browser
   | GET /api/history/markers
   | GET /api/version
   | GET/PUT /api/settings
+  | GET /api/settings/export, POST /api/settings/import[?dryRun=true]
   v
 Rust daemon: tinytop-agent serve
   127.0.0.1:4274

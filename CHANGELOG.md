@@ -1,11 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 - 2026-08-29
+
+Phase 3 of the tiered history ladder closes with one task: a versioned, secret-free settings document that moves between daemons (ADR 0016) — `GET /api/settings/export`, `POST /api/settings/import` (`?dryRun=true` previews with server-computed `wouldDelete`), the `config export` / `config import` CLI verbs, and the dashboard's Export/Import buttons, which also replace the client-side "approx." retention estimates with the same dry-run. The blind review (luna run 617) and its fix round closed a save-path regression the task had introduced (a theme-only save prompted "also changes: defaultTheme"), a stranded `<FILE>.tmp` after a failed export write, a missing directory fsync after the publish, and the hard-link publish on filesystems without `link(2)` (FAT/exFAT — now a re-checked rename fallback with its window documented), and added the missing version-type, invalid-path-invariant and one-object-refusal tests. Audits at the tag: `cargo audit` 0 vulnerabilities (3 pre-existing allowed warnings), `bun audit` clean; `user_version` stays 1 — no migration.
 
 - API: added Rust-only settings export and import routes, including attachment metadata, read-only dry-run validation, exact candidate-horizon deletion counts, warnings, authoritative apply-time validation, maintenance, and source-qualified import markers.
 - CLI: added no-create `config export` and `config import` commands with atomic no-overwrite files, structured dry-run/refusal output, round-trip markers, and maintenance deferred to the daemon's next tick.
 - Dashboard: added Rust-capability-gated Export/Import controls and replaced retention estimates with server-computed dry-run counts; disabling tiers or archive reads now says their stored tables/files are retained.
 - Store: centralized transfer envelope validation, planning, application, changed-key calculation, legacy-mirror normalization, prune-predicate counts, and import marker details in one shared module without adding a dependency or schema change.
+- Fix round (luna run 617, hexe run 619): `describeImportPlan` takes `{ includeOtherChanges }` so a theme-only save no longer prompts; `config export --out` removes its `.tmp` on a failed write/sync, fsyncs the directory after the publish, and falls back to a re-checked `rename` where hard links are unsupported; `importSettingsFile` no longer shadows the DOM `document`; tests for `"1"`/`1.5` config versions, zero-event invalid paths, and the CLI's single refusal object.
 
 ## 0.4.0 - 2026-08-29
 

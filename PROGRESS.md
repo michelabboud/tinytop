@@ -2,13 +2,14 @@
 
 ## Current Version
 
-- Version: `0.4.0`
+- Version: `0.4.1`
 - Date: 2026-08-29
-- Status: Phase 2 CLOSED as 0.4.0 — T7 (queryable archive, ADRs 0018/0019) 0.3.1, T8 (cold
-  CSV export + CLI carry-overs) 0.3.2, T9 (disk check, ADR 0020) 0.3.3, then the deep
-  dual-blind review over `v0.3.0..v0.3.3` and its fix round (two P0s, one P1; clippy now in
-  the gate). Next = Phase 3: T10 settings export/import (ADR 0016) → 0.4.1.
-  Deploying 0.3.x onto the live database is a separate, explicitly ordered step
+- Status: Phase 3 CLOSED as 0.4.1 — T10 settings export/import (ADR 0016): export/import
+  routes with a server-computed dry-run, `config export` / `config import` CLI verbs, dashboard
+  Export/Import buttons; blind review (luna run 617) + fix round (save-path prompt regression,
+  `.tmp` cleanup, directory fsync, rename fallback where hard links are unsupported, test gaps).
+  Phases 1–3 (0.3.0 → 0.4.1) are on main. Next = Phase 4: T11 OpenTelemetry export (ADR 0015)
+  → 0.5.0. Deploying onto the live database is a separate, explicitly ordered step
   (pre-image + backup first).
 
 ## Backlog
@@ -27,6 +28,10 @@
   closed PR #1 (superseded; VERSION/ADR-number/dashboard-file conflicts made it unmergeable).
 
 ## Completed
+
+### 0.4.1 - Tiered history ladder, Phase 3 (T10)
+
+- [x] T10 / 0.4.1: versioned, secret-free settings document (ADR 0016) — `GET /api/settings/export` (attachment, `tinytopConfigVersion` 1), `POST /api/settings/import` with `?dryRun=true` returning `{valid, errors[], warnings[], changedKeys[], wouldDelete}` where `wouldDelete` is five server `COUNT(*)`s under the prune predicates; apply goes through `put_settings` (`BEGIN IMMEDIATE`), runs maintenance, records a `settingsChange` marker `{"source":"import","changed":[…]}`; `config export [--out FILE]` (no-clobber `.tmp` → fsync → hard-link publish, rename fallback where links are unsupported) and `config import FILE [--dry-run]` (exit 1 with ONE refusal JSON; never runs maintenance beside the daemon); dashboard Export/Import buttons (hidden on Bun), the shrink confirm uses the dry-run and the "approx." estimates are gone. Shared store module `settings_transfer.rs`; no new dependency; `user_version` stays 1. Fix round after luna run 617 (hexe run 619): save-path prompt regression, `.tmp` cleanup on failure, directory fsync, rename fallback, `"1"`/`1.5` version tests, zero-event invalid-path invariants, single-object CLI refusal test. Review record: Fabulous `docs/fleet/tinytop/2026-08-29-ari-luna-t10-review.md`.
 
 ### 0.4.0 - Tiered history ladder, Phase 2 close
 
