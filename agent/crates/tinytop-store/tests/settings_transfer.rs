@@ -679,7 +679,11 @@ async fn import_without_otel_keeps_the_persisted_block() {
     let plan = plan_import(&store, &input, 0).await.unwrap();
 
     assert!(plan.valid);
-    assert!(plan.warnings.iter().all(|warning| !warning.contains("otel")));
+    assert!(
+        plan.warnings
+            .iter()
+            .all(|warning| !warning.contains("otel"))
+    );
     assert!(plan.changed_keys.iter().all(|key| key != "otel"));
     assert_eq!(plan.candidate.as_ref().unwrap().otel, persisted.otel);
 
@@ -705,6 +709,14 @@ async fn import_with_an_invalid_otel_block_is_refused() {
     assert_eq!(
         plan.errors,
         ["otel.endpoint must be an http:// or https:// URL with a host"]
+    );
+    assert_eq!(
+        validation_message(
+            apply_import(&store, &document(&candidate), 0)
+                .await
+                .unwrap_err()
+        ),
+        "otel.endpoint must be an http:// or https:// URL with a host"
     );
     assert_eq!(store.get_settings().await.unwrap(), before);
 }

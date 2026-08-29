@@ -57,12 +57,10 @@ impl OtelSettings {
             ));
         }
         let service_name_len = self.service_name.chars().count();
-        if !(1..=128).contains(&service_name_len)
-            || self.service_name.chars().any(char::is_control)
+        if !(1..=128).contains(&service_name_len) || self.service_name.chars().any(char::is_control)
         {
             return Err(StoreError::Validation(
-                "otel.serviceName must be 1–128 characters without control characters"
-                    .to_string(),
+                "otel.serviceName must be 1–128 characters without control characters".to_string(),
             ));
         }
         if self.resource_attributes.len() > 32
@@ -160,38 +158,60 @@ mod tests {
         // Break caught: malformed exporter settings reach pipeline construction.
         let mut cases: Vec<(OtelSettings, &str)> = Vec::new();
 
-        let mut value = OtelSettings::default();
-        value.protocol = "grpc".to_string();
+        let value = OtelSettings {
+            protocol: "grpc".to_string(),
+            ..OtelSettings::default()
+        };
         cases.push((value, "otel.protocol must be one of http/protobuf"));
 
-        for endpoint in ["collector:4318/v1/metrics", "http:///v1/metrics", "https://bad host/v1/metrics"] {
-            let mut value = OtelSettings::default();
-            value.endpoint = endpoint.to_string();
-            cases.push((value, "otel.endpoint must be an http:// or https:// URL with a host"));
+        for endpoint in [
+            "collector:4318/v1/metrics",
+            "http:///v1/metrics",
+            "https://bad host/v1/metrics",
+        ] {
+            let value = OtelSettings {
+                endpoint: endpoint.to_string(),
+                ..OtelSettings::default()
+            };
+            cases.push((
+                value,
+                "otel.endpoint must be an http:// or https:// URL with a host",
+            ));
         }
 
         for interval in [4, 3_601] {
-            let mut value = OtelSettings::default();
-            value.interval_sec = interval;
+            let value = OtelSettings {
+                interval_sec: interval,
+                ..OtelSettings::default()
+            };
             cases.push((value, "otel.intervalSec must be between 5 and 3600"));
         }
 
         for name in ["tinytop_headers", "1TINYTOP_HEADERS"] {
-            let mut value = OtelSettings::default();
-            value.headers_env_var = name.to_string();
+            let value = OtelSettings {
+                headers_env_var: name.to_string(),
+                ..OtelSettings::default()
+            };
             cases.push((value, "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$"));
         }
 
         for service_name in [String::new(), "x".repeat(129)] {
-            let mut value = OtelSettings::default();
-            value.service_name = service_name;
-            cases.push((value, "otel.serviceName must be 1–128 characters without control characters"));
+            let value = OtelSettings {
+                service_name,
+                ..OtelSettings::default()
+            };
+            cases.push((
+                value,
+                "otel.serviceName must be 1–128 characters without control characters",
+            ));
         }
 
-        let mut too_many = OtelSettings::default();
-        too_many.resource_attributes = (0..33)
-            .map(|index| (format!("key.{index}"), "value".to_string()))
-            .collect();
+        let too_many = OtelSettings {
+            resource_attributes: (0..33)
+                .map(|index| (format!("key.{index}"), "value".to_string()))
+                .collect(),
+            ..OtelSettings::default()
+        };
         cases.push((
             too_many,
             "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
@@ -235,12 +255,13 @@ mod tests {
         let previous = DashboardSettings::default();
         let mut next = previous.clone();
         next.otel.enabled = true;
-        next.otel.resource_attributes = BTreeMap::from([(
-            "deployment.environment".to_string(),
-            "test".to_string(),
-        )]);
+        next.otel.resource_attributes =
+            BTreeMap::from([("deployment.environment".to_string(), "test".to_string())]);
 
         assert_eq!(DashboardSettings::changed_keys(&previous, &next), ["otel"]);
-        assert_eq!(json!(DashboardSettings::changed_keys(&previous, &next)), json!(["otel"]));
+        assert_eq!(
+            json!(DashboardSettings::changed_keys(&previous, &next)),
+            json!(["otel"])
+        );
     }
 }

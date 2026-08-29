@@ -461,6 +461,33 @@ describe("OpenTelemetry dashboard rules", () => {
     expect(result.errors[0]).toContain("line 2");
   });
 
+  test("preserves valid leading and trailing spaces in resource attribute values", () => {
+    // Break caught: the settings UI silently changes an otherwise valid server value.
+    expect(parseResourceAttributes("deployment.note=  keep these spaces  ")).toEqual({
+      attributes: { "deployment.note": "  keep these spaces  " },
+      errors: [],
+    });
+  });
+
+  test("rejects C1 control characters in resource attribute values", () => {
+    // Break caught: the browser accepts a value that Rust char::is_control refuses.
+    const result = parseResourceAttributes("deployment.note=before\u0085after");
+    expect(result.attributes).toEqual({});
+    expect(result.errors).toEqual([
+      "line 1: otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+    ]);
+  });
+
+  test("names the line that introduces a thirty-third resource attribute", () => {
+    // Break caught: the textarea reports the block limit without identifying the offending line.
+    const text = Array.from({ length: 33 }, (_, index) => `key.${index}=value`).join("\n");
+    const result = parseResourceAttributes(text);
+    expect(Object.keys(result.attributes)).toHaveLength(32);
+    expect(result.errors).toEqual([
+      "line 33: otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+    ]);
+  });
+
   test("formats resource attributes in sorted-key order and round-trips", () => {
     const attributes = { "z.last": "2", "a.first": "1", "m.middle": "x=y" };
     const formatted = formatResourceAttributes(attributes);
@@ -483,6 +510,7 @@ describe("OpenTelemetry dashboard rules", () => {
       [{ ...base, endpoint: "collector:4318" }, "otel.endpoint must be an http:// or https:// URL with a host"],
       [{ ...base, endpoint: "http:///v1/metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
       [{ ...base, endpoint: "https://bad host/v1/metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
+      [{ ...base, endpoint: "https://collector.example/v1 /metrics" }, "otel.endpoint must be an http:// or https:// URL with a host"],
       [{ ...base, intervalSec: 4 }, "otel.intervalSec must be between 5 and 3600"],
       [{ ...base, intervalSec: 3601 }, "otel.intervalSec must be between 5 and 3600"],
       [{ ...base, headersEnvVar: "tinytop_headers" }, "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$"],

@@ -393,7 +393,7 @@ Install persistent user services:
 `./tinytop systemd install --bun` only when you explicitly want the legacy Bun
 dashboard/collector split.
 
-To provide OpenTelemetry authentication headers to the Rust user service, put an `Environment="TINYTOP_OTEL_HEADERS=authorization=Bearer <token>"` entry in a `tinytop.service.d` systemd drop-in. Keep the header value in the service environment, not in the exported settings document; `otel.headersEnvVar` stores only the variable name.
+To provide OpenTelemetry authentication headers to the Rust user service, put an `Environment="TINYTOP_OTEL_HEADERS=authorization=Bearer <token>"` entry in a `tinytop.service.d` systemd drop-in. Keep the header value in the service environment, not in the exported settings document; `otel.headersEnvVar` stores only the variable name. The daemon reads the value when it builds the exporter pipeline. After rotating it, restart the daemon, toggle export off and on, or change the `otel` settings block so the pipeline is rebuilt.
 
 Check or follow them:
 

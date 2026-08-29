@@ -411,6 +411,7 @@ For a user systemd service, create `~/.config/systemd/user/tinytop.service.d/ote
 
 ```ini
 [Service]
+# Header values belong in the service environment, not TinyTop settings.
 Environment="TINYTOP_OTEL_HEADERS=authorization=Bearer <token>"
 ```
 
@@ -435,21 +436,21 @@ All exported instruments are gauges:
 
 | Metric | Unit | Attributes |
 | --- | --- | --- |
-| `system.cpu.utilization` | `[1]` | — |
-| `system.memory.utilization` | `[1]` | — |
-| `system.memory.usage` | `[By]` | `state=used` |
-| `system.memory.limit` | `[By]` | — |
-| `system.paging.utilization` | `[1]` | `state=used` |
-| `system.cpu.load_average.1m` | `[{thread}]` | — |
-| `system.cpu.load_average.5m` | `[{thread}]` | — |
-| `system.cpu.load_average.15m` | `[{thread}]` | — |
-| `system.filesystem.utilization` | `[1]` | `mountpoint`, `type` |
-| `system.filesystem.usage` | `[By]` | `mountpoint`, `state=used\|free` |
-| `tinytop.load.percent` | `[1]` | — |
-| `tinytop.pressure.some` | `[1]` | `resource=cpu\|memory\|io`; emitted only when reported |
-| `tinytop.pressure.full` | `[1]` | `resource=cpu\|memory\|io`; emitted only when reported |
+| `system.cpu.utilization` | `1` | — |
+| `system.memory.utilization` | `1` | — |
+| `system.memory.usage` | `By` | `state=used` |
+| `system.memory.limit` | `By` | — |
+| `system.paging.utilization` | `1` | `state=used` |
+| `system.cpu.load_average.1m` | `{thread}` | — |
+| `system.cpu.load_average.5m` | `{thread}` | — |
+| `system.cpu.load_average.15m` | `{thread}` | — |
+| `system.filesystem.utilization` | `1` | `mountpoint`, `type` |
+| `system.filesystem.usage` | `By` | `mountpoint`, `type`, `state=used\|free` |
+| `tinytop.load.percent` | `1` | — |
+| `tinytop.pressure.some` | `1` | `resource=cpu\|memory\|io`; emitted only when reported |
+| `tinytop.pressure.full` | `1` | `resource=cpu\|memory\|io`; emitted only when reported |
 
-Resource attributes include `service.name`, `service.version` (the agent version), `host.name`, and configured `resourceAttributes`. Export runs in its own daemon task at the configured interval. Failed exports increment `otelExportFailures`, appear in `/api/history/coverage` under `otel`, and log at most one warning per minute; collection and persistence continue unaffected. The Bun runtime has no OTel exporter.
+Resource attributes include `service.name`, `service.version` (the agent version), `host.name`, and configured `resourceAttributes`. Export runs in its own daemon task at the configured interval. The header variable is read whenever the exporter pipeline is built: toggle export off and on or change the `otel` settings block to apply a rotated value; restarting the daemon also re-reads it. Changing only the environment of an already-running, unchanged pipeline does not. Failed exports increment `otel.failures` in `/api/history/coverage` and log at most one warning per minute; collection and persistence continue unaffected. The Bun runtime has no OTel exporter.
 
 ### History API
 

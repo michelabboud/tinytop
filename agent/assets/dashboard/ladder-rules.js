@@ -186,7 +186,7 @@ const OTEL_ATTRIBUTES_ERROR =
   "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters";
 
 function hasControlCharacters(value) {
-  return /[\u0000-\u001f\u007f]/u.test(value);
+  return /\p{Cc}/u.test(value);
 }
 
 function validResourceAttributeKey(key) {
@@ -218,7 +218,7 @@ export function validateOtelSettings(otel) {
   if (
     !endpointMatch ||
     endpointMatch[1].length === 0 ||
-    /[\s\u0000-\u001f\u007f]/u.test(endpointMatch[1])
+    /\s|\p{Cc}/u.test(endpoint)
   ) {
     return [OTEL_ENDPOINT_ERROR];
   }
@@ -246,23 +246,25 @@ export function parseResourceAttributes(text) {
   const errors = [];
   const lines = String(text ?? "").split(/\r?\n/u);
   for (const [index, rawLine] of lines.entries()) {
-    const line = rawLine.trim();
-    if (line.length === 0) continue;
-    const separator = line.indexOf("=");
+    if (rawLine.trim().length === 0) continue;
+    const separator = rawLine.indexOf("=");
     const lineNumber = index + 1;
     if (separator < 1) {
       errors.push(`line ${lineNumber}: expected key=value`);
       continue;
     }
-    const key = line.slice(0, separator).trim();
-    const value = line.slice(separator + 1).trim();
+    const key = rawLine.slice(0, separator).trim();
+    const value = rawLine.slice(separator + 1);
     if (!validResourceAttributeKey(key) || typeof value !== "string" || Array.from(value).length > 256 || hasControlCharacters(value)) {
+      errors.push(`line ${lineNumber}: ${OTEL_ATTRIBUTES_ERROR}`);
+      continue;
+    }
+    if (!Object.hasOwn(attributes, key) && Object.keys(attributes).length >= 32) {
       errors.push(`line ${lineNumber}: ${OTEL_ATTRIBUTES_ERROR}`);
       continue;
     }
     attributes[key] = value;
   }
-  if (Object.keys(attributes).length > 32) errors.push(OTEL_ATTRIBUTES_ERROR);
   return { attributes, errors };
 }
 

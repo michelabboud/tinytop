@@ -19,7 +19,7 @@ use sqlx::{
     AssertSqlSafe, Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
-use tinytop_types::SystemSnapshot;
+pub use tinytop_types::SystemSnapshot;
 
 pub use crate::disk::{
     DiskCheckReport, DiskTransition, FreeBytesProvider, SysinfoFreeBytes, apply_disk_measurement,
@@ -175,7 +175,9 @@ impl DashboardSettings {
             };
         }
         if !has_otel {
-            settings.otel = persisted.map(|value| value.otel.clone()).unwrap_or_default();
+            settings.otel = persisted
+                .map(|value| value.otel.clone())
+                .unwrap_or_default();
         }
         Ok(settings)
     }
@@ -341,7 +343,21 @@ pub struct HistoryCoverage {
     pub detail_interval_sec: i64,
     pub disk: HistoryDiskCoverage,
     pub archive: HistoryArchiveCoverage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otel: Option<HistoryOtelCoverage>,
     pub migration: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryOtelCoverage {
+    pub enabled: bool,
+    pub endpoint: String,
+    pub interval_sec: i64,
+    pub last_success_ms: Option<i64>,
+    pub last_failure_ms: Option<i64>,
+    pub failures: u64,
+    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1734,6 +1750,7 @@ impl SqliteHistoryStore {
                     bytes: cold_bytes,
                 },
             },
+            otel: None,
             migration,
         })
     }
@@ -2525,7 +2542,11 @@ fn validate_threshold_pair(field: &str, warn: i64, critical: i64) -> Result<(), 
     )))
 }
 
-fn load_percent(snapshot: &SystemSnapshot) -> f64 {
+/// TinyTop's canonical normalized one-minute load percentage.
+///
+/// Exporters reuse this helper so stored history and outbound telemetry cannot
+/// drift on zero-core handling or the 0–100 clamp.
+pub fn load_percent(snapshot: &SystemSnapshot) -> f64 {
     if snapshot.cpu.cores == 0 {
         0.0
     } else {

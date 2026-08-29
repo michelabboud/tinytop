@@ -10,7 +10,7 @@ minor line, pinned exactly because the crates remain pre-1.0:
 - `opentelemetry = "=0.32.0"`, with default features disabled and `metrics`
   enabled;
 - `opentelemetry_sdk = "=0.32.1"`, with default features disabled and
-  `metrics` enabled;
+  `metrics` plus `experimental_metrics_custom_reader` enabled;
 - `opentelemetry-otlp = "=0.32.0"`, with default features disabled and
   `metrics`, `http-proto`, `reqwest-client`, and `reqwest-rustls` enabled;
 - `opentelemetry-proto = "=0.32.0"` is a test-only dependency with
@@ -26,8 +26,9 @@ The normal live `cargo search <crate> --limit 1` checks were attempted first
 and failed because this lane cannot resolve `crates.io`. The versions above
 were then verified with `cargo info <crate>@<version> --offline` against the
 locally cached crates and cross-checked against the official upstream release
-and crate manifests. This is a containment limitation, not a claim that a live
-registry query succeeded.
+and crate manifests. This verification included the test-only
+`cargo info prost@0.14.3 --offline` dependency check. This is a containment
+limitation, not a claim that a live registry query succeeded.
 
 ## MSRV and feature verification
 
@@ -40,6 +41,7 @@ home and read directly. They report:
 | `opentelemetry_sdk` | 0.32.1 | 1.75.0 | yes |
 | `opentelemetry-otlp` | 0.32.0 | 1.75.0 | yes |
 | `opentelemetry-proto` | 0.32.0 | 1.75.0 | yes |
+| `prost` | 0.14.3 | 1.82 | yes |
 
 `opentelemetry-otlp` 0.32 declares `reqwest-client` for the asynchronous
 Reqwest client and `reqwest-rustls` for its Rustls TLS path. Its default uses
@@ -48,13 +50,29 @@ exports inside TinyTop's Tokio task. `http-proto` selects protobuf messages and
 the metrics signal. The test-only protocol crate is needed because the
 exporter does not publicly re-export the generated request type.
 
+In SDK 0.32, `ManualReader`, the `MetricReader` trait, and the metrics
+`Pipeline` needed by TinyTop's caller-driven export loop are exposed only by
+the `experimental_metrics_custom_reader` feature. That gate is deliberately
+accepted: `PeriodicReader` owns a standard thread and uses
+`futures_executor::block_on`, which cannot host the asynchronous Reqwest
+exporter inside TinyTop's Tokio daemon and does not expose each export result
+to TinyTop's failure counter. The exact SDK pin contains this pre-1.0,
+experimental surface. Every dependency upgrade must deliberately re-verify
+the feature gate, custom reader wrapper, temporality, collection, and exporter
+error path before changing the pin.
+
 ## Security advisories
 
-Before the dependency edit, the available local RustSec database was scanned:
+After resolving the vetted pins, the available local RustSec database was
+scanned with:
+
+```text
+cargo audit --no-fetch --stale --no-yanked -d /home/michel/.cargo/advisory-db
+```
 
 ```text
       Loaded 1226 security advisories (from /home/michel/.cargo/advisory-db)
-    Scanning agent/Cargo.lock for vulnerabilities (203 crate dependencies)
+    Scanning Cargo.lock for vulnerabilities (296 crate dependencies)
 Crate:     event-listener
 Version:   5.4.1
 Warning:   unsound
@@ -66,10 +84,11 @@ URL:       https://rustsec.org/advisories/RUSTSEC-2026-0221
 warning: 1 allowed warning found
 ```
 
-The final resolved lock is scanned again below. `--no-fetch --stale
---no-yanked` is required because the lane cannot update or lock the read-only
-Cargo advisory/index state. Any vulnerability on the new OTel subtree is a
-stop condition.
+The command exited successfully with no vulnerabilities and one allowed,
+pre-existing warning (`event-listener` 5.4.1, RUSTSEC-2026-0221). No advisory
+touches the new OpenTelemetry subtree. `--no-fetch --stale --no-yanked` is
+required because the lane cannot update or lock the read-only Cargo
+advisory/index state.
 
 ## Upstream health and stability
 
@@ -115,9 +134,17 @@ Before the dependency edit:
 - `agent/target/release/tinytop-agent`: 10,614,800 bytes after a cleanly
   completed `cargo build --manifest-path agent/Cargo.toml --release --offline`.
 
-The final lock count, package delta, release binary size, size delta, and final
-audit transcript are recorded after Cargo resolves the vetted pins. They cannot
-exist before the manifest edit that this report gates.
+After dependency resolution:
+
+- `agent/Cargo.lock`: 296 `[[package]]` entries, an increase of 93 packages.
+- `cargo build --manifest-path agent/Cargo.toml --release --offline` completed
+  successfully in 10.28 seconds on the final incremental rebuild.
+- `agent/target/release/tinytop-agent`: 17,785,432 bytes.
+- Release binary size delta: +7,170,632 bytes, approximately +67.55% from the
+  10,614,800-byte baseline.
+
+These are measured release-build values; no size was inferred from a debug
+build or dependency metadata.
 
 ## Sources
 
@@ -132,3 +159,4 @@ exist before the manifest edit that this report gates.
 - <https://docs.rs/opentelemetry_sdk/0.32.1>
 - <https://docs.rs/opentelemetry-otlp/0.32.0>
 - <https://docs.rs/opentelemetry-proto/0.32.0>
+- <https://docs.rs/prost/0.14.3>

@@ -18,6 +18,7 @@ use tinytop_store::{
     settings_transfer::{apply_import, export_document, import_marker, plan_import},
 };
 
+mod otel;
 mod writer;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -81,6 +82,18 @@ struct DbStatsOutput {
     snapshot_json_sample_count: i64,
     archive: HistoryArchiveCoverage,
     disk: HistoryDiskCoverage,
+    otel: OtelStatsOutput,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OtelStatsOutput {
+    enabled: bool,
+    endpoint: String,
+    interval_sec: i64,
+    headers_env_var: String,
+    headers_env_var_set: bool,
+    service_name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -293,6 +306,14 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     .into());
                 }
                 let settings = store.get_settings().await?;
+                let otel = OtelStatsOutput {
+                    enabled: settings.otel.enabled,
+                    endpoint: settings.otel.endpoint.clone(),
+                    interval_sec: settings.otel.interval_sec,
+                    headers_env_var: settings.otel.headers_env_var.clone(),
+                    headers_env_var_set: std::env::var_os(&settings.otel.headers_env_var).is_some(),
+                    service_name: settings.otel.service_name.clone(),
+                };
                 let coverage = store.history_coverage(&settings).await?;
                 let stats = StoreStats {
                     sample_count: coverage.sample_count,
@@ -307,6 +328,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                         snapshot_json_sample_count: coverage.snapshot_json_sample_count,
                         archive: coverage.archive,
                         disk: coverage.disk,
+                        otel,
                     },
                 })?)
             }
