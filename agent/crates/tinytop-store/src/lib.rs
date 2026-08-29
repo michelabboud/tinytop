@@ -717,6 +717,20 @@ impl SqliteHistoryStore {
             .iter()
             .find(|filesystem| filesystem.mount == "/")
             .map(|filesystem| filesystem.used_percent);
+        let new_sample = raw_to_bucket(&RawSampleRow {
+            captured_at_ms,
+            cpu_usage_percent: snapshot.cpu.usage_percent,
+            memory_used_percent: snapshot.memory.used_percent,
+            swap_used_percent: snapshot.swap.used_percent,
+            load_percent: load_percent(snapshot),
+            root_used_percent,
+        });
+        let raw_row_existed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM metric_samples WHERE captured_at_ms = ?)",
+        )
+        .bind(captured_at_ms)
+        .fetch_one(&self.pool)
+        .await?;
 
         sqlx::query(
             r#"
@@ -787,9 +801,8 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
-        let detail_interval_ms = self
-            .get_settings()
-            .await?
+        let settings = self.get_settings().await?;
+        let detail_interval_ms = settings
             .retention_ladder
             .detail_interval_sec
             .saturating_mul(1_000);
@@ -814,28 +827,39 @@ impl SqliteHistoryStore {
         .fetch_one(&self.pool)
         .await?;
 
-        if let Some(existing_bucket) =
+        let l2_changed = if let Some(existing_bucket) =
             existing_bucket.filter(|bucket| raw_is_partial(bucket.sample_count, raw_count_now))
         {
-            let new_sample = raw_to_bucket(&RawSampleRow {
-                captured_at_ms,
-                cpu_usage_percent: snapshot.cpu.usage_percent,
-                memory_used_percent: snapshot.memory.used_percent,
-                swap_used_percent: snapshot.swap.used_percent,
-                load_percent: load_percent(snapshot),
-                root_used_percent,
-            });
-            let Some(bucket) = fold(minute_start_ms, &[existing_bucket, new_sample]) else {
-                return Err(StoreError::Validation(
-                    "an existing minute bucket and raw sample must have a positive sample count"
-                        .to_string(),
-                ));
-            };
-            self.upsert_tier_bucket(Tier::L2, &bucket).await?;
+            if raw_row_existed {
+                // Replay limit: after pruning, the first replay of a represented timestamp is
+                // indistinguishable from a late write and adds one count; later replays must not
+                // merge that already-counted raw row into the frozen/partial bucket again.
+                false
+            } else {
+                let Some(bucket) = fold(minute_start_ms, &[existing_bucket, new_sample.clone()])
+                else {
+                    return Err(StoreError::Validation(
+                        "an existing minute bucket and raw sample must have a positive sample count"
+                            .to_string(),
+                    ));
+                };
+                self.upsert_tier_bucket(Tier::L2, &bucket).await?;
+                true
+            }
         } else {
             self.rebuild_rollup_bucket(minute_start_ms).await?;
+            true
+        };
+        if l2_changed {
+            maintenance::refold_ancestors_for_late_write(
+                self,
+                captured_at_ms,
+                now_ms(),
+                &settings.retention_ladder,
+                &new_sample,
+            )
+            .await?;
         }
-        maintenance::refold_ancestors_for_late_write(self, captured_at_ms).await?;
 
         Ok(HistorySample {
             captured_at_ms,
@@ -1018,6 +1042,14 @@ impl SqliteHistoryStore {
         )?;
 
         let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM fs_samples WHERE captured_at_ms = ?")
+            .bind(captured_at_ms)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("DELETE FROM process_samples WHERE captured_at_ms = ?")
+            .bind(captured_at_ms)
+            .execute(&mut *transaction)
+            .await?;
         for filesystem in &snapshot.filesystems {
             sqlx::query(
                 r#"
@@ -2024,7 +2056,7 @@ pub fn resolve_history_point_source_with_poll(
             continue;
         }
         coarsest_holding = Some(source);
-        if range_ms / fixed_resolution_ms <= limit {
+        if (range_ms / fixed_resolution_ms).saturating_add(1) <= limit {
             return source;
         }
     }

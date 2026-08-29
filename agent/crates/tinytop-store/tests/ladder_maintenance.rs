@@ -279,46 +279,98 @@ async fn promotion_is_bounded_per_call() {
 }
 
 #[tokio::test]
+async fn maintenance_error_carries_promotions_completed_before_prune_failure() {
+    let fixture = TempDatabase::new("partial-report-after-prune-failure");
+    let store = fixture.store().await;
+    store
+        .insert_snapshot(1_000, &snapshot(1_000, 10.0))
+        .await
+        .expect("raw row for forced prune failure should insert");
+    for minute in 0..5_i64 {
+        store
+            .upsert_tier_bucket(Tier::L2, &bucket(minute * MINUTE_MS, MINUTE_MS, 40, 10.0))
+            .await
+            .expect("L2 promotion fixture should upsert");
+    }
+    let pool = fixture.pool().await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER force_raw_prune_failure
+        BEFORE DELETE ON metric_samples
+        BEGIN
+          SELECT RAISE(FAIL, 'forced prune failure');
+        END
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("fixture trigger should be created");
+    pool.close().await;
+
+    let mut settings = config();
+    settings.l1_keep_ms = 1;
+    settings.l4 = None;
+    let error = maintain_with_config(&store, &settings, 5 * MINUTE_MS + 3_000)
+        .await
+        .expect_err("forced raw prune failure should be reported");
+
+    assert!(error.report.promoted_l3 > 0);
+    assert!(error.to_string().contains("forced prune failure"));
+}
+
+#[tokio::test]
 async fn late_write_refolds_ancestors() {
     // Break caught: a late raw write repairs its L2 minute but leaves already
     // promoted L3 and L4 ancestors frozen with stale counts and averages.
     let fixture = TempDatabase::new("late-write");
     let store = fixture.store().await;
+    let wall_clock_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test time should follow the epoch")
+        .as_millis() as i64;
+    let hour_start_ms = wall_clock_ms
+        .saturating_sub(2 * 60 * MINUTE_MS)
+        .div_euclid(60 * MINUTE_MS)
+        * 60
+        * MINUTE_MS;
     for minute in 0..60_i64 {
-        let captured_at_ms = minute * MINUTE_MS;
+        let captured_at_ms = hour_start_ms + minute * MINUTE_MS;
         store
             .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 10.0))
             .await
             .expect("fixture sample should insert");
     }
     let settings = config();
-    let now_ms = 60 * MINUTE_MS + 3_000;
+    let now_ms = hour_start_ms + 60 * MINUTE_MS + 3_000;
     maintain_with_config(&store, &settings, now_ms)
         .await
         .expect("first promotion pass should run");
     let before_l3 = store
-        .read_tier_buckets(Tier::L3, 0, 5 * MINUTE_MS)
+        .read_tier_buckets(Tier::L3, hour_start_ms, hour_start_ms + 5 * MINUTE_MS)
         .await
         .expect("L3 ancestor before late write")
         .remove(0);
     let before_l4 = store
-        .read_tier_buckets(Tier::L4, 0, 60 * MINUTE_MS)
+        .read_tier_buckets(Tier::L4, hour_start_ms, hour_start_ms + 60 * MINUTE_MS)
         .await
         .expect("L4 ancestor before late write")
         .remove(0);
 
     store
-        .insert_snapshot(30_000, &snapshot(30_000, 90.0))
+        .insert_snapshot(
+            hour_start_ms + 30_000,
+            &snapshot(hour_start_ms + 30_000, 90.0),
+        )
         .await
         .expect("late sample should insert and refold ancestors");
 
     let after_l3 = store
-        .read_tier_buckets(Tier::L3, 0, 5 * MINUTE_MS)
+        .read_tier_buckets(Tier::L3, hour_start_ms, hour_start_ms + 5 * MINUTE_MS)
         .await
         .expect("L3 ancestor after late write")
         .remove(0);
     let after_l4 = store
-        .read_tier_buckets(Tier::L4, 0, 60 * MINUTE_MS)
+        .read_tier_buckets(Tier::L4, hour_start_ms, hour_start_ms + 60 * MINUTE_MS)
         .await
         .expect("L4 ancestor after late write")
         .remove(0);
@@ -326,6 +378,111 @@ async fn late_write_refolds_ancestors() {
     assert_eq!(after_l4.sample_count, before_l4.sample_count + 1);
     assert!(after_l3.cpu.avg > before_l3.cpu.avg);
     assert!(after_l4.cpu.avg > before_l4.cpu.avg);
+}
+
+#[tokio::test]
+async fn late_write_merges_retained_l4_when_l2_and_l3_sources_are_pruned() {
+    let fixture = TempDatabase::new("late-write-pruned-l4-sources");
+    let store = fixture.store().await;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test time should follow the epoch")
+        .as_millis() as i64;
+    let captured_at_ms = now_ms.saturating_sub(100 * DAY_MS);
+    let hour_start_ms = captured_at_ms.div_euclid(60 * MINUTE_MS) * 60 * MINUTE_MS;
+    store
+        .upsert_tier_bucket(Tier::L4, &bucket(hour_start_ms, 60 * MINUTE_MS, 200, 10.0))
+        .await
+        .expect("retained L4 bucket should upsert");
+    store
+        .upsert_tier_bucket(Tier::L2, &bucket(hour_start_ms, MINUTE_MS, 200, 10.0))
+        .await
+        .expect("L2 source fixture should upsert before pruning");
+    store
+        .upsert_tier_bucket(Tier::L3, &bucket(hour_start_ms, 5 * MINUTE_MS, 200, 10.0))
+        .await
+        .expect("L3 source fixture should upsert before pruning");
+    assert_eq!(
+        store
+            .prune_rollups(Tier::L2, hour_start_ms + 60 * MINUTE_MS)
+            .await
+            .expect("L2 source should prune"),
+        1
+    );
+    assert_eq!(
+        store
+            .prune_rollups(Tier::L3, hour_start_ms + 60 * MINUTE_MS)
+            .await
+            .expect("L3 source should prune"),
+        1
+    );
+    store
+        .history_state_set("l3FoldedUntilMs", &(hour_start_ms + 60 * MINUTE_MS), now_ms)
+        .await
+        .expect("L3 watermark should be set");
+    store
+        .history_state_set("l4FoldedUntilMs", &(hour_start_ms + 60 * MINUTE_MS), now_ms)
+        .await
+        .expect("L4 watermark should be set");
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("late sample should merge into retained L4");
+
+    let retained = store
+        .read_tier_buckets(Tier::L4, hour_start_ms, hour_start_ms + 60 * MINUTE_MS)
+        .await
+        .expect("retained L4 bucket should read")
+        .remove(0);
+    assert_eq!(retained.sample_count, 201);
+}
+
+#[tokio::test]
+async fn late_write_merges_retained_l3_when_l2_source_is_pruned() {
+    let fixture = TempDatabase::new("late-write-pruned-l3-source");
+    let store = fixture.store().await;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test time should follow the epoch")
+        .as_millis() as i64;
+    let captured_at_ms = now_ms.saturating_sub(40 * DAY_MS);
+    let l3_start_ms = captured_at_ms.div_euclid(5 * MINUTE_MS) * 5 * MINUTE_MS;
+    store
+        .upsert_tier_bucket(Tier::L3, &bucket(l3_start_ms, 5 * MINUTE_MS, 120, 10.0))
+        .await
+        .expect("retained L3 bucket should upsert");
+    store
+        .upsert_tier_bucket(Tier::L2, &bucket(l3_start_ms, MINUTE_MS, 120, 10.0))
+        .await
+        .expect("L2 source fixture should upsert before pruning");
+    assert_eq!(
+        store
+            .prune_rollups(Tier::L2, l3_start_ms + 5 * MINUTE_MS)
+            .await
+            .expect("L2 source should prune"),
+        1
+    );
+    store
+        .history_state_set("l3FoldedUntilMs", &(l3_start_ms + 5 * MINUTE_MS), now_ms)
+        .await
+        .expect("L3 watermark should be set");
+    store
+        .history_state_set("l4Enabled", &false, now_ms)
+        .await
+        .expect("L4 should be disabled for the one-rung fixture");
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("late sample should merge into retained L3");
+
+    let retained = store
+        .read_tier_buckets(Tier::L3, l3_start_ms, l3_start_ms + 5 * MINUTE_MS)
+        .await
+        .expect("retained L3 bucket should read")
+        .remove(0);
+    assert_eq!(retained.sample_count, 121);
 }
 
 #[tokio::test]
@@ -403,6 +560,46 @@ async fn late_write_into_a_pruned_minute_merges_instead_of_rebuilding() {
     assert_eq!(after_l2.cpu.max, 90.0);
     assert_eq!(after_l3.sample_count, before_l3.sample_count + 1);
     assert_eq!(after_l4.sample_count, before_l4.sample_count + 1);
+}
+
+#[tokio::test]
+async fn replay_of_a_represented_pruned_timestamp_is_counted_only_once() {
+    let fixture = TempDatabase::new("replay-pruned-timestamp");
+    let store = fixture.store().await;
+    for sample_index in 0..40_i64 {
+        let captured_at_ms = sample_index * 1_500;
+        store
+            .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 10.0))
+            .await
+            .expect("original minute sample should insert");
+    }
+    store
+        .prune_raw_history(MINUTE_MS)
+        .await
+        .expect("original raw minute should be pruned");
+
+    let replayed_at_ms = 15_000;
+    store
+        .insert_snapshot(replayed_at_ms, &snapshot(replayed_at_ms, 90.0))
+        .await
+        .expect("first replay is indistinguishable from a late write");
+    let after_first = store
+        .read_tier_buckets(Tier::L2, 0, MINUTE_MS)
+        .await
+        .expect("minute bucket after first replay")
+        .remove(0);
+    assert_eq!(after_first.sample_count, 41);
+
+    store
+        .insert_snapshot(replayed_at_ms, &snapshot(replayed_at_ms, 90.0))
+        .await
+        .expect("second replay should upsert the existing raw row");
+    let after_second = store
+        .read_tier_buckets(Tier::L2, 0, MINUTE_MS)
+        .await
+        .expect("minute bucket after second replay")
+        .remove(0);
+    assert_eq!(after_second.sample_count, 41);
 }
 
 #[tokio::test]
@@ -647,6 +844,61 @@ async fn detail_rows_written_at_detail_interval() {
     assert_eq!(newest_fs_percent, 77.0);
     assert_eq!(newest_process_cpu, 88.0);
     pool.close().await;
+}
+
+#[tokio::test]
+async fn same_timestamp_detail_replacement_removes_omitted_members() {
+    let fixture = TempDatabase::new("detail-replacement-members");
+    let store = fixture.store().await;
+    let captured_at_ms = 61_000;
+    let mut original = snapshot(captured_at_ms, 10.0);
+    let mut second_filesystem = original.filesystems[0].clone();
+    second_filesystem.mount = "/data".to_string();
+    second_filesystem.filesystem = "/dev/data".to_string();
+    original.filesystems.push(second_filesystem);
+    let mut second_process = original.processes[0].clone();
+    second_process.pid = 43;
+    second_process.command = "worker".to_string();
+    original.processes.push(second_process);
+
+    store
+        .insert_snapshot(captured_at_ms, &original)
+        .await
+        .expect("original detail members should insert");
+
+    let mut replacement = original;
+    replacement.filesystems.truncate(1);
+    replacement.processes.truncate(1);
+    store
+        .insert_snapshot(captured_at_ms, &replacement)
+        .await
+        .expect("same-timestamp detail members should replace the original set");
+
+    let filesystems = store
+        .read_history_filesystems(
+            tinytop_store::HistoryQuery {
+                since_ms: Some(captured_at_ms),
+                until_ms: Some(captured_at_ms),
+                limit: Some(10),
+            },
+            None,
+        )
+        .await
+        .expect("replacement filesystem detail should read");
+    let processes = store
+        .read_history_processes(tinytop_store::HistoryQuery {
+            since_ms: Some(captured_at_ms),
+            until_ms: Some(captured_at_ms),
+            limit: Some(10),
+        })
+        .await
+        .expect("replacement process detail should read");
+
+    assert_eq!(filesystems.len(), 1);
+    assert_eq!(filesystems[0].mount, "/");
+    assert_eq!(processes.len(), 1);
+    assert_eq!(processes[0].processes.len(), 1);
+    assert_eq!(processes[0].processes[0].pid, 42);
 }
 
 #[tokio::test]

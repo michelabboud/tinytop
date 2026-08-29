@@ -357,20 +357,56 @@ async fn migrate_populated_v0(
     snapshot_json_keep_ms: i64,
     sample_count: i64,
 ) -> Result<MigrationReport, StoreError> {
+    let (canonical_db_path, audit) = migrate_populated_v0_schema_phase_inner(
+        pool,
+        db_path,
+        now_ms,
+        snapshot_json_keep_ms,
+        sample_count,
+    )
+    .await?;
+    Ok(
+        vacuum_and_complete_migration(pool, &canonical_db_path, audit)
+            .await?
+            .report,
+    )
+}
+
+/// Test seam for an authentic crash after the v1 schema transaction commits
+/// and before the post-commit VACUUM/audit-marker phase begins.
+#[doc(hidden)]
+pub async fn migrate_populated_v0_schema_phase(
+    pool: &SqlitePool,
+    db_path: &Path,
+    now_ms: i64,
+    snapshot_json_keep_ms: i64,
+) -> Result<MigrationReport, StoreError> {
+    let sample_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metric_samples")
+        .fetch_one(pool)
+        .await?;
+    let (_, audit) = migrate_populated_v0_schema_phase_inner(
+        pool,
+        db_path,
+        now_ms,
+        snapshot_json_keep_ms,
+        sample_count,
+    )
+    .await?;
+    Ok(audit.report.clone())
+}
+
+async fn migrate_populated_v0_schema_phase_inner(
+    pool: &SqlitePool,
+    db_path: &Path,
+    now_ms: i64,
+    snapshot_json_keep_ms: i64,
+    sample_count: i64,
+) -> Result<(PathBuf, MigrationAudit), StoreError> {
     let canonical_db_path = canonical_database_path(db_path)?;
     let pre_image_path = pre_image_path(&canonical_db_path);
     refuse_existing_pre_image(&pre_image_path)?;
 
-    let database_bytes = std::fs::metadata(&canonical_db_path)
-        .map_err(|error| StoreError::Migration {
-            reason: format!(
-                "cannot read database size at {} before migration: {error}",
-                canonical_db_path.display()
-            ),
-            remedy: "make the database file readable and retry; no migration was attempted"
-                .to_string(),
-        })?
-        .len();
+    let database_bytes = database_bytes_with_wal(&canonical_db_path)?;
     let required_bytes = disk::required_pre_image_bytes(database_bytes);
     let database_dir = canonical_db_path
         .parent()
@@ -431,12 +467,7 @@ async fn migrate_populated_v0(
         started_at_ms: now_ms,
     };
     rebuild_v0_schema(pool, now_ms, snapshot_json_keep_ms, Some(&audit)).await?;
-
-    Ok(
-        vacuum_and_complete_migration(pool, &canonical_db_path, audit)
-            .await?
-            .report,
-    )
+    Ok((canonical_db_path, audit))
 }
 
 fn undeterminable_free_space_reason(
@@ -615,15 +646,7 @@ async fn vacuum_and_complete_migration(
 ) -> Result<MigrationAudit, StoreError> {
     sqlx::query("VACUUM").execute(pool).await?;
     let vacuumed_at_ms = current_time_ms();
-    let bytes_after = std::fs::metadata(db_path)
-        .map_err(|error| StoreError::Migration {
-            reason: format!(
-                "schema reached v1 but the post-migration size of {} could not be read: {error}",
-                db_path.display()
-            ),
-            remedy: "keep the pre-image, inspect the main database, and retry startup".to_string(),
-        })?
-        .len();
+    let bytes_after = database_bytes_with_wal(db_path)?;
     audit.report.vacuumed_at_ms = Some(vacuumed_at_ms);
     audit.report.bytes_after = Some(bytes_to_i64(bytes_after, "post-migration database")?);
     audit.report.duration_ms = Some(vacuumed_at_ms.saturating_sub(audit.started_at_ms).max(0));
@@ -693,9 +716,79 @@ fn bytes_to_i64(bytes: u64, description: &str) -> Result<i64, StoreError> {
     })
 }
 
+fn database_bytes_with_wal(canonical_db_path: &Path) -> Result<u64, StoreError> {
+    let main_bytes = std::fs::symlink_metadata(canonical_db_path)
+        .map_err(|error| StoreError::Migration {
+            reason: format!(
+                "database bytes check could not read the main file at {}: {error}",
+                canonical_db_path.display()
+            ),
+            remedy: "make the database file readable and retry; if the schema phase already committed, keep the pre-image and retry startup"
+                .to_string(),
+        })?
+        .len();
+    let mut wal_path = OsString::from(canonical_db_path.as_os_str());
+    wal_path.push("-wal");
+    let wal_path = PathBuf::from(wal_path);
+    let wal_bytes = match std::fs::symlink_metadata(&wal_path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+        Err(error) => {
+            return Err(StoreError::Migration {
+                reason: format!(
+                    "database WAL bytes check could not read {}: {error}",
+                    wal_path.display()
+                ),
+                remedy: "make the database WAL path readable and retry; if the schema phase already committed, keep the pre-image and retry startup"
+                    .to_string(),
+            });
+        }
+    };
+    main_bytes
+        .checked_add(wal_bytes)
+        .ok_or_else(|| StoreError::Migration {
+            reason: format!(
+                "database bytes check overflowed for observed main file {main_bytes} and WAL {wal_bytes} bytes"
+            ),
+            remedy: "keep the database and WAL unchanged and inspect their sizes before retrying"
+                .to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_bytes_with_wal_counts_the_main_file_and_optional_sidecar() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock should be after the epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "tinytop-migration-wal-bytes-{}-{stamp}",
+            std::process::id()
+        ));
+        assert!(directory.starts_with(std::env::temp_dir()));
+        std::fs::create_dir_all(&directory).expect("fixture directory should be created");
+        let database_path = directory.join("history.sqlite");
+        let wal_path = PathBuf::from(format!("{}-wal", database_path.display()));
+        std::fs::write(&database_path, vec![0_u8; 4_096])
+            .expect("fixture database should be written");
+
+        assert_eq!(
+            database_bytes_with_wal(&database_path).expect("main size should read"),
+            4_096
+        );
+
+        std::fs::write(&wal_path, vec![0_u8; 8_192]).expect("fixture WAL should be written");
+        assert_eq!(
+            database_bytes_with_wal(&database_path).expect("main plus WAL size should read"),
+            12_288
+        );
+
+        std::fs::remove_dir_all(&directory).expect("owned fixture directory should be removed");
+    }
 
     #[test]
     fn undeterminable_free_space_reason_names_database_and_required_bytes() {

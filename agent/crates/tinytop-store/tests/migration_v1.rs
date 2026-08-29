@@ -339,6 +339,70 @@ async fn reconnect_completes_an_interrupted_post_schema_vacuum() {
 }
 
 #[tokio::test]
+async fn crash_after_schema_commit_is_recovered_on_next_connect() {
+    let fixture = TempDatabase::new("crash-after-schema-commit");
+    let seeded = seed_v0_database(&fixture, RUST_V0_METRIC_SAMPLES_DDL).await;
+    let pool = verification_pool(&fixture.url).await;
+
+    tinytop_store::migration::migrate_populated_v0_schema_phase(
+        &pool,
+        &fixture.path,
+        seeded.now_ms,
+        SNAPSHOT_JSON_KEEP_MS,
+    )
+    .await
+    .expect("schema phase should commit before the simulated crash");
+
+    assert_eq!(schema_version(&pool).await, 1);
+    let pending_json: String = sqlx::query_scalar(
+        "SELECT value_json FROM history_state WHERE state_key = 'schemaMigration'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("pending migration audit should exist");
+    let pending: JsonValue =
+        serde_json::from_str(&pending_json).expect("pending migration audit should be valid JSON");
+    assert!(pending["vacuumedAtMs"].is_null());
+    assert!(pending["bytesAfter"].is_null());
+    let marker_count_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM app_events WHERE marker_type = 'schemaMigrated'")
+            .fetch_one(&pool)
+            .await
+            .expect("pre-recovery schemaMigrated marker count");
+    assert_eq!(marker_count_before, 0);
+    pool.close().await;
+
+    let reopened = SqliteHistoryStore::connect(&fixture.url)
+        .await
+        .expect("next connect should finish the post-commit phase");
+    drop(reopened);
+
+    let pool = verification_pool(&fixture.url).await;
+    let completed_json: String = sqlx::query_scalar(
+        "SELECT value_json FROM history_state WHERE state_key = 'schemaMigration'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("completed migration audit should exist");
+    let completed: JsonValue = serde_json::from_str(&completed_json)
+        .expect("completed migration audit should be valid JSON");
+    assert!(completed["vacuumedAtMs"].as_i64().is_some());
+    assert!(completed["bytesAfter"].as_i64().is_some());
+    let marker_count_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM app_events WHERE marker_type = 'schemaMigrated'")
+            .fetch_one(&pool)
+            .await
+            .expect("post-recovery schemaMigrated marker count");
+    assert_eq!(marker_count_after, 1);
+    let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+        .fetch_one(&pool)
+        .await
+        .expect("freelist count after recovered VACUUM");
+    assert_eq!(freelist_after, 0);
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn migration_refuses_when_pre_image_exists() {
     // Break caught: migration overwrites, deletes, or silently skips an existing
     // pre-image instead of failing closed before touching the v0 database.
