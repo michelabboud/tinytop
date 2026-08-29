@@ -1,8 +1,11 @@
 import {
   HISTORY_WINDOWS,
   describeDiskCoverage,
+  describeImportPlan,
+  exportFilenameFrom,
   fallbackWindowKey,
   historyWindowFor,
+  isValidImportPlan,
   ladderCapabilityFrom,
   settingsPutPayload,
   shouldFetchCoverage,
@@ -394,6 +397,9 @@ const elements = {
   daemonSectionProcesses: document.querySelector("#daemon-section-processes"),
   settingsValidationSummary: document.querySelector("#settings-validation-summary"),
   settingsDirtyIndicator: document.querySelector("#settings-dirty-indicator"),
+  exportSettingsButton: document.querySelector("#export-settings-button"),
+  importSettingsButton: document.querySelector("#import-settings-button"),
+  importSettingsFile: document.querySelector("#import-settings-file"),
   resetSettingsButton: document.querySelector("#reset-settings-button"),
   restoreDefaultSettingsButton: document.querySelector("#restore-default-settings-button"),
   effectiveSettingsReadout: document.querySelector("#effective-settings-readout"),
@@ -2670,6 +2676,8 @@ function syncLadderControlStates() {
 function syncRetentionLadderAvailability() {
   setHidden(elements.historyLadderSettingsGroup, !state.retentionLadderAvailable);
   setHidden(elements.historyLadderUnavailable, state.retentionLadderAvailable);
+  setHidden(elements.exportSettingsButton, !state.retentionLadderAvailable);
+  setHidden(elements.importSettingsButton, !state.retentionLadderAvailable);
   renderTierCoverage(state.historyCoverage?.tiers);
   if (elements.daemonRetentionHours) elements.daemonRetentionHours.readOnly = state.retentionLadderAvailable;
   if (elements.daemonRollupRetentionDays) elements.daemonRollupRetentionDays.readOnly = state.retentionLadderAvailable;
@@ -2825,68 +2833,42 @@ function restartPollingTimer() {
   state.timer = window.setInterval(fetchSnapshot, state.pollMs);
 }
 
-function tierCoverage(tierName) {
-  return Array.isArray(state.historyCoverage?.tiers)
-    ? state.historyCoverage.tiers.find((tier) => tier?.tier === tierName)
-    : null;
+async function responseErrorMessage(response, fallback) {
+  try {
+    const body = await response.json();
+    if (typeof body?.error === "string" && body.error.length > 0) return body.error;
+  } catch {
+    // A non-JSON error body still receives the endpoint-specific fallback.
+  }
+  return fallback;
 }
 
-function approximateShrunkCount(tierName, previousDays, nextDays) {
-  const bucketCount = Math.max(0, Number(tierCoverage(tierName)?.bucketCount ?? 0));
-  if (previousDays === 0 || nextDays === 0) return Math.round(bucketCount);
-  return Math.round(Math.max(0, bucketCount * (1 - nextDays / previousDays)));
+function candidateLadderFromDocument(importedDocument) {
+  const importedSettings = importedDocument?.settings;
+  const mergedSettings =
+    importedSettings && typeof importedSettings === "object"
+      ? { ...state.settingsBaseline, ...importedSettings }
+      : state.settingsBaseline;
+  return normalizeSettings(mergedSettings).retentionLadder;
 }
 
-function approximateDeletionSummary(candidate, previous) {
-  if (!previous?.retentionLadder) return [];
-  const next = candidate.retentionLadder;
-  const prior = previous.retentionLadder;
-  const deletions = [];
-  for (const [tierName, label] of [
-    ["l1", "L1 rows"],
-    ["l2", "L2 buckets"],
-  ]) {
-    if (next[tierName].keepDays < prior[tierName].keepDays) {
-      deletions.push(
-        `~${approximateShrunkCount(tierName, prior[tierName].keepDays, next[tierName].keepDays)} ${label} (approx.)`,
-      );
-    }
+function planHasDeletions(plan) {
+  return Object.values(plan?.wouldDelete ?? {}).some((value) => {
+    const count = Number(value);
+    return Number.isFinite(count) && count !== 0;
+  });
+}
+
+async function previewSettingsImport(document) {
+  const response = await fetch(apiPath("/api/settings/import?dryRun=true"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(document),
+  });
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, `Settings import failed with HTTP ${response.status}`));
   }
-  for (const [tierName, label] of [
-    ["l3", "L3 buckets"],
-    ["l4", "L4 buckets"],
-  ]) {
-    const wasEnabled = prior[tierName].enabled;
-    const isEnabled = next[tierName].enabled;
-    const shrankForever = tierName === "l4" && prior[tierName].keepDays === 0 && next[tierName].keepDays > 0;
-    const shrankDays =
-      prior[tierName].keepDays !== 0 &&
-      next[tierName].keepDays !== 0 &&
-      next[tierName].keepDays < prior[tierName].keepDays;
-    if (wasEnabled && !isEnabled) {
-      const count = Math.max(0, Number(tierCoverage(tierName)?.bucketCount ?? 0));
-      deletions.push(`~${Math.round(count)} ${label} kept (table is retained; reads fall through to the next tier)`);
-    } else if (wasEnabled && (shrankForever || shrankDays)) {
-      const count = approximateShrunkCount(tierName, prior[tierName].keepDays, next[tierName].keepDays);
-      deletions.push(`~${Math.round(count)} ${label} (approx.)`);
-    }
-  }
-  if (next.snapshotJsonKeepMinutes < prior.snapshotJsonKeepMinutes) {
-    deletions.push(
-      `~${approximateShrunkCount("l1", prior.snapshotJsonKeepMinutes, next.snapshotJsonKeepMinutes)} snapshot JSON rows (approx.)`,
-    );
-  }
-  if (prior.archive.queryable && !next.archive.queryable) {
-    deletions.push(
-      `~${Math.max(0, Number(state.historyCoverage?.archive?.queryable?.bucketCount ?? 0))} queryable archive buckets (approx.)`,
-    );
-  }
-  if (prior.archive.cold && !next.archive.cold) {
-    deletions.push(
-      `~${Math.max(0, Number(state.historyCoverage?.archive?.cold?.fileCount ?? 0))} cold archive files (approx.)`,
-    );
-  }
-  return deletions;
+  return response.json();
 }
 
 async function saveDaemonSettings() {
@@ -2895,22 +2877,41 @@ async function saveDaemonSettings() {
     renderSettingsStatus("Fix validation errors before saving.");
     return;
   }
+  let historyChanges = [];
+  let hasDeletions = false;
   if (state.retentionLadderAvailable) {
-    await fetchHistoryCoverage({ force: true });
+    try {
+      const plan = await previewSettingsImport({
+        tinytopConfigVersion: 1,
+        settings: settingsPutPayload(settings, true),
+      });
+      if (plan.valid === false) {
+        renderSettingsValidation(Array.isArray(plan.errors) ? plan.errors : []);
+        return;
+      }
+      if (!isValidImportPlan(plan)) {
+        renderSettingsStatus("Could not preview the retention change: invalid dry-run response");
+        return;
+      }
+      historyChanges = describeImportPlan(plan, settings.retentionLadder, state.settingsBaseline, {
+        includeOtherChanges: false,
+      });
+      hasDeletions = planHasDeletions(plan);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "request failed";
+      renderSettingsStatus(`Could not preview the retention change: ${reason}`);
+      return;
+    }
   }
-  const historyChanges = state.retentionLadderAvailable
-    ? approximateDeletionSummary(settings, state.settingsBaseline)
-    : [];
   if (historyChanges.length > 0) {
-    const keepsDisabledTier = historyChanges.some((change) => change.includes(" kept (table is retained;"));
     const accepted = await requestConfirmation({
-      title: keepsDisabledTier ? "Change history retention?" : "Shrink history retention?",
+      title: "Confirm settings changes?",
       message: `Saving these settings changes history retention: ${historyChanges.join("; ")}`,
-      confirmLabel: keepsDisabledTier ? "Save changes" : "Save and shrink",
-      tone: "danger",
+      confirmLabel: "Save changes",
+      tone: hasDeletions ? "danger" : "default",
     });
     if (!accepted) {
-      renderSettingsStatus("History retention change cancelled.");
+      renderSettingsStatus("Settings change cancelled.");
       return;
     }
   }
@@ -2938,6 +2939,100 @@ async function saveDaemonSettings() {
     renderSettingsStatus(error instanceof Error ? error.message : "Settings save failed.");
   } finally {
     if (elements.saveSettingsButton) elements.saveSettingsButton.disabled = false;
+  }
+}
+
+async function exportSettings() {
+  try {
+    const response = await fetch(apiPath("/api/settings/export"), { cache: "no-store" });
+    if (!response.ok) {
+      renderSettingsStatus(`Settings export failed with HTTP ${response.status}`);
+      return;
+    }
+    const filename = exportFilenameFrom(
+      response.headers.get("content-disposition"),
+      "tinytop-settings.json",
+    );
+    const downloadUrl = URL.createObjectURL(await response.blob());
+    try {
+      const link = document.createElement("a");
+      link.href = downloadUrl;
+      link.download = filename;
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } finally {
+      URL.revokeObjectURL(downloadUrl);
+    }
+    renderSettingsStatus(`Settings exported as ${filename}.`);
+  } catch (error) {
+    renderSettingsStatus(error instanceof Error ? error.message : "Settings export failed.");
+  }
+}
+
+async function importSettingsFile(file) {
+  let importedDocument;
+  try {
+    importedDocument = JSON.parse(await file.text());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown parse error";
+    renderSettingsValidation([`Import file is not JSON: ${message}`]);
+    renderSettingsStatus("Import refused — fix the document and retry.");
+    return;
+  }
+
+  let plan;
+  try {
+    plan = await previewSettingsImport(importedDocument);
+  } catch (error) {
+    renderSettingsStatus(error instanceof Error ? error.message : "Settings import failed.");
+    return;
+  }
+  if (plan.valid === false) {
+    renderSettingsValidation(Array.isArray(plan.errors) ? plan.errors : []);
+    renderSettingsStatus("Import refused — fix the document and retry.");
+    return;
+  }
+  if (!isValidImportPlan(plan)) {
+    renderSettingsStatus("Settings import failed: invalid dry-run response");
+    return;
+  }
+  renderSettingsValidation([]);
+
+  const candidateLadder = candidateLadderFromDocument(importedDocument);
+  const accepted = await requestConfirmation({
+    title: "Import settings?",
+    message: describeImportPlan(plan, candidateLadder, state.settingsBaseline).join("; "),
+    confirmLabel: "Import",
+    tone: planHasDeletions(plan) ? "danger" : "default",
+  });
+  if (!accepted) return;
+
+  try {
+    const response = await fetch(apiPath("/api/settings/import"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(importedDocument),
+    });
+    if (!response.ok) {
+      renderSettingsStatus(
+        await responseErrorMessage(response, `Settings import failed with HTTP ${response.status}`),
+      );
+      return;
+    }
+    const result = await response.json();
+    state.retentionLadderAvailable = ladderCapabilityFrom(result.settings);
+    populateDaemonSettings(normalizeSettings(result.settings));
+    state.settingsDirty = false;
+    renderSettingsDirtyIndicator();
+    renderSettingsValidation([]);
+    restartPollingTimer();
+    await fetchHistoryCoverage({ force: true });
+    const changedKeys = Array.isArray(result.changedKeys) ? result.changedKeys.length : 0;
+    renderSettingsStatus(`Settings imported (${changedKeys} keys changed).`);
+  } catch (error) {
+    renderSettingsStatus(error instanceof Error ? error.message : "Settings import failed.");
   }
 }
 
@@ -3348,6 +3443,23 @@ elements.resetSettingsButton?.addEventListener("click", () => {
 
 elements.restoreDefaultSettingsButton?.addEventListener("click", () => {
   restoreDefaultSettings();
+});
+
+elements.exportSettingsButton?.addEventListener("click", () => {
+  void exportSettings();
+});
+
+elements.importSettingsButton?.addEventListener("click", () => {
+  elements.importSettingsFile?.click();
+});
+
+elements.importSettingsFile?.addEventListener("change", async () => {
+  const file = elements.importSettingsFile?.files?.[0];
+  try {
+    if (file) await importSettingsFile(file);
+  } finally {
+    if (elements.importSettingsFile) elements.importSettingsFile.value = "";
+  }
 });
 
 elements.daemonL4Forever?.addEventListener("change", () => {

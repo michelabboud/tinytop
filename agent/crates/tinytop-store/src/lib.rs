@@ -4,6 +4,7 @@ pub mod ladder;
 pub mod maintenance;
 pub mod migration;
 pub mod retention_ladder;
+pub mod settings_transfer;
 
 use std::{
     path::{Path, PathBuf},
@@ -168,6 +169,46 @@ impl DashboardSettings {
             };
         }
         Ok(settings)
+    }
+
+    pub fn normalize_legacy_mirrors(&mut self) {
+        self.retention_hours = self.retention_ladder.l1.keep_days.saturating_mul(24);
+        self.rollup_retention_days = self.retention_ladder.l2.keep_days;
+    }
+
+    pub fn changed_keys(previous: &Self, next: &Self) -> Vec<&'static str> {
+        let mut changed = Vec::new();
+        if previous.default_theme != next.default_theme {
+            changed.push("defaultTheme");
+        }
+        if previous.default_graph_mode != next.default_graph_mode {
+            changed.push("defaultGraphMode");
+        }
+        if previous.poll_interval_ms != next.poll_interval_ms {
+            changed.push("pollIntervalMs");
+        }
+        if previous.default_history_window != next.default_history_window {
+            changed.push("defaultHistoryWindow");
+        }
+        if previous.retention_ladder != next.retention_ladder {
+            changed.push("retentionLadder");
+        }
+        if previous.target_database_bytes != next.target_database_bytes {
+            changed.push("targetDatabaseBytes");
+        }
+        if previous.top_process_count != next.top_process_count {
+            changed.push("topProcessCount");
+        }
+        if previous.redaction_default != next.redaction_default {
+            changed.push("redactionDefault");
+        }
+        if previous.thresholds != next.thresholds {
+            changed.push("thresholds");
+        }
+        if previous.enabled_sections != next.enabled_sections {
+            changed.push("enabledSections");
+        }
+        changed
     }
 
     pub fn validate(&self) -> Result<(), StoreError> {
@@ -741,8 +782,7 @@ impl SqliteHistoryStore {
         settings: &DashboardSettings,
     ) -> Result<DashboardSettings, StoreError> {
         let mut normalized = settings.clone();
-        normalized.retention_hours = normalized.retention_ladder.l1.keep_days.saturating_mul(24);
-        normalized.rollup_retention_days = normalized.retention_ladder.l2.keep_days;
+        normalized.normalize_legacy_mirrors();
         let mut connection = self.pool.acquire().await?;
         sqlx::query("BEGIN IMMEDIATE")
             .execute(&mut *connection)
@@ -1697,6 +1737,40 @@ impl SqliteHistoryStore {
         .await?;
 
         Ok(result.rows_affected())
+    }
+
+    pub async fn count_rows_older_than(
+        &self,
+        tier: Tier,
+        cutoff_ms: i64,
+    ) -> Result<i64, StoreError> {
+        if tier == Tier::L1 {
+            return Ok(sqlx::query_scalar(
+                "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms < ?",
+            )
+            .bind(cutoff_ms)
+            .fetch_one(&self.pool)
+            .await?);
+        }
+
+        let sql = format!(
+            "SELECT COUNT(*) FROM {} WHERE bucket_start_ms + ? <= ?",
+            tier.table()
+        );
+        Ok(sqlx::query_scalar(AssertSqlSafe(sql))
+            .bind(tier.resolution_ms())
+            .bind(cutoff_ms)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    pub async fn count_snapshot_json_older_than(&self, cutoff_ms: i64) -> Result<i64, StoreError> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM metric_samples WHERE snapshot_json IS NOT NULL AND captured_at_ms < ?",
+        )
+        .bind(cutoff_ms)
+        .fetch_one(&self.pool)
+        .await?)
     }
 
     pub async fn prune_rollups(&self, tier: Tier, cutoff_end_ms: i64) -> Result<u64, StoreError> {

@@ -15,4 +15,6 @@ fn help_lists_writer_server_command() {
     assert!(stdout.contains("--sqlite"));
     assert!(stdout.contains("tinytop-agent db stats"));
     assert!(stdout.contains("tinytop-agent db archive"));
+    assert!(stdout.contains("tinytop-agent config export"));
+    assert!(stdout.contains("tinytop-agent config import"));
 }

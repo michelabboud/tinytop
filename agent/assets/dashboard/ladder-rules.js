@@ -9,6 +9,7 @@ const TIER_ORDER = new Map([
   ["l3", 3],
   ["l4", 4],
 ]);
+const WOULD_DELETE_FIELDS = ["l1Rows", "l2Buckets", "l3Buckets", "l4Buckets", "snapshotJsonRows"];
 
 function formatCoverageBytes(bytes) {
   const numeric = Number(bytes);
@@ -163,6 +164,72 @@ export function settingsPutPayload(settings, retentionLadderAvailable) {
   const payload = { ...settings };
   if (!retentionLadderAvailable) delete payload.retentionLadder;
   return payload;
+}
+
+export function exportFilenameFrom(headerValue, fallback) {
+  const match = typeof headerValue === "string" ? /(?:^|;)\s*filename="([^"]+)"/i.exec(headerValue) : null;
+  return match?.[1] || fallback;
+}
+
+export function isValidImportPlan(plan) {
+  if (!plan || typeof plan !== "object" || plan.valid !== true) return false;
+  const wouldDelete = plan.wouldDelete;
+  if (!wouldDelete || typeof wouldDelete !== "object" || Array.isArray(wouldDelete)) return false;
+  return WOULD_DELETE_FIELDS.every((field) => {
+    const value = wouldDelete[field];
+    return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+  });
+}
+
+function nonZeroCount(value) {
+  const count = Number(value);
+  return Number.isFinite(count) && count !== 0 ? count : null;
+}
+
+export function describeImportPlan(
+  plan,
+  candidateLadder,
+  previousSettings,
+  { includeOtherChanges = true } = {},
+) {
+  const lines = [];
+  const wouldDelete = plan?.wouldDelete ?? {};
+  const addCount = (field, label, suffix = "") => {
+    const count = nonZeroCount(wouldDelete[field]);
+    if (count !== null) lines.push(`${count.toLocaleString()} ${label}${suffix}`);
+  };
+
+  addCount("l1Rows", "L1 rows");
+  addCount("l2Buckets", "L2 buckets");
+  addCount("l3Buckets", "L3 buckets");
+  addCount(
+    "l4Buckets",
+    "L4 buckets",
+    candidateLadder?.archive?.queryable ? " (moved to the queryable archive)" : " deleted",
+  );
+  addCount("snapshotJsonRows", "snapshot JSON blobs", " stripped");
+
+  const previousLadder = previousSettings?.retentionLadder;
+  for (const tier of ["l3", "l4"]) {
+    if (previousLadder?.[tier]?.enabled && !candidateLadder?.[tier]?.enabled) {
+      lines.push(`${tier.toUpperCase()} disabled — its table is retained; reads fall through to the next tier`);
+    }
+  }
+  if (previousLadder?.archive?.queryable && !candidateLadder?.archive?.queryable) {
+    lines.push("queryable archive reads disabled — history-archive.sqlite is kept");
+  }
+  if (previousLadder?.archive?.cold && !candidateLadder?.archive?.cold) {
+    lines.push("cold export stops — exported files are kept");
+  }
+
+  if (includeOtherChanges) {
+    const otherChangedKeys = Array.isArray(plan?.changedKeys)
+      ? plan.changedKeys.filter((key) => key !== "retentionLadder")
+      : [];
+    if (otherChangedKeys.length > 0) lines.push(`also changes: ${otherChangedKeys.join(", ")}`);
+    if (Array.isArray(plan?.warnings)) lines.push(...plan.warnings);
+  }
+  return lines;
 }
 
 function rangeError(field, value, min, max) {

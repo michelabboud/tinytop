@@ -209,6 +209,8 @@ pre-image management:
 | `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, JSON-bearing sample count, archive state, and disk state (`freeBytes`, minimum, pressure, breach start, and last check) |
 | `tinytop-agent db pre-image status` | Show the canonical `<database>.pre-v0.sqlite` path, existence/size, schema version, and main-database integrity result |
 | `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation when the main database exists, uses schema v1, and passes SQLite integrity check; otherwise refuse |
+| `tinytop-agent config export [--out FILE]` | Export the daemon settings as a versioned, secret-free JSON document; stdout is the default. File publishing uses atomic no-clobber hard links when supported; otherwise it re-checks the destination and renames, leaving a few-microsecond window in which a file created by another process could be replaced. |
+| `tinytop-agent config import FILE [--dry-run]` | Validate and preview an import, or apply it and record a settings marker; pruning is deferred to the daemon's next maintenance tick. |
 
 Rust history is retained as an L1 raw → L2 one-minute → L3 five-minute → L4
 hourly ladder. Completed buckets are folded from every finer row, frozen after
@@ -399,6 +401,8 @@ In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder h
 
 Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /api/settings` and `PUT /api/settings`. A legacy document without `retentionLadder` is derived in memory from `retentionHours` and `rollupRetentionDays` and is not rewritten until an explicit save. While persisted `history_state.diskPressure.active` is true, the server refuses horizon growth or enabling a tier/archive, but still permits shrinking. Active theme, graph mode, history range, visible series, process table preferences, filesystem system-mount toggle, and last section stay in this browser's `localStorage`.
 
+Settings export is a versioned JSON document that contains daemon settings but no secrets: credential-bearing values are not settings, and integrations refer only to environment-variable names. Import uses the same decoder and validation as the settings dialog, including refusal of retention growth under disk pressure. A CLI import deliberately does not prune from a second process; a running daemon re-reads the saved settings and performs maintenance on its next collection tick.
+
 ### History API
 
 | Endpoint | Rust response |
@@ -409,6 +413,8 @@ Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /a
 | `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |
 | `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit. |
 | `GET /api/history/markers` | Persisted daemon/settings/migration/disk-pressure/disk-recovery events and computed coverage gaps. |
+| `GET /api/settings/export` | Pretty-printed version-1 settings envelope with an attachment filename and `no-store`; Rust daemon only. |
+| `POST /api/settings/import` | Validate and apply a settings envelope, run daemon maintenance, and record an import marker. `?dryRun=true` returns validation errors, warnings, changed keys, and exact candidate-horizon `wouldDelete` counts without writing; Rust daemon only. |
 
 The range parameters also retain their existing snake_case aliases for compatibility. For `source=auto`, the daemon uses the configured poll interval for L1 and fixed 1-minute/5-minute/1-hour resolutions for L2/L3/L4. It chooses the finest enabled tier that still holds the requested start and whose whole range fits the page limit. If none fits the limit, it returns the coarsest tier that holds the start; if no tier holds it, it selects the queryable archive when enabled or the coarsest enabled tier otherwise.
 

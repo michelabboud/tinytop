@@ -3,8 +3,11 @@ import { describe, expect, test } from "bun:test";
 import {
   HISTORY_WINDOWS,
   describeDiskCoverage,
+  describeImportPlan,
+  exportFilenameFrom,
   fallbackWindowKey,
   historyWindowFor,
+  isValidImportPlan,
   shouldFetchCoverage,
   validateRetentionLadder,
 } from "../agent/assets/dashboard/ladder-rules.js";
@@ -427,5 +430,152 @@ describe("retention ladder validation mirror", () => {
         minFreeBytes: 200,
       }),
     ).toEqual([]);
+  });
+});
+
+describe("settings transfer plan description", () => {
+  test("can limit a save preview to retention consequences", () => {
+    const plan = {
+      wouldDelete: {},
+      changedKeys: ["defaultTheme"],
+      warnings: [],
+    };
+
+    expect(describeImportPlan(plan, ladder(), { retentionLadder: ladder() }, { includeOtherChanges: false })).toEqual(
+      [],
+    );
+    expect(describeImportPlan(plan, ladder(), { retentionLadder: ladder() })).toEqual([
+      "also changes: defaultTheme",
+    ]);
+  });
+
+  test("describes deletions and queryable archive moves with server-computed counts", () => {
+    const candidate = ladder();
+    candidate.archive.queryable = true;
+
+    expect(
+      describeImportPlan(
+        {
+          wouldDelete: {
+            l1Rows: 1_234,
+            l2Buckets: 56,
+            l3Buckets: 7,
+            l4Buckets: 8,
+            snapshotJsonRows: 90,
+          },
+          changedKeys: ["retentionLadder", "pollIntervalMs"],
+          warnings: ["settings.bogus: unknown key ignored"],
+        },
+        candidate,
+        { retentionLadder: ladder() },
+      ),
+    ).toEqual([
+      "1,234 L1 rows",
+      "56 L2 buckets",
+      "7 L3 buckets",
+      "8 L4 buckets (moved to the queryable archive)",
+      "90 snapshot JSON blobs stripped",
+      "also changes: pollIntervalMs",
+      "settings.bogus: unknown key ignored",
+    ]);
+
+    candidate.archive.queryable = false;
+    expect(
+      describeImportPlan(
+        { wouldDelete: { l4Buckets: 8 }, changedKeys: [], warnings: [] },
+        candidate,
+        { retentionLadder: ladder() },
+      ),
+    ).toEqual(["8 L4 buckets deleted"]);
+  });
+
+  test("describes disabled tiers as retained rather than deleted", () => {
+    const candidate = ladder();
+    candidate.l3.enabled = false;
+
+    expect(
+      describeImportPlan(
+        { wouldDelete: {}, changedKeys: ["retentionLadder"], warnings: [] },
+        candidate,
+        { retentionLadder: ladder() },
+      ),
+    ).toEqual(["L3 disabled — its table is retained; reads fall through to the next tier"]);
+  });
+
+  test("describes archive disablement as keeping existing archive data", () => {
+    const previous = ladder();
+    previous.archive.queryable = true;
+    previous.archive.cold = true;
+    const candidate = ladder();
+
+    expect(
+      describeImportPlan(
+        { wouldDelete: {}, changedKeys: ["retentionLadder"], warnings: [] },
+        candidate,
+        { retentionLadder: previous },
+      ),
+    ).toEqual([
+      "queryable archive reads disabled — history-archive.sqlite is kept",
+      "cold export stops — exported files are kept",
+    ]);
+  });
+
+  test("uses an attachment filename when valid and falls back otherwise", () => {
+    expect(exportFilenameFrom('attachment; filename="tinytop-settings-20240102-0304.json"', "fallback.json")).toBe(
+      "tinytop-settings-20240102-0304.json",
+    );
+    expect(exportFilenameFrom("attachment", "fallback.json")).toBe("fallback.json");
+  });
+
+  test("rejects an empty dry-run plan", () => {
+    expect(isValidImportPlan({})).toBe(false);
+  });
+
+  test("rejects a dry-run plan whose valid field is not true", () => {
+    expect(
+      isValidImportPlan({
+        valid: null,
+        wouldDelete: {
+          l1Rows: 0,
+          l2Buckets: 0,
+          l3Buckets: 0,
+          l4Buckets: 0,
+          snapshotJsonRows: 0,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  test("rejects dry-run plans with missing or invalid deletion counts", () => {
+    const validPlan = {
+      valid: true,
+      wouldDelete: {
+        l1Rows: 0,
+        l2Buckets: 0,
+        l3Buckets: 0,
+        l4Buckets: 0,
+        snapshotJsonRows: 0,
+      },
+    };
+    expect(isValidImportPlan({ valid: true, wouldDelete: {} })).toBe(false);
+    expect(
+      isValidImportPlan({
+        ...validPlan,
+        wouldDelete: { ...validPlan.wouldDelete, l4Buckets: -1 },
+      }),
+    ).toBe(false);
+    expect(
+      isValidImportPlan({
+        ...validPlan,
+        wouldDelete: { ...validPlan.wouldDelete, snapshotJsonRows: Number.NaN },
+      }),
+    ).toBe(false);
+    expect(
+      isValidImportPlan({
+        ...validPlan,
+        wouldDelete: { ...validPlan.wouldDelete, l2Buckets: 1.5 },
+      }),
+    ).toBe(false);
+    expect(isValidImportPlan(validPlan)).toBe(true);
   });
 });

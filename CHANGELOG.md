@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- API: added Rust-only settings export and import routes, including attachment metadata, read-only dry-run validation, exact candidate-horizon deletion counts, warnings, authoritative apply-time validation, maintenance, and source-qualified import markers.
+- CLI: added no-create `config export` and `config import` commands with atomic no-overwrite files, structured dry-run/refusal output, round-trip markers, and maintenance deferred to the daemon's next tick.
+- Dashboard: added Rust-capability-gated Export/Import controls and replaced retention estimates with server-computed dry-run counts; disabling tiers or archive reads now says their stored tables/files are retained.
+- Store: centralized transfer envelope validation, planning, application, changed-key calculation, legacy-mirror normalization, prune-predicate counts, and import marker details in one shared module without adding a dependency or schema change.
+
 ## 0.4.0 - 2026-08-29
 
 Phase 2 of the tiered history ladder closes. Since 0.3.0 the daemon gained the queryable archive (0.3.1; ADRs 0014, 0018, 0019 — copy, fsynced commit, key-set verify, full-row delete, watermark inside the delete transaction, after the lane escalated on SQLite's file-by-file WAL commit order and the blind review found the interval-count livelock), the verified monthly cold export with its `db archive` commands and the Phase-1 CLI carry-overs (0.3.2; a month is exportable only once every hour of it has expired from L4; the command centre became hermetic under test after a gate stopped the live service), and the disk-pressure check with its two timeline markers (0.3.3; ADRs 0017 and 0020 — first check at start on a blocking thread, one `BEGIN IMMEDIATE` transaction per check, an undeterminable measurement keeps the last state). The Phase-2 deep dual-blind review over `v0.3.0..v0.3.3` (sol + luna, one brief, 21 claims) and its fix round are recorded in the Fabulous archive; its fix round closed two P0s (the cold export could seal a month whose rows were still leaving main; the command-centre harness still wrote a PID file under the real state directory) and a P1 (`put_settings` read the pressure state outside its transaction), tightened the CSV verifier and archive point reads, capped an export pass at twelve months, and made the workspace clippy-clean with clippy in the gate. Audits at the tag: `cargo audit` 0 vulnerabilities (3 pre-existing allowed warnings), `bun audit` clean. `user_version` stays 1; the archive and cold export stay off until enabled.
