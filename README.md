@@ -208,7 +208,7 @@ pre-image management:
 | --- | --- |
 | `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, JSON-bearing sample count, archive state, and disk state |
 | `tinytop-agent db pre-image status` | Show the canonical `<database>.pre-v0.sqlite` path, existence/size, schema version, and main-database integrity result |
-| `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation, schema v1, and a successful SQLite integrity check |
+| `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation when the main database exists, uses schema v1, and passes SQLite integrity check; otherwise refuse |
 
 Rust history is retained as an L1 raw → L2 one-minute → L3 five-minute → L4
 hourly ladder. Completed buckets are folded from every finer row, frozen after

@@ -322,6 +322,8 @@ finishes.
 TinyTop never deletes or overwrites the pre-image automatically. Inspect it, and
 remove it only after schema v1 and the main database have been verified:
 
+If the main database is missing, `db pre-image status` reports `databaseExists: false` and `remove` refuses: the pre-image may be your only copy.
+
 ```bash
 tinytop-agent db pre-image status
 tinytop-agent db pre-image remove --yes

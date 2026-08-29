@@ -39,17 +39,21 @@ impl TempDatabase {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
-            .args(args)
-            .args(["--sqlite", &self.database_url])
-            .output()
-            .expect("tinytop-agent database command should run")
+        run_database_command(&self.database_url, args)
     }
 
     fn initialize_v1(&self) {
         let output = self.run(&["db", "stats", "--json"]);
         assert_success(&output);
     }
+}
+
+fn run_database_command(database_url: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args(args)
+        .args(["--sqlite", database_url])
+        .output()
+        .expect("tinytop-agent database command should run")
 }
 
 impl Drop for TempDatabase {
@@ -113,6 +117,20 @@ fn set_sqlite_user_version(path: &Path, user_version: u32) {
         .expect("SQLite user_version header should be writable");
     file.sync_all()
         .expect("SQLite user_version fixture update should be durable");
+}
+
+fn remove_owned_sqlite_database_and_sidecars(path: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let owned_path = PathBuf::from(format!("{}{suffix}", path.display()));
+        match fs::remove_file(&owned_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!(
+                "fixture-owned SQLite path {} should be removable: {error}",
+                owned_path.display()
+            ),
+        }
+    }
 }
 
 #[test]
@@ -187,8 +205,9 @@ fn db_stats_json_reports_the_ladder() {
 }
 
 #[test]
-fn pre_image_status_reports_absence_on_a_fresh_db() {
+fn pre_image_status_reports_absence_on_an_existing_v1_database() {
     let fixture = TempDatabase::new("status-absent");
+    fixture.initialize_v1();
 
     let output = fixture.run(&["db", "pre-image", "status"]);
 
@@ -201,8 +220,103 @@ fn pre_image_status_reports_absence_on_a_fresh_db() {
     );
     assert_eq!(json["value"]["exists"], false);
     assert!(json["value"]["bytes"].is_null());
+    assert_eq!(json["value"]["databaseExists"], true);
     assert_eq!(json["value"]["userVersion"], 1);
     assert_eq!(json["value"]["integrityCheck"], "ok");
+}
+
+#[test]
+fn pre_image_remove_refuses_when_database_is_missing() {
+    let fixture = TempDatabase::new("remove-missing-database");
+    fixture.initialize_v1();
+    fs::write(&fixture.pre_image_path, b"only copy").expect("pre-image fixture should be written");
+    remove_owned_sqlite_database_and_sidecars(&fixture.db_path);
+
+    let output = fixture.run(&["db", "pre-image", "remove", "--yes"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "refused");
+    let reason = json["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("does not exist"));
+    assert!(reason.contains(&fixture.db_path.display().to_string()));
+    assert!(fixture.pre_image_path.exists());
+    assert!(!fixture.db_path.exists());
+
+    let status = fixture.run(&["db", "pre-image", "status"]);
+    assert_success(&status);
+    let status_json = stdout_json(&status);
+    assert_eq!(status_json["status"], "ok");
+    assert_eq!(
+        status_json["value"]["path"],
+        fixture.pre_image_path.display().to_string()
+    );
+    assert_eq!(status_json["value"]["databaseExists"], false);
+    assert_eq!(status_json["value"]["exists"], true);
+    assert!(status_json["value"]["userVersion"].is_null());
+    assert!(status_json["value"]["integrityCheck"].is_null());
+    assert!(!fixture.db_path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_image_status_follows_a_symlinked_database_path() {
+    let fixture = TempDatabase::new("symlinked-status");
+    let real_dir = fixture.dir.join("real");
+    let alias_dir = fixture.dir.join("alias");
+    fs::create_dir_all(&real_dir).expect("real database directory should be created");
+    let real_db_path = real_dir.join("h.sqlite");
+    let real_database_url = format!("sqlite://{}", real_db_path.display());
+    let initialize = run_database_command(&real_database_url, &["db", "check"]);
+    assert_success(&initialize);
+    std::os::unix::fs::symlink(&real_dir, &alias_dir)
+        .expect("database directory symlink should be created");
+
+    let alias_db_path = alias_dir.join("h.sqlite");
+    let alias_database_url = format!("sqlite://{}", alias_db_path.display());
+    let canonical_pre_image_path =
+        PathBuf::from(format!("{}.pre-v0.sqlite", real_db_path.display()));
+    fs::write(&canonical_pre_image_path, b"backup")
+        .expect("canonical pre-image fixture should be written");
+    let expected_path = canonical_pre_image_path
+        .canonicalize()
+        .expect("expected pre-image path should canonicalize");
+
+    let status = run_database_command(&alias_database_url, &["db", "pre-image", "status"]);
+
+    assert_success(&status);
+    let status_json = stdout_json(&status);
+    assert_eq!(status_json["value"]["exists"], true);
+    assert_eq!(
+        status_json["value"]["path"],
+        expected_path.display().to_string()
+    );
+
+    let remove = run_database_command(&alias_database_url, &["db", "pre-image", "remove", "--yes"]);
+    assert_success(&remove);
+    assert!(!canonical_pre_image_path.exists());
+    let alias_pre_image_path = PathBuf::from(format!("{}.pre-v0.sqlite", alias_db_path.display()));
+    assert!(!alias_pre_image_path.exists());
+}
+
+#[test]
+fn explicit_sqlite_url_never_touches_the_default_state_directory() {
+    let fixture = TempDatabase::new("explicit-sqlite-default-state");
+    let home = fixture.dir.join("home");
+    assert!(!home.exists());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args(["db", "stats", "--sqlite", &fixture.database_url])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("LOCALAPPDATA", &home)
+        .env("XDG_STATE_HOME", &home)
+        .env_remove("TINYTOP_HISTORY_DB")
+        .output()
+        .expect("tinytop-agent database command should run");
+
+    assert_success(&output);
+    assert!(!home.exists());
 }
 
 #[test]

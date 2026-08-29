@@ -357,16 +357,7 @@ async fn migrate_populated_v0(
     snapshot_json_keep_ms: i64,
     sample_count: i64,
 ) -> Result<MigrationReport, StoreError> {
-    let canonical_db_path = db_path
-        .canonicalize()
-        .map_err(|error| StoreError::Migration {
-            reason: format!(
-                "cannot resolve database path {} before migration: {error}",
-                db_path.display()
-            ),
-            remedy: "make the database path accessible and retry; no migration was attempted"
-                .to_string(),
-        })?;
+    let canonical_db_path = canonical_database_path(db_path)?;
     let pre_image_path = pre_image_path(&canonical_db_path);
     refuse_existing_pre_image(&pre_image_path)?;
 
@@ -516,6 +507,19 @@ async fn table_exists(pool: &SqlitePool, table: &str) -> Result<bool, StoreError
             .fetch_one(pool)
             .await?;
     Ok(count == 1)
+}
+
+pub fn canonical_database_path(db_path: &Path) -> Result<PathBuf, StoreError> {
+    db_path
+        .canonicalize()
+        .map_err(|error| StoreError::Migration {
+            reason: format!(
+                "cannot resolve database path {} before migration: {error}",
+                db_path.display()
+            ),
+            remedy: "make the database path accessible and retry; no migration was attempted"
+                .to_string(),
+        })
 }
 
 pub fn pre_image_path(db_path: &Path) -> PathBuf {

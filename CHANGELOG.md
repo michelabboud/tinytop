@@ -6,6 +6,10 @@
 - Added `tinytop-agent db pre-image status` and guarded `db pre-image remove --yes`. Removal refuses unless the exact canonical pre-image exists, the main database reports `user_version >= 1`, and `PRAGMA integrity_check` returns `ok`; refusal is structured JSON on stdout and never deletes a directory or glob.
 - Added black-box temp-database CLI coverage for the stats shape, absent status, all removal refusal paths, successful exact-file removal, and post-removal database integrity, plus pure predicate tests for the non-confirmed, absent, pre-v1, and failed-integrity checks.
 - Documented the 0.3.0 migration window and disk requirement, the four-tier architecture/read surface, the new CLI, and the Phase 1 T1–T6 close-out state.
+- Fixed pre-image inspection so a missing main database is never created; status reports `databaseExists: false`, and removal refuses because the pre-image may be the only copy.
+- Fixed pre-image status and removal through symlinked database paths by sharing the migration's canonical database-path resolution.
+- Removed the duplicate raw-sample stats scan from `tinytop-agent db stats` by reusing the stats already carried by history coverage without changing its JSON shape.
+- Deferred default database-path resolution for `db` and `serve` until after parsing, so an explicit `--sqlite` never creates the default state directory.
 
 ## 0.2.11 - 2026-08-28
 

@@ -544,17 +544,26 @@ impl SqliteHistoryStore {
         Ok(store)
     }
 
-    /// Open the database for CLI inspection without running schema migration.
+    /// Open an existing database for CLI inspection without running schema migration.
     ///
-    /// A missing database is initialized normally at the current schema. An
-    /// existing database is opened as-is so pre-image removal checks can
-    /// observe a pre-migration `user_version` instead of changing it first.
+    /// Inspection never creates a missing database. Existing databases are
+    /// opened as-is so pre-image removal checks can observe a pre-migration
+    /// `user_version` instead of changing it first.
     pub async fn connect_for_inspection(database_url: &str) -> Result<Self, StoreError> {
-        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
-        let database_path = options.get_filename().to_path_buf();
-        if !database_path.exists() {
-            return Self::connect(database_url).await;
-        }
+        let database_path = match inspect_database_path(database_url)? {
+            Some(database_path) => database_path,
+            None => {
+                let configured_path = database_path_from_url(database_url)?;
+                return Err(StoreError::Migration {
+                    reason: format!(
+                        "cannot inspect database {} because it does not exist",
+                        configured_path.display()
+                    ),
+                    remedy: "restore or recreate the database before inspecting it".to_string(),
+                });
+            }
+        };
+        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(false);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -1916,6 +1925,27 @@ impl SqliteHistoryStore {
             .await?;
 
         Ok(())
+    }
+}
+
+pub fn database_path_from_url(database_url: &str) -> Result<PathBuf, StoreError> {
+    let options = SqliteConnectOptions::from_str(database_url)?;
+    Ok(options.get_filename().to_path_buf())
+}
+
+pub fn inspect_database_path(database_url: &str) -> Result<Option<PathBuf>, StoreError> {
+    let database_path = database_path_from_url(database_url)?;
+    match std::fs::metadata(&database_path) {
+        Ok(_) => migration::canonical_database_path(&database_path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(StoreError::Migration {
+            reason: format!(
+                "cannot inspect database path {}: {error}",
+                database_path.display()
+            ),
+            remedy: "make the database path accessible and retry; no database was created"
+                .to_string(),
+        }),
     }
 }
 
