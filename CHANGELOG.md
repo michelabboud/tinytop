@@ -19,6 +19,7 @@
 - Replaced bare history-detail/points query extraction with field-aware parsing whose JSON rejections name the parameter, observed value, rule, and remedy.
 - Removed directory creation from SQLite URL normalization and limited parent creation to commands that may create a database.
 - Protected retained L3/L4 buckets from late-write replacement when their finer source tier has passed its retention horizon, merging one new sample instead.
+- Replaying an already-counted timestamp older than the L2 horizon no longer merges it into a retained L3/L4 bucket again; only a genuinely new raw row takes the merge path.
 - Counted both inclusive range endpoints during `source=auto` tier selection so a `k × resolution` range requires room for `k + 1` points.
 
 ## 0.2.11 - 2026-08-28

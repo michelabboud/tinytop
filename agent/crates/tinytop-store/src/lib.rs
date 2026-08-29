@@ -857,6 +857,7 @@ impl SqliteHistoryStore {
                 now_ms(),
                 &settings.retention_ladder,
                 &new_sample,
+                !raw_row_existed,
             )
             .await?;
         }

@@ -439,6 +439,87 @@ async fn late_write_merges_retained_l4_when_l2_and_l3_sources_are_pruned() {
 }
 
 #[tokio::test]
+async fn second_replay_past_l3_horizon_does_not_double_count_retained_l4() {
+    // Break caught: replaying an existing raw row merges it into a retained L4 bucket again
+    // when both finer source tiers are beyond their retention horizons.
+    let fixture = TempDatabase::new("replay-past-l3-horizon-l4");
+    let store = fixture.store().await;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test time should follow the epoch")
+        .as_millis() as i64;
+    let captured_at_ms = now_ms.saturating_sub(100 * DAY_MS);
+    let hour_start_ms = captured_at_ms.div_euclid(60 * MINUTE_MS) * 60 * MINUTE_MS;
+    store
+        .upsert_tier_bucket(Tier::L4, &bucket(hour_start_ms, 60 * MINUTE_MS, 200, 10.0))
+        .await
+        .expect("retained L4 bucket should upsert");
+    store
+        .upsert_tier_bucket(Tier::L2, &bucket(hour_start_ms, MINUTE_MS, 200, 10.0))
+        .await
+        .expect("L2 source fixture should upsert before pruning");
+    store
+        .upsert_tier_bucket(Tier::L3, &bucket(hour_start_ms, 5 * MINUTE_MS, 200, 10.0))
+        .await
+        .expect("L3 source fixture should upsert before pruning");
+    assert_eq!(
+        store
+            .prune_rollups(Tier::L2, hour_start_ms + 60 * MINUTE_MS)
+            .await
+            .expect("L2 source should prune"),
+        1
+    );
+    assert_eq!(
+        store
+            .prune_rollups(Tier::L3, hour_start_ms + 60 * MINUTE_MS)
+            .await
+            .expect("L3 source should prune"),
+        1
+    );
+    store
+        .history_state_set("l3FoldedUntilMs", &(hour_start_ms + 60 * MINUTE_MS), now_ms)
+        .await
+        .expect("L3 watermark should be set");
+    store
+        .history_state_set("l4FoldedUntilMs", &(hour_start_ms + 60 * MINUTE_MS), now_ms)
+        .await
+        .expect("L4 watermark should be set");
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("late sample should merge into retained L4");
+    let after_first = store
+        .read_tier_buckets(Tier::L4, hour_start_ms, hour_start_ms + 60 * MINUTE_MS)
+        .await
+        .expect("retained L4 bucket should read after first insert")
+        .remove(0);
+    assert_eq!(after_first.sample_count, 201);
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("second replay should update the existing raw row");
+    let after_second = store
+        .read_tier_buckets(Tier::L4, hour_start_ms, hour_start_ms + 60 * MINUTE_MS)
+        .await
+        .expect("retained L4 bucket should read after second replay")
+        .remove(0);
+    assert_eq!(after_second.sample_count, 201);
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("third replay should update the existing raw row");
+    let after_third = store
+        .read_tier_buckets(Tier::L4, hour_start_ms, hour_start_ms + 60 * MINUTE_MS)
+        .await
+        .expect("retained L4 bucket should read after third replay")
+        .remove(0);
+    assert_eq!(after_third.sample_count, 201);
+}
+
+#[tokio::test]
 async fn late_write_merges_retained_l3_when_l2_source_is_pruned() {
     let fixture = TempDatabase::new("late-write-pruned-l3-source");
     let store = fixture.store().await;
@@ -483,6 +564,78 @@ async fn late_write_merges_retained_l3_when_l2_source_is_pruned() {
         .expect("retained L3 bucket should read")
         .remove(0);
     assert_eq!(retained.sample_count, 121);
+}
+
+#[tokio::test]
+async fn second_replay_past_l2_horizon_does_not_double_count_retained_l3() {
+    // Break caught: replaying an existing raw row merges it into a retained L3 bucket again
+    // when the L2 source is beyond its retention horizon.
+    let fixture = TempDatabase::new("replay-past-l2-horizon-l3");
+    let store = fixture.store().await;
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("test time should follow the epoch")
+        .as_millis() as i64;
+    let captured_at_ms = now_ms.saturating_sub(40 * DAY_MS);
+    let l3_start_ms = captured_at_ms.div_euclid(5 * MINUTE_MS) * 5 * MINUTE_MS;
+    store
+        .upsert_tier_bucket(Tier::L3, &bucket(l3_start_ms, 5 * MINUTE_MS, 120, 10.0))
+        .await
+        .expect("retained L3 bucket should upsert");
+    store
+        .upsert_tier_bucket(Tier::L2, &bucket(l3_start_ms, MINUTE_MS, 120, 10.0))
+        .await
+        .expect("L2 source fixture should upsert before pruning");
+    assert_eq!(
+        store
+            .prune_rollups(Tier::L2, l3_start_ms + 5 * MINUTE_MS)
+            .await
+            .expect("L2 source should prune"),
+        1
+    );
+    store
+        .history_state_set("l3FoldedUntilMs", &(l3_start_ms + 5 * MINUTE_MS), now_ms)
+        .await
+        .expect("L3 watermark should be set");
+    store
+        .history_state_set("l4Enabled", &false, now_ms)
+        .await
+        .expect("L4 should be disabled for the one-rung fixture");
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("late sample should merge into retained L3");
+    let after_first = store
+        .read_tier_buckets(Tier::L3, l3_start_ms, l3_start_ms + 5 * MINUTE_MS)
+        .await
+        .expect("retained L3 bucket should read after first insert")
+        .remove(0);
+    assert_eq!(after_first.sample_count, 121);
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("second replay should update the existing raw row");
+    let after_second = store
+        .read_tier_buckets(Tier::L3, l3_start_ms, l3_start_ms + 5 * MINUTE_MS)
+        .await
+        .expect("retained L3 bucket should read after second replay")
+        .remove(0);
+    assert_eq!(after_second.sample_count, 121);
+    assert_eq!(after_second.cpu.avg, after_first.cpu.avg);
+
+    store
+        .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 90.0))
+        .await
+        .expect("third replay should update the existing raw row");
+    let after_third = store
+        .read_tier_buckets(Tier::L3, l3_start_ms, l3_start_ms + 5 * MINUTE_MS)
+        .await
+        .expect("retained L3 bucket should read after third replay")
+        .remove(0);
+    assert_eq!(after_third.sample_count, 121);
+    assert_eq!(after_third.cpu.avg, after_first.cpu.avg);
 }
 
 #[tokio::test]

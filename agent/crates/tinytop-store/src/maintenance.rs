@@ -305,6 +305,7 @@ pub(crate) async fn refold_ancestors_for_late_write(
     now_ms: i64,
     ladder: &RetentionLadder,
     new_sample: &TierBucket,
+    new_raw_row: bool,
 ) -> Result<(), StoreError> {
     let l3_watermark = store.history_state_get::<i64>("l3FoldedUntilMs").await?;
     let l4_watermark = store.history_state_get::<i64>("l4FoldedUntilMs").await?;
@@ -327,6 +328,7 @@ pub(crate) async fn refold_ancestors_for_late_write(
             now_ms,
             ladder.l2.keep_days,
             new_sample,
+            new_raw_row,
         )
         .await?;
     }
@@ -347,6 +349,7 @@ pub(crate) async fn refold_ancestors_for_late_write(
             now_ms,
             source_keep_days,
             new_sample,
+            new_raw_row,
         )
         .await?;
     }
@@ -361,6 +364,7 @@ async fn refold_one(
     now_ms: i64,
     source_keep_days: i64,
     new_sample: &TierBucket,
+    new_raw_row: bool,
 ) -> Result<(), StoreError> {
     let target_end_ms = target_start_ms.saturating_add(target_tier.resolution_ms());
     let finer = store
@@ -369,6 +373,9 @@ async fn refold_one(
     let source_count = finer.iter().map(|bucket| bucket.sample_count).sum::<i64>();
     let source_holds_whole_range = source_count > 0
         && target_start_ms >= now_ms.saturating_sub(source_keep_days.saturating_mul(DAY_MS));
+    if !source_holds_whole_range && !new_raw_row {
+        return Ok(());
+    }
     let bucket = if source_holds_whole_range {
         fold(target_start_ms, &finer)
     } else {
