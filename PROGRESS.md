@@ -2,15 +2,16 @@
 
 ## Current Version
 
-- Version: `0.5.1`
+- Version: `0.5.2`
 - Date: 2026-08-29
 - Status: Phase 5 (cadence classes + GPU, plan `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md`,
-  ADRs 0021–0023) IN PROGRESS. T12 landed as 0.5.1: the collector owns three cadence classes
-  (fast / slow / static), `statvfs` runs once per mount per `detailIntervalSec` instead of per tick,
-  `/api/snapshot` answers from memory, `topProcessCount` is effective, `cpu.times` is optional;
-  review rounds luna 644 → fix 648. Next = T13 (schema v2: `process_commands` dictionary,
-  `process_samples_fast`, `command_id`, `processFastKeepHours`; brief
-  `docs/plans/2026-08-28-tiered-history-ladder/briefs/T13.md`), then T14–T17 → 0.6.0. The live
+  ADRs 0021–0023) IN PROGRESS. T13 landed as 0.5.2: schema v2 — the `process_commands`
+  dictionary, the per-tick `process_samples_fast` table, `command_id` on the minute table,
+  `processFastKeepHours`, `/api/history/processes` `source` fast|minute, `db stats --json`
+  `userVersion`; v1→v2 in one transaction (ADR 0023; 199 ms on a copy of the live file);
+  review rounds luna 655 → fix 657. Next = T14 (schema v3: filesystems stored on change, the
+  identity table, `/api/history` assembled from typed tables, `snapshot_json` dropped; brief
+  `docs/plans/2026-08-28-tiered-history-ladder/briefs/T14.md`), then T15–T17 → 0.6.0. The live
   daemon still runs 0.3.1 — redeploy is an explicitly ordered step.
 
 ## Backlog
@@ -37,6 +38,10 @@
   OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
+
+### 0.5.2 - Cadence classes and GPU, Phase 5 lane 2 (T13)
+
+- [x] T13 / 0.5.2: schema v2 (ADR 0023) — `process_commands` dictionary (`command_id`, `UNIQUE(command)`), `process_samples_fast` (WITHOUT ROWID, one row per top-N process per poll tick), `command_id` on the minute table with the `command` text column dropped, v1→v2 in ONE transaction behind a `sqlite_version() ≥ 3.35.0` pre-write check and an in-flight guard, no pre-image; `processFastKeepHours` (1–72, default 24) with its dashboard control and the unconditional `wouldDelete.processFastRows`; `/api/history/processes?sinceMs=` served from the fast table inside the keep window and the minute table outside it (`source` in the response); maintenance prunes expired fast rows and drains orphaned commands in 1,000-row batches (`MaintenanceReport.detail_rows_pruned`); `db stats --json` `userVersion` (hexe run 654 after 649/651/653 escalated correctly on brief lines; luna 655; fix 657: `DROP COLUMN` keeps SQLite's own cause + the first real rollback test, three test-strength items). Measured: v1→v2 on a read-only copy of the live 225 MB file 273 ms (test) / 199 ms (daemon); `process_samples_fast` 66.7 B/row + 19.1 B/row index vs the plan's ≤ 60 B target — reported, not tuned (`started_at TEXT` → T14's interning decision). Gate on main: see `CHANGELOG.md`.
 
 ### 0.5.1 - Cadence classes and GPU, Phase 5 lane 1 (T12)
 
