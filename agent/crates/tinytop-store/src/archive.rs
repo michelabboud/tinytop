@@ -65,6 +65,27 @@ pub struct ArchivePaths {
     pub directory: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchiveBatch {
+    pub min_ms: i64,
+    pub max_ms: i64,
+    pub row_count: i64,
+}
+
+pub(crate) fn archive_remedy(step: &'static str) -> &'static str {
+    match step {
+        "watermark" => {
+            "the batch is committed in history-archive.sqlite and removed from the main database; only the watermark bookkeeping failed — retrying is safe, nothing is duplicated or lost"
+        }
+        "detach" => {
+            "the batch is committed in history-archive.sqlite and removed from the main database; only the detach bookkeeping failed — retrying is safe, nothing is duplicated or lost"
+        }
+        _ => {
+            "keep history-archive.sqlite and the main database unchanged, check the archive directory is writable, and retry — nothing was deleted from the main database"
+        }
+    }
+}
+
 pub fn archive_paths(main_db: &Path, settings: &ArchiveSettings) -> ArchivePaths {
     let directory = if settings.directory.is_empty() {
         main_db
@@ -80,14 +101,89 @@ pub fn archive_paths(main_db: &Path, settings: &ArchiveSettings) -> ArchivePaths
     }
 }
 
+#[derive(Clone, Copy)]
+struct ArchiveSchemaInspection {
+    user_version: i64,
+    object_count: i64,
+    required_object_count: i64,
+}
+
+impl ArchiveSchemaInspection {
+    fn accepted(self) -> bool {
+        self.user_version == 1 || (self.user_version == 0 && self.object_count == 0)
+    }
+
+    fn current(self) -> bool {
+        self.user_version == 1 && self.required_object_count == 3
+    }
+}
+
+async fn inspect_archive_schema(
+    connection: &mut SqliteConnection,
+) -> Result<ArchiveSchemaInspection, StoreError> {
+    let user_version = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|source| archive_sqlx("schema", source))?;
+    let object_count = sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|source| archive_sqlx("schema", source))?;
+    let required_object_count = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE (type = 'table' AND name IN ('metric_rollups_1h', 'archive_manifest'))
+           OR (type = 'index' AND name = 'idx_metric_rollups_1h_newest')
+        "#,
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|source| archive_sqlx("schema", source))?;
+    Ok(ArchiveSchemaInspection {
+        user_version,
+        object_count,
+        required_object_count,
+    })
+}
+
+fn archive_schema_refusal(
+    paths: &ArchivePaths,
+    inspection: ArchiveSchemaInspection,
+) -> Option<StoreError> {
+    (!inspection.accepted()).then(|| StoreError::Archive {
+        step: "schema",
+        source: ArchiveErrorSource::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "history-archive.sqlite at {} has user_version {} with {} objects; expected a tinytop archive (user_version 1) — move the file away or point retentionLadder.archive.directory elsewhere",
+                paths.db.display(), inspection.user_version, inspection.object_count
+            ),
+        )),
+    })
+}
+
 pub async fn ensure_archive_schema(paths: &ArchivePaths) -> Result<(), StoreError> {
     std::fs::create_dir_all(&paths.directory).map_err(|source| StoreError::Archive {
         step: "create directory",
         source: ArchiveErrorSource::Io(source),
     })?;
 
-    if archive_schema_is_current(paths).await? {
-        return Ok(());
+    if let Some(mut inspection_connection) = open_archive_read_only(paths, "open").await? {
+        let inspection = inspect_archive_schema(&mut inspection_connection).await?;
+        if let Some(error) = archive_schema_refusal(paths, inspection) {
+            if let Err(source) = inspection_connection.close().await {
+                eprintln!("archive step close failed while refusing schema: {source}");
+            }
+            return Err(error);
+        }
+        inspection_connection
+            .close()
+            .await
+            .map_err(|source| archive_sqlx("close", source))?;
+        if inspection.current() {
+            return Ok(());
+        }
     }
 
     let options = SqliteConnectOptions::new()
@@ -96,6 +192,19 @@ pub async fn ensure_archive_schema(paths: &ArchivePaths) -> Result<(), StoreErro
     let mut connection = SqliteConnection::connect_with(&options)
         .await
         .map_err(|source| archive_sqlx("open", source))?;
+    let inspection = inspect_archive_schema(&mut connection).await?;
+    if let Some(error) = archive_schema_refusal(paths, inspection) {
+        if let Err(source) = connection.close().await {
+            eprintln!("archive step close failed while refusing schema: {source}");
+        }
+        return Err(error);
+    }
+    if inspection.current() {
+        return connection
+            .close()
+            .await
+            .map_err(|source| archive_sqlx("close", source));
+    }
     sqlx::raw_sql(ARCHIVE_SCHEMA_SQL)
         .execute(&mut connection)
         .await
@@ -113,32 +222,45 @@ pub async fn move_expired_l4(
     cutoff_ms: i64,
     batch: usize,
 ) -> Result<i64, StoreError> {
-    ensure_archive_schema(paths).await?;
+    let mut connection = acquire_attached(store, paths).await?;
     let batch = batch.min(ARCHIVE_BATCH_ROWS).max(1) as i64;
-    let mut connection = store
-        .pool
-        .acquire()
-        .await
-        .map_err(|source| archive_sqlx("acquire", source))?;
-    let archive_db = paths.db.to_string_lossy().into_owned();
-    sqlx::query("ATTACH DATABASE ?1 AS archive")
-        .bind(&archive_db)
-        .execute(&mut *connection)
-        .await
-        .map_err(|source| archive_sqlx("attach", source))?;
+    let result = match copy_attached_batch(&mut connection, cutoff_ms, batch).await {
+        Ok(Some(archive_batch)) => delete_attached_batch(&mut connection, archive_batch)
+            .await
+            .map(|deleted| (deleted, Some(archive_batch))),
+        Ok(None) => Ok((0, None)),
+        Err(error) => Err(error),
+    };
+    let (deleted, archive_batch) = detach_after(&mut connection, result).await?;
+    drop(connection);
 
-    let result = move_attached_batch(&mut connection, cutoff_ms, batch).await;
-    if let Err(source) = sqlx::query("DETACH DATABASE archive")
-        .execute(&mut *connection)
-        .await
+    if let Some(archive_batch) = archive_batch
+        && deleted == archive_batch.row_count
     {
-        connection.close_on_drop();
-        if let Err(operation_error) = result {
-            eprintln!("archive operation failed before detach also failed: {operation_error}");
-        }
-        return Err(archive_sqlx("detach", source));
+        let moved_until_ms = archive_batch
+            .max_ms
+            .saturating_add(Tier::L4.resolution_ms());
+        store
+            .history_state_set("archiveMovedUntilMs", &moved_until_ms, moved_until_ms)
+            .await
+            .map_err(|error| archive_store_error("watermark", error))?;
     }
-    result
+
+    Ok(deleted)
+}
+
+/// Phase 1 of `move_expired_l4`, public only so the crash-order test can stop between the two commits.
+#[doc(hidden)]
+pub async fn copy_expired_l4_batch(
+    store: &SqliteHistoryStore,
+    paths: &ArchivePaths,
+    cutoff_ms: i64,
+    batch: usize,
+) -> Result<Option<ArchiveBatch>, StoreError> {
+    let mut connection = acquire_attached(store, paths).await?;
+    let batch = batch.min(ARCHIVE_BATCH_ROWS).max(1) as i64;
+    let result = copy_attached_batch(&mut connection, cutoff_ms, batch).await;
+    detach_after(&mut connection, result).await
 }
 
 pub async fn read_archive_points(
@@ -211,31 +333,6 @@ pub(super) async fn archive_coverage(
     ))
 }
 
-async fn archive_schema_is_current(paths: &ArchivePaths) -> Result<bool, StoreError> {
-    let Some(mut connection) = open_archive_read_only(paths, "schema inspect").await? else {
-        return Ok(false);
-    };
-    let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
-        .fetch_one(&mut connection)
-        .await
-        .map_err(|source| archive_sqlx("schema inspect", source))?;
-    if user_version != 1 {
-        return Ok(false);
-    }
-    let object_count: i64 = sqlx::query_scalar(
-        r#"
-        SELECT COUNT(*)
-        FROM sqlite_master
-        WHERE (type = 'table' AND name IN ('metric_rollups_1h', 'archive_manifest'))
-           OR (type = 'index' AND name = 'idx_metric_rollups_1h_newest')
-        "#,
-    )
-    .fetch_one(&mut connection)
-    .await
-    .map_err(|source| archive_sqlx("schema inspect", source))?;
-    Ok(object_count == 3)
-}
-
 async fn open_archive_read_only(
     paths: &ArchivePaths,
     step: &'static str,
@@ -260,15 +357,58 @@ async fn open_archive_read_only(
         .map_err(|source| archive_sqlx(step, source))
 }
 
-async fn move_attached_batch(
+async fn acquire_attached<'a>(
+    store: &'a SqliteHistoryStore,
+    paths: &ArchivePaths,
+) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, StoreError> {
+    ensure_archive_schema(paths).await?;
+    let mut connection = store
+        .pool
+        .acquire()
+        .await
+        .map_err(|source| archive_sqlx("acquire", source))?;
+    let archive_db = paths.db.to_string_lossy().into_owned();
+    if let Err(source) = sqlx::query("ATTACH DATABASE ?1 AS archive")
+        .bind(&archive_db)
+        .execute(&mut *connection)
+        .await
+    {
+        connection.close_on_drop();
+        return Err(archive_sqlx("attach", source));
+    }
+    Ok(connection)
+}
+
+async fn detach_after<T>(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    result: Result<T, StoreError>,
+) -> Result<T, StoreError> {
+    if let Err(source) = sqlx::query("DETACH DATABASE archive")
+        .execute(&mut **connection)
+        .await
+    {
+        connection.close_on_drop();
+        let detach_error = archive_sqlx("detach", source);
+        return match result {
+            Err(operation_error) => {
+                eprintln!("{detach_error}");
+                Err(operation_error)
+            }
+            Ok(_) => Err(detach_error),
+        };
+    }
+    result
+}
+
+async fn copy_attached_batch(
     connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
     cutoff_ms: i64,
     batch: i64,
-) -> Result<i64, StoreError> {
-    sqlx::query("BEGIN IMMEDIATE")
+) -> Result<Option<ArchiveBatch>, StoreError> {
+    sqlx::query("BEGIN")
         .execute(&mut **connection)
         .await
-        .map_err(|source| archive_sqlx("begin", source))?;
+        .map_err(|source| archive_sqlx("begin copy", source))?;
 
     let row = match sqlx::query(
         r#"
@@ -299,8 +439,8 @@ async fn move_attached_batch(
     };
     if row_count == 0 {
         return match sqlx::query("COMMIT").execute(&mut **connection).await {
-            Ok(_) => Ok(0),
-            Err(source) => rollback(connection, archive_sqlx("commit", source)).await,
+            Ok(_) => Ok(None),
+            Err(source) => rollback(connection, archive_sqlx("commit copy", source)).await,
         };
     }
     let min_ms = match row.try_get::<i64, _>("min_ms") {
@@ -312,10 +452,14 @@ async fn move_attached_batch(
         Err(source) => return rollback(connection, archive_sqlx("select decode", source)).await,
     };
 
-    // The main DB uses WAL, so SQLite does not promise atomic commits across the attached files.
-    // INSERT OR IGNORE plus a count check makes a crash-duplicated batch idempotent and convergent.
+    // SQLite commits attached databases file-by-file in ATTACH order when `main` is WAL
+    // (`aMJNeeded[WAL] = 0`, no super-journal), so a single cross-file transaction makes
+    // main's DELETE durable before the archive's INSERT and a crash between them loses the
+    // batch. Hence: copy + commit (archive only) -> verify the committed copy -> delete +
+    // commit (main only). `OR REPLACE` keeps a stale copy from freezing; the content-matched
+    // DELETE keeps a changed row until it is re-copied. ADR 0018.
     let insert_sql = format!(
-        "INSERT OR IGNORE INTO archive.metric_rollups_1h ({ARCHIVE_COLUMNS}) SELECT {ARCHIVE_COLUMNS} FROM main.metric_rollups_1h WHERE bucket_start_ms BETWEEN ?1 AND ?2"
+        "INSERT OR REPLACE INTO archive.metric_rollups_1h ({ARCHIVE_COLUMNS}) SELECT {ARCHIVE_COLUMNS} FROM main.metric_rollups_1h WHERE bucket_start_ms BETWEEN ?1 AND ?2"
     );
     if let Err(source) = sqlx::query(sqlx::AssertSqlSafe(insert_sql))
         .bind(min_ms)
@@ -324,6 +468,10 @@ async fn move_attached_batch(
         .await
     {
         return rollback(connection, archive_sqlx("insert", source)).await;
+    }
+
+    if let Err(source) = sqlx::query("COMMIT").execute(&mut **connection).await {
+        return rollback(connection, archive_sqlx("commit copy", source)).await;
     }
 
     let archived_count: i64 = match sqlx::query_scalar(
@@ -335,65 +483,77 @@ async fn move_attached_batch(
     .await
     {
         Ok(count) => count,
-        Err(source) => return rollback(connection, archive_sqlx("verify", source)).await,
+        Err(source) => return Err(archive_sqlx("verify", source)),
     };
     if archived_count != row_count {
         let source = sqlx::Error::Protocol(format!(
             "archive batch count {archived_count} did not equal main batch count {row_count}"
         ));
-        return rollback(connection, archive_sqlx("verify", source)).await;
+        return Err(archive_sqlx("verify", source));
     }
 
+    Ok(Some(ArchiveBatch {
+        min_ms,
+        max_ms,
+        row_count,
+    }))
+}
+
+async fn delete_attached_batch(
+    connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
+    batch: ArchiveBatch,
+) -> Result<i64, StoreError> {
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut **connection)
+        .await
+        .map_err(|source| archive_sqlx("begin delete", source))?;
+
     let deleted = match sqlx::query(
-        "DELETE FROM main.metric_rollups_1h WHERE bucket_start_ms BETWEEN ?1 AND ?2",
+        r#"
+        DELETE FROM main.metric_rollups_1h
+        WHERE bucket_start_ms BETWEEN ?1 AND ?2
+          AND EXISTS (
+            SELECT 1
+            FROM archive.metric_rollups_1h AS a
+            WHERE a.bucket_start_ms = metric_rollups_1h.bucket_start_ms
+              AND a.sample_count = metric_rollups_1h.sample_count
+              AND a.newest_captured_at_ms = metric_rollups_1h.newest_captured_at_ms
+          )
+        "#,
     )
-    .bind(min_ms)
-    .bind(max_ms)
+    .bind(batch.min_ms)
+    .bind(batch.max_ms)
     .execute(&mut **connection)
     .await
     {
         Ok(result) => result.rows_affected() as i64,
         Err(source) => return rollback(connection, archive_sqlx("delete", source)).await,
     };
-    if deleted != row_count {
-        let source = sqlx::Error::Protocol(format!(
-            "deleted main batch count {deleted} did not equal selected batch count {row_count}"
-        ));
-        return rollback(connection, archive_sqlx("delete", source)).await;
-    }
 
     if let Err(source) = sqlx::query("COMMIT").execute(&mut **connection).await {
-        return rollback(connection, archive_sqlx("commit", source)).await;
+        return rollback(connection, archive_sqlx("commit delete", source)).await;
     }
-
-    let moved_until_ms = max_ms.saturating_add(Tier::L4.resolution_ms());
-    if let Err(source) = sqlx::query(
-        r#"
-        INSERT INTO main.history_state (state_key, value_json, updated_at_ms)
-        VALUES ('archiveMovedUntilMs', ?1, ?2)
-        ON CONFLICT(state_key) DO UPDATE SET
-          value_json = excluded.value_json,
-          updated_at_ms = excluded.updated_at_ms
-        "#,
-    )
-    .bind(moved_until_ms.to_string())
-    .bind(moved_until_ms)
-    .execute(&mut **connection)
-    .await
-    {
-        return Err(archive_sqlx("watermark", source));
-    }
-    Ok(row_count)
+    Ok(deleted)
 }
 
-async fn rollback(
+async fn rollback<T>(
     connection: &mut sqlx::pool::PoolConnection<sqlx::Sqlite>,
     error: StoreError,
-) -> Result<i64, StoreError> {
+) -> Result<T, StoreError> {
     if let Err(source) = sqlx::query("ROLLBACK").execute(&mut **connection).await {
         eprintln!("archive rollback failed after {error}: {source}");
     }
     Err(error)
+}
+
+fn archive_store_error(step: &'static str, error: StoreError) -> StoreError {
+    match error {
+        StoreError::Sqlx(source) => archive_sqlx(step, source),
+        other => StoreError::Archive {
+            step,
+            source: ArchiveErrorSource::Io(std::io::Error::other(other.to_string())),
+        },
+    }
 }
 
 fn archive_sqlx(step: &'static str, source: sqlx::Error) -> StoreError {

@@ -174,7 +174,7 @@ prune detail: DELETE fs_samples / process_samples WHERE captured_at_ms < now −
 prune L2: DELETE metric_rollups_1m WHERE bucket_start_ms + 60_000 ≤ min(now − l2.keepDays, dependentWatermark(L2))
 prune L3: DELETE metric_rollups_5m WHERE bucket_start_ms + 300_000 ≤ min(now − l3.keepDays, dependentWatermark(L3))   [if enabled]
 expire L4 (if enabled and keepDays > 0): rows with bucket_start_ms + 3_600_000 ≤ now − l4.keepDays →
-    archive.queryable ? move_to_archive(rows) (ATTACH; INSERT OR IGNORE INTO archive.metric_rollups_1h; verify count; DELETE; DETACH — one transaction per batch ≤ 1,000 rows; archiveMovedUntilMs advances)
+    archive.queryable ? move_to_archive(rows) (ATTACH; BEGIN; INSERT OR REPLACE INTO archive.metric_rollups_1h; COMMIT — archive only; verify the committed count; BEGIN IMMEDIATE; content-matched DELETE from main; COMMIT — main only; DETACH; ≤ 1,000 rows per batch; archiveMovedUntilMs advances only for a fully deleted batch — ADR 0018: a single cross-file transaction commits main first under WAL)
                       : DELETE
 ```
 `dependentWatermark(T)` = the fold watermark of the nearest enabled coarser tier, or `+∞` when none is enabled. Disabling a tier stops writes to it and drops it from `dependentWatermark`; its existing rows are pruned by its own horizon only when the tier is re-enabled (disabled tables are left untouched — no silent deletion on a toggle). Every step logs counts at `debug`, and anything non-zero deleted at `info`; a step that fails logs at `error` with the SQLite message and the tick continues with the next step (a failed prune must not stop collection).

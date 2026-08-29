@@ -1205,9 +1205,19 @@ impl SqliteHistoryStore {
         &self,
         query: HistoryPointsQuery,
     ) -> Result<Vec<HistoryPoint>, StoreError> {
+        let settings = if matches!(
+            query.source,
+            HistoryPointMode::Auto | HistoryPointMode::Archive
+        ) {
+            Some(self.get_settings().await?)
+        } else {
+            None
+        };
         let source = match query.source {
             HistoryPointMode::Auto => {
-                let settings = self.get_settings().await?;
+                let settings = settings
+                    .as_ref()
+                    .expect("auto history point reads fetch settings above");
                 resolve_history_point_source_with_poll(
                     &settings.retention_ladder,
                     settings.poll_interval_ms,
@@ -1223,7 +1233,9 @@ impl SqliteHistoryStore {
             HistoryPointMode::Rollup5m => self.read_tier_history_points(Tier::L3, query).await,
             HistoryPointMode::Rollup1h => self.read_tier_history_points(Tier::L4, query).await,
             HistoryPointMode::Archive => {
-                let settings = self.get_settings().await?;
+                let settings = settings
+                    .as_ref()
+                    .expect("archive history point reads fetch settings above");
                 if !settings.retention_ladder.archive.queryable {
                     return Ok(Vec::new());
                 }
@@ -1724,12 +1736,13 @@ impl SqliteHistoryStore {
         let sql = format!(
             r#"
             SELECT
-              bucket_start_ms, first_captured_at_ms, newest_captured_at_ms, sample_count,
-              avg_cpu_usage_percent, min_cpu_usage_percent, max_cpu_usage_percent,
-              avg_memory_used_percent, min_memory_used_percent, max_memory_used_percent,
-              avg_swap_used_percent, min_swap_used_percent, max_swap_used_percent,
-              avg_load_percent, min_load_percent, max_load_percent,
-              avg_root_used_percent, min_root_used_percent, max_root_used_percent
+              newest_captured_at_ms,
+              sample_count,
+              avg_cpu_usage_percent,
+              avg_memory_used_percent,
+              avg_swap_used_percent,
+              avg_load_percent,
+              avg_root_used_percent
             FROM {}
             WHERE (?1 IS NULL OR newest_captured_at_ms >= ?1)
               AND (?2 IS NULL OR newest_captured_at_ms <= ?2)
@@ -1745,16 +1758,25 @@ impl SqliteHistoryStore {
             .fetch_all(&self.pool)
             .await?;
 
-        let source = match tier {
-            Tier::L1 => unreachable!("raw points return above"),
-            Tier::L2 => HistoryPointSource::Rollup,
-            Tier::L3 => HistoryPointSource::Rollup5m,
-            Tier::L4 => HistoryPointSource::Rollup1h,
-        };
         let mut points = rows
             .into_iter()
-            .map(tier_bucket_from_row)
-            .map(|bucket| bucket.map(|bucket| history_point_from_bucket(bucket, source)))
+            .map(|row| {
+                Ok(HistoryPoint {
+                    captured_at_ms: row.try_get::<i64, _>("newest_captured_at_ms")?,
+                    source: match tier {
+                        Tier::L1 => unreachable!("raw points return above"),
+                        Tier::L2 => HistoryPointSource::Rollup,
+                        Tier::L3 => HistoryPointSource::Rollup5m,
+                        Tier::L4 => HistoryPointSource::Rollup1h,
+                    },
+                    sample_count: row.try_get::<i64, _>("sample_count")?,
+                    cpu_usage_percent: row.try_get::<f64, _>("avg_cpu_usage_percent")?,
+                    memory_used_percent: row.try_get::<f64, _>("avg_memory_used_percent")?,
+                    swap_used_percent: row.try_get::<f64, _>("avg_swap_used_percent")?,
+                    load_percent: row.try_get::<f64, _>("avg_load_percent")?,
+                    root_used_percent: row.try_get::<Option<f64>, _>("avg_root_used_percent")?,
+                })
+            })
             .collect::<Result<Vec<_>, StoreError>>()?;
         points.reverse();
         Ok(points)
@@ -2138,7 +2160,8 @@ impl std::fmt::Display for StoreError {
             }
             Self::Archive { step, source } => write!(
                 formatter,
-                "archive step {step} failed: {source}; remedy: keep history-archive.sqlite and the main database unchanged, check the archive directory is writable, and retry — nothing was deleted from the main database"
+                "archive step {step} failed: {source}; remedy: {}",
+                archive::archive_remedy(step)
             ),
             Self::Validation(message) => write!(formatter, "{message}"),
         }

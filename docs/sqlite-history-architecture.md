@@ -444,26 +444,40 @@ cold-export phase.
 When queryable archiving is enabled and L4 has a finite horizon, maintenance
 moves at most ten batches of 1,000 expired rows per tick. Each batch uses one
 main-pool connection: schema setup uses a standalone archive connection, then
-the main connection attaches the archive only for the move, starts
-`BEGIN IMMEDIATE`, selects the oldest expired range, inserts it with
-`INSERT OR IGNORE`, verifies the archive range count, deletes the same range
-from main, commits, advances `history_state.archiveMovedUntilMs` to the newest
-moved bucket's end, and detaches. DETACH is attempted after success, rollback,
-or any other attached-path failure; if DETACH itself fails, the connection is
-discarded instead of returning attached to the pool. With queryable archiving
-disabled, finite-horizon L4 expiry remains a direct main-table deletion and
-does not create an archive file.
+the main connection attaches the archive only for the move. Phase A uses a
+deferred `BEGIN`, selects the oldest expired range, copies it with `INSERT OR
+REPLACE`, and commits the archive-only write. The committed archive range count
+is then verified outside a transaction. Phase B uses `BEGIN IMMEDIATE`, deletes
+only main rows whose `sample_count` and `newest_captured_at_ms` still match their
+archive copies, and commits the main-only write. A fully deleted batch advances
+`history_state.archiveMovedUntilMs` through the store's single state writer;
+a partial batch leaves the advisory watermark unchanged. DETACH brackets every
+attached operation, and a failed DETACH discards the connection rather than
+returning it attached to the pool. With queryable archiving disabled,
+finite-horizon L4 expiry remains a direct main-table deletion and does not
+create an archive file.
 
-The main database uses WAL, and SQLite does not guarantee an atomic commit
-across attached databases in that mode. A crash may therefore leave the same
-primary-key range in both files. `INSERT OR IGNORE` plus the verified range
-count makes the retry idempotent: it recognizes the already-persisted archive
-rows, then deletes the corresponding main rows and converges. A failure before
-the move transaction commits rolls back, leaves main rows and the prior archive
-watermark unchanged, and detaches. The watermark write deliberately follows
-the cross-file commit; if that write fails, the verified archive rows and main
-deletion remain while the watermark stays unchanged, and later batches still
-converge from the remaining main rows.
+ADR 0018 records why the two commits are ordered this way: with `main` in WAL,
+SQLite uses no super-journal and commits attached files in ATTACH order, so one
+cross-file transaction would make main's DELETE durable before the archive's
+INSERT. The crash matrix is therefore: before phase A commits, nothing changes;
+between the phase A and phase B commits, the batch is in both files and the next
+call converges through `OR REPLACE`; after phase B commits, the move is done and
+only the advisory watermark may lag. A batch absent from both files is
+unreachable. Failures at `create directory`, `open`, `schema`, `close`,
+`acquire`, `attach`, `begin copy`, `select`, `select decode`, `insert`, or
+`commit copy` remove nothing from main and do not advance the watermark. A
+`verify` failure leaves the committed archive copy in place but main and the
+watermark untouched. Failures at `begin delete`, `delete`, or `commit delete`
+leave the archive copy committed while the main delete transaction is rolled
+back and the watermark stays put. A content mismatch is not an error: the
+changed main row stays, successfully matched rows may be deleted, and the
+partial batch does not advance the watermark; the next copy refreshes it. A
+`watermark` failure leaves both data commits complete and the old watermark; a
+`detach` failure after a successful move likewise leaves both data commits
+complete, with the connection discarded and the watermark unchanged. If an
+earlier operation and DETACH both fail, the earlier actionable error is
+returned and the detach failure is logged with its step.
 
 Archive point reads and coverage never attach and never create. They first
 check for the file, then use a dedicated `read_only(true)`,

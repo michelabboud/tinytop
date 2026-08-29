@@ -4,13 +4,13 @@ use std::{
 };
 
 use sqlx::{
-    Row, SqlitePool,
+    Connection, Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use tinytop_store::{
-    DashboardSettings, HistoryPointMode, HistoryPointSource, HistoryPointsQuery,
-    SqliteHistoryStore, StoreError,
-    archive::{archive_paths, move_expired_l4, read_archive_points},
+    ArchiveErrorSource, DashboardSettings, HistoryPointMode, HistoryPointSource,
+    HistoryPointsQuery, SqliteHistoryStore, StoreError,
+    archive::{archive_paths, copy_expired_l4_batch, move_expired_l4, read_archive_points},
     ladder::{Stat, Tier, TierBucket},
     maintenance::maintain,
 };
@@ -108,6 +108,58 @@ async fn assert_only_main(connection: &mut sqlx::pool::PoolConnection<sqlx::Sqli
     assert_eq!(names, ["main"]);
 }
 
+async fn create_sqlite_fixture(path: &std::path::Path, sql: &'static str) {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true);
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .expect("SQLite fixture should open");
+    sqlx::raw_sql(sql)
+        .execute(&mut connection)
+        .await
+        .expect("SQLite fixture SQL should execute");
+    connection
+        .close()
+        .await
+        .expect("SQLite fixture should close");
+}
+
+async fn read_only_archive_pool(path: &std::path::Path) -> SqlitePool {
+    SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .read_only(true)
+                .create_if_missing(false),
+        )
+        .await
+        .expect("archive fixture should open read-only")
+}
+
+#[test]
+fn archive_error_remedy_is_step_aware() {
+    // Break caught: post-delete bookkeeping errors falsely claim main was unchanged.
+    let watermark = StoreError::Archive {
+        step: "watermark",
+        source: ArchiveErrorSource::Io(std::io::Error::other("fixture watermark failure")),
+    }
+    .to_string();
+    assert!(watermark.contains(
+        "remedy: the batch is committed in history-archive.sqlite and removed from the main database; only the watermark bookkeeping failed — retrying is safe, nothing is duplicated or lost"
+    ));
+
+    let insert = StoreError::Archive {
+        step: "insert",
+        source: ArchiveErrorSource::Io(std::io::Error::other("fixture insert failure")),
+    }
+    .to_string();
+    assert!(insert.contains(
+        "remedy: keep history-archive.sqlite and the main database unchanged, check the archive directory is writable, and retry — nothing was deleted from the main database"
+    ));
+}
+
 #[tokio::test]
 async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() {
     // Break caught: a failed archive write deletes main L4 rows or advances the move watermark.
@@ -150,6 +202,7 @@ async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() 
         let error = move_expired_l4(&store, &paths, 4 * HOUR_MS, 2)
             .await
             .expect_err("read-only archive must reject the second batch");
+        eprintln!("chmod fault injection error: {error}");
         assert!(
             error
                 .to_string()
@@ -159,7 +212,7 @@ async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() 
         match &error {
             StoreError::Archive { step, .. } => {
                 assert!(
-                    ["attach", "insert"].contains(&step),
+                    ["attach", "insert", "commit copy"].contains(&step),
                     "unexpected step {step}"
                 );
             }
@@ -204,6 +257,83 @@ async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() 
     assert_eq!(report.expired_l4, remaining_before_maintenance);
     assert_eq!(report.pruned[3], remaining_before_maintenance);
     assert_eq!(main_l4_count(&main_pool).await, 0);
+}
+
+#[tokio::test]
+async fn archive_copy_is_committed_before_main_delete() {
+    // Break caught: phase 1 writes main, deletes before the archive commit, or cannot converge.
+    let fixture = TempDatabase::new("copy-before-delete");
+    let store = fixture.store().await;
+    let settings = DashboardSettings::default();
+    let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
+    seed_l4(&store, &[0, HOUR_MS, 2 * HOUR_MS]).await;
+
+    let main_pool = fixture.pool().await;
+    let mut observer = main_pool.acquire().await.expect("observer connection");
+    let data_version_before: i64 = sqlx::query_scalar("PRAGMA main.data_version")
+        .fetch_one(&mut *observer)
+        .await
+        .expect("main data version before copy");
+
+    let copied = copy_expired_l4_batch(&store, &paths, 4 * HOUR_MS, 3)
+        .await
+        .expect("phase 1 copy should commit")
+        .expect("three expired rows should form a batch");
+    assert_eq!(copied.min_ms, 0);
+    assert_eq!(copied.max_ms, 2 * HOUR_MS);
+    assert_eq!(copied.row_count, 3);
+
+    let data_version_after: i64 = sqlx::query_scalar("PRAGMA main.data_version")
+        .fetch_one(&mut *observer)
+        .await
+        .expect("main data version after copy");
+    assert_eq!(data_version_after, data_version_before);
+    assert_eq!(main_l4_count(&main_pool).await, 3);
+    let archived = read_archive_points(&paths, i64::MIN, i64::MAX, 100)
+        .await
+        .expect("committed archive copy should read");
+    assert_eq!(archived.len(), 3);
+    assert_eq!(
+        store
+            .history_state_get::<i64>("archiveMovedUntilMs")
+            .await
+            .expect("watermark should read"),
+        None
+    );
+    drop(observer);
+
+    sqlx::query("UPDATE metric_rollups_1h SET sample_count = 61 WHERE bucket_start_ms = ?1")
+        .bind(HOUR_MS)
+        .execute(&main_pool)
+        .await
+        .expect("main row should mutate between phases");
+
+    assert_eq!(
+        move_expired_l4(&store, &paths, 4 * HOUR_MS, 3)
+            .await
+            .expect("full move should refresh and delete the batch"),
+        3
+    );
+    assert_eq!(main_l4_count(&main_pool).await, 0);
+    let archived = read_archive_points(&paths, i64::MIN, i64::MAX, 100)
+        .await
+        .expect("converged archive should read");
+    assert_eq!(archived.len(), 3);
+    assert_eq!(
+        archived
+            .iter()
+            .find(|bucket| bucket.bucket_start_ms == HOUR_MS)
+            .expect("mutated bucket should be archived")
+            .sample_count,
+        61
+    );
+    assert_eq!(
+        store
+            .history_state_get::<i64>("archiveMovedUntilMs")
+            .await
+            .expect("watermark should read"),
+        Some(3 * HOUR_MS)
+    );
 }
 
 #[tokio::test]
@@ -263,6 +393,93 @@ async fn archive_directory_setting_relocates_the_file() {
             "idx_metric_rollups_1h_newest",
             "metric_rollups_1h"
         ]
+    );
+}
+
+#[tokio::test]
+async fn archive_schema_refuses_foreign_or_newer_files() {
+    // Break caught: schema setup stamps a future or unrelated SQLite file as archive v1.
+    let newer = TempDatabase::new("schema-newer");
+    let newer_store = newer.store().await;
+    let settings = DashboardSettings::default();
+    let newer_paths = archive_paths(
+        newer_store.database_path(),
+        &settings.retention_ladder.archive,
+    );
+    seed_l4(&newer_store, &[0]).await;
+    create_sqlite_fixture(&newer_paths.db, "PRAGMA user_version = 2;").await;
+
+    let newer_error = move_expired_l4(&newer_store, &newer_paths, 2 * HOUR_MS, 10)
+        .await
+        .expect_err("a newer archive schema must be refused");
+    match newer_error {
+        StoreError::Archive {
+            step: "schema",
+            source,
+        } => {
+            assert!(
+                source
+                    .to_string()
+                    .contains("has user_version 2 with 0 objects")
+            );
+        }
+        other => panic!("expected archive schema error, got {other:?}"),
+    }
+    let newer_main_pool = newer.pool().await;
+    assert_eq!(main_l4_count(&newer_main_pool).await, 1);
+    let newer_archive_pool = read_only_archive_pool(&newer_paths.db).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+            .fetch_one(&newer_archive_pool)
+            .await
+            .expect("newer archive version should query"),
+        2
+    );
+    newer_archive_pool.close().await;
+
+    let foreign = TempDatabase::new("schema-foreign");
+    let foreign_store = foreign.store().await;
+    let foreign_paths = archive_paths(
+        foreign_store.database_path(),
+        &settings.retention_ladder.archive,
+    );
+    seed_l4(&foreign_store, &[0]).await;
+    create_sqlite_fixture(&foreign_paths.db, "CREATE TABLE stranger (x);").await;
+
+    let foreign_error = move_expired_l4(&foreign_store, &foreign_paths, 2 * HOUR_MS, 10)
+        .await
+        .expect_err("an unrelated user_version 0 database must be refused");
+    match foreign_error {
+        StoreError::Archive {
+            step: "schema",
+            source,
+        } => {
+            assert!(
+                source
+                    .to_string()
+                    .contains("has user_version 0 with 1 objects")
+            );
+        }
+        other => panic!("expected archive schema error, got {other:?}"),
+    }
+    let foreign_main_pool = foreign.pool().await;
+    assert_eq!(main_l4_count(&foreign_main_pool).await, 1);
+    let foreign_archive_pool = read_only_archive_pool(&foreign_paths.db).await;
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+            .fetch_one(&foreign_archive_pool)
+            .await
+            .expect("foreign archive version should query"),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'stranger'",
+        )
+        .fetch_one(&foreign_archive_pool)
+        .await
+        .expect("foreign table should query"),
+        1
     );
 }
 
