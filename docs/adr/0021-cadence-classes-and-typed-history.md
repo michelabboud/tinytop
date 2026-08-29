@@ -31,3 +31,5 @@ The daemon collects one `SystemSnapshot` every `pollIntervalMs` (1.5 s) and, sin
 - Database growth becomes ≈ 174 B per tick for scalars, ≈ 45 B per process row per tick, near zero for filesystems between real changes; expected steady state on the home box ≈ 70–80 MB (to be measured, plan §6).
 - History snapshots omit `cpu.times` and `pressure` (documented in README `/api/history`); older settings documents carrying `snapshotJsonKeepMinutes` import with an "ignored" warning; `wouldDelete.snapshotJsonRows` and the coverage JSON counters disappear.
 - Four schema versions (v2 dictionary/fast rows, v3 identity/drop JSON, v4 GPU) in one release; the v0→v1 path chains into them.
+
+Amendment 2026-08-30 (T14 brief, ADR 0024): the Context sentence "the dashboard reads nothing from `cpu.times` or `pressure`" is wrong for pressure — the dashboard's pressure card and pressure gauge read `pressure.{cpu,memory,io}.some.avg10` live (`agent/assets/dashboard/app.js`, `pressureValue`). Decision 2 stands: pressure is not stored; history snapshots carry no pressure lines and the dashboard renders `—` for them, never `0` (T14b).
