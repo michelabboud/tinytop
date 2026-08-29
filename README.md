@@ -209,7 +209,7 @@ pre-image management:
 | `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, JSON-bearing sample count, archive state, and disk state (`freeBytes`, minimum, pressure, breach start, and last check) |
 | `tinytop-agent db pre-image status` | Show the canonical `<database>.pre-v0.sqlite` path, existence/size, schema version, and main-database integrity result |
 | `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation when the main database exists, uses schema v1, and passes SQLite integrity check; otherwise refuse |
-| `tinytop-agent config export [--out FILE]` | Export the daemon settings as a versioned, secret-free JSON document; stdout is the default and an existing output file is never overwritten. |
+| `tinytop-agent config export [--out FILE]` | Export the daemon settings as a versioned, secret-free JSON document; stdout is the default. File publishing uses atomic no-clobber hard links when supported; otherwise it re-checks the destination and renames, leaving a few-microsecond window in which a file created by another process could be replaced. |
 | `tinytop-agent config import FILE [--dry-run]` | Validate and preview an import, or apply it and record a settings marker; pruning is deferred to the daemon's next maintenance tick. |
 
 Rust history is retained as an L1 raw → L2 one-minute → L3 five-minute → L4

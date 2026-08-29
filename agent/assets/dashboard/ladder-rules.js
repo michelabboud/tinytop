@@ -186,7 +186,12 @@ function nonZeroCount(value) {
   return Number.isFinite(count) && count !== 0 ? count : null;
 }
 
-export function describeImportPlan(plan, candidateLadder, previousSettings) {
+export function describeImportPlan(
+  plan,
+  candidateLadder,
+  previousSettings,
+  { includeOtherChanges = true } = {},
+) {
   const lines = [];
   const wouldDelete = plan?.wouldDelete ?? {};
   const addCount = (field, label, suffix = "") => {
@@ -217,11 +222,13 @@ export function describeImportPlan(plan, candidateLadder, previousSettings) {
     lines.push("cold export stops — exported files are kept");
   }
 
-  const otherChangedKeys = Array.isArray(plan?.changedKeys)
-    ? plan.changedKeys.filter((key) => key !== "retentionLadder")
-    : [];
-  if (otherChangedKeys.length > 0) lines.push(`also changes: ${otherChangedKeys.join(", ")}`);
-  if (Array.isArray(plan?.warnings)) lines.push(...plan.warnings);
+  if (includeOtherChanges) {
+    const otherChangedKeys = Array.isArray(plan?.changedKeys)
+      ? plan.changedKeys.filter((key) => key !== "retentionLadder")
+      : [];
+    if (otherChangedKeys.length > 0) lines.push(`also changes: ${otherChangedKeys.join(", ")}`);
+    if (Array.isArray(plan?.warnings)) lines.push(...plan.warnings);
+  }
   return lines;
 }
 

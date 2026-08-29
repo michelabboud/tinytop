@@ -433,29 +433,7 @@ async fn config(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(path) = output_path {
                     refuse_existing_export_path(&path)?;
                     let temporary = suffixed_path(&path, ".tmp");
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create_new(true)
-                        .open(&temporary)
-                        .map_err(|error| {
-                            format!(
-                                "could not create temporary settings export {}: {error}",
-                                temporary.display()
-                            )
-                        })?;
-                    file.write_all(contents.as_bytes()).map_err(|error| {
-                        format!(
-                            "could not write temporary settings export {}: {error}",
-                            temporary.display()
-                        )
-                    })?;
-                    file.sync_all().map_err(|error| {
-                        format!(
-                            "could not sync temporary settings export {}: {error}",
-                            temporary.display()
-                        )
-                    })?;
-                    drop(file);
+                    write_settings_export_temp(&temporary, &contents)?;
                     publish_settings_export_no_clobber(&temporary, &path)?;
                     let absolute_path = path.canonicalize().map_err(|error| {
                         format!(
@@ -587,6 +565,55 @@ fn existing_export_refusal(path: &std::path::Path) -> Refused {
     }
 }
 
+fn write_settings_export_temp(
+    temporary: &std::path::Path,
+    contents: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temporary)
+        .map_err(|error| {
+            format!(
+                "could not create temporary settings export {}: {error}",
+                temporary.display()
+            )
+        })?;
+    if let Err(error) = file.write_all(contents.as_bytes()) {
+        let error = format!(
+            "could not write temporary settings export {}: {error}",
+            temporary.display()
+        )
+        .into();
+        drop(file);
+        return Err(remove_temp_after_failure(temporary, error));
+    }
+    if let Err(error) = file.sync_all() {
+        let error = format!(
+            "could not sync temporary settings export {}: {error}",
+            temporary.display()
+        )
+        .into();
+        drop(file);
+        return Err(remove_temp_after_failure(temporary, error));
+    }
+    Ok(())
+}
+
+fn remove_temp_after_failure(
+    temporary: &std::path::Path,
+    error: Box<dyn std::error::Error>,
+) -> Box<dyn std::error::Error> {
+    match std::fs::remove_file(temporary) {
+        Ok(()) => error,
+        Err(cleanup_error) => format!(
+            "{error}; temporary file {} could not be removed: {cleanup_error}",
+            temporary.display()
+        )
+        .into(),
+    }
+}
+
 fn publish_settings_export_no_clobber(
     temporary: &std::path::Path,
     target: &std::path::Path,
@@ -603,7 +630,7 @@ fn publish_settings_export_no_clobber(
                     temporary.display()
                 )
             })?;
-            Ok(())
+            sync_settings_export_directory(target)
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             if let Err(cleanup_error) = std::fs::remove_file(temporary) {
@@ -613,6 +640,10 @@ fn publish_settings_export_no_clobber(
                 );
             }
             Err(existing_export_refusal(target).into())
+        }
+        Err(error) if hard_link_error_supports_rename_fallback(&error) => {
+            publish_by_rename_no_clobber(temporary, target)?;
+            sync_settings_export_directory(target)
         }
         Err(error) => {
             if let Err(cleanup_error) = std::fs::remove_file(temporary) {
@@ -629,6 +660,105 @@ fn publish_settings_export_no_clobber(
             .into())
         }
     }
+}
+
+fn hard_link_error_supports_rename_fallback(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::Unsupported {
+        return true;
+    }
+    if !matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Other
+    ) {
+        return false;
+    }
+    hard_link_raw_os_error_is_unsupported(error.raw_os_error())
+}
+
+#[cfg(unix)]
+fn hard_link_raw_os_error_is_unsupported(raw_os_error: Option<i32>) -> bool {
+    // EPERM is 1 on Unix. ENOTSUP/EOPNOTSUPP are 95 on Linux, 45 or 102
+    // across the BSD/Darwin family; no dependency is needed just for errno names.
+    matches!(raw_os_error, Some(1 | 45 | 95 | 102))
+}
+
+#[cfg(not(unix))]
+fn hard_link_raw_os_error_is_unsupported(_raw_os_error: Option<i32>) -> bool {
+    false
+}
+
+fn publish_by_rename_no_clobber(
+    temporary: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match std::fs::symlink_metadata(target) {
+        Ok(_) => {
+            if let Err(cleanup_error) = std::fs::remove_file(temporary) {
+                eprintln!(
+                    "settings export refusal cleanup could not remove temporary file {}: {cleanup_error}",
+                    temporary.display()
+                );
+            }
+            return Err(existing_export_refusal(target).into());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            if let Err(cleanup_error) = std::fs::remove_file(temporary) {
+                eprintln!(
+                    "settings export fallback cleanup could not remove temporary file {}: {cleanup_error}",
+                    temporary.display()
+                );
+            }
+            return Err(format!(
+                "could not re-check settings export path {} before rename fallback: {error}",
+                target.display()
+            )
+            .into());
+        }
+    }
+
+    if let Err(error) = std::fs::rename(temporary, target) {
+        if let Err(cleanup_error) = std::fs::remove_file(temporary) {
+            eprintln!(
+                "settings export fallback cleanup could not remove temporary file {}: {cleanup_error}",
+                temporary.display()
+            );
+        }
+        return Err(format!(
+            "could not publish temporary settings export {} at {} by rename fallback: {error}",
+            temporary.display(),
+            target.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_settings_export_directory(
+    target: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = target
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::File::open(directory)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| {
+            format!(
+                "settings export was published at {} but its directory could not be synced: {}: {error}",
+                target.display(),
+                directory.display()
+            )
+            .into()
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_settings_export_directory(
+    _target: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
 }
 
 fn suffixed_path(path: &std::path::Path, suffix: &str) -> PathBuf {
@@ -1157,6 +1287,76 @@ mod tests {
     }
 
     #[test]
+    fn settings_export_directory_sync_succeeds_for_a_temp_directory() {
+        // Break caught: a successful settings export is reported before its directory entry is durable.
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "tinytop-config-directory-sync-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("fixture directory should be created");
+        let target = directory.join("settings.json");
+
+        sync_settings_export_directory(&target)
+            .expect("the settings export directory should be syncable");
+
+        std::fs::remove_dir_all(&directory).expect("fixture directory should be removable");
+    }
+
+    #[test]
+    fn settings_export_failure_cleanup_removes_the_temporary_file() {
+        // Break caught: a failed temporary-file write strands the create-new path for the next export.
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "tinytop-config-temp-cleanup-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("fixture directory should be created");
+        let temporary = directory.join("settings.json.tmp");
+        std::fs::write(&temporary, b"partial").expect("temporary export should be written");
+
+        let error = remove_temp_after_failure(&temporary, "original write failure".into());
+
+        assert_eq!(error.to_string(), "original write failure");
+        assert!(!temporary.exists());
+        std::fs::remove_dir_all(&directory).expect("fixture directory should be removable");
+    }
+
+    #[test]
+    fn settings_export_failure_cleanup_reports_a_stranded_path() {
+        // Break caught: cleanup failure hides either the original error or the stranded path.
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "tinytop-config-temp-stranded-{}-{stamp}",
+            std::process::id()
+        ));
+        let temporary = directory.join("settings.json.tmp");
+        std::fs::create_dir_all(&temporary).expect("temporary directory fixture should be created");
+        std::fs::write(temporary.join("child"), b"not empty")
+            .expect("temporary directory should be non-empty");
+
+        let error = remove_temp_after_failure(&temporary, "original sync failure".into());
+        let message = error.to_string();
+
+        assert!(message.contains("original sync failure"));
+        assert!(message.contains(&format!(
+            "temporary file {} could not be removed",
+            temporary.display()
+        )));
+        assert!(temporary.exists());
+        std::fs::remove_dir_all(&directory).expect("fixture directory should be removable");
+    }
+
+    #[test]
     fn settings_export_publication_refuses_a_destination_created_after_temp_write() {
         // Break caught: a destination created after the preflight check is overwritten by rename.
         let stamp = SystemTime::now()
@@ -1186,6 +1386,65 @@ mod tests {
                 target.display()
             )
         );
+        assert_eq!(
+            std::fs::read(&target).expect("competing destination should remain readable"),
+            b"competitor"
+        );
+        assert!(!temporary.exists());
+        std::fs::remove_dir_all(&directory).expect("fixture directory should be removable");
+    }
+
+    #[test]
+    fn settings_export_rename_fallback_publishes_an_absent_destination() {
+        // Break caught: filesystems without hard-link support cannot publish an export at all.
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "tinytop-config-rename-publish-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("fixture directory should be created");
+        let target = directory.join("settings.json");
+        let temporary = suffixed_path(&target, ".tmp");
+        std::fs::write(&temporary, b"candidate").expect("temporary export should be written");
+
+        publish_by_rename_no_clobber(&temporary, &target)
+            .expect("rename fallback should publish an absent destination");
+
+        assert_eq!(
+            std::fs::read(&target).expect("published destination should be readable"),
+            b"candidate"
+        );
+        assert!(!temporary.exists());
+        std::fs::remove_dir_all(&directory).expect("fixture directory should be removable");
+    }
+
+    #[test]
+    fn settings_export_rename_fallback_refuses_an_existing_destination() {
+        // Break caught: the fallback replaces a destination found by its final pre-rename check.
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "tinytop-config-rename-refuse-{}-{stamp}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("fixture directory should be created");
+        let target = directory.join("settings.json");
+        let temporary = suffixed_path(&target, ".tmp");
+        std::fs::write(&temporary, b"candidate").expect("temporary export should be written");
+        std::fs::write(&target, b"competitor").expect("competing destination should be written");
+
+        let error = publish_by_rename_no_clobber(&temporary, &target)
+            .expect_err("rename fallback must refuse an existing destination");
+        let refusal = error
+            .downcast_ref::<Refused>()
+            .expect("rename fallback should retain the structured refusal");
+
+        assert!(refusal.reason.contains("never overwrites"));
         assert_eq!(
             std::fs::read(&target).expect("competing destination should remain readable"),
             b"competitor"

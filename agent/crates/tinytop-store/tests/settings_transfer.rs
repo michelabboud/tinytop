@@ -409,7 +409,10 @@ async fn unknown_top_level_key_is_refused_and_nothing_is_written() {
     // Break caught: an unsupported envelope extension is silently accepted.
     let fixture = TempDatabase::new("unknown-envelope");
     let store = fixture.store().await;
+    let pool = fixture.pool().await;
     let before = store.get_settings().await.unwrap();
+    let before_l3_enabled = store.history_state_get::<bool>("l3Enabled").await.unwrap();
+    let before_l4_enabled = store.history_state_get::<bool>("l4Enabled").await.unwrap();
     let mut input = document(&before);
     input["zzz"] = json!(true);
     input["aaa"] = json!(false);
@@ -429,6 +432,15 @@ async fn unknown_top_level_key_is_refused_and_nothing_is_written() {
         Err(StoreError::Validation(_))
     ));
     assert_eq!(store.get_settings().await.unwrap(), before);
+    assert_eq!(event_count(&pool).await, 0);
+    assert_eq!(
+        store.history_state_get::<bool>("l3Enabled").await.unwrap(),
+        before_l3_enabled
+    );
+    assert_eq!(
+        store.history_state_get::<bool>("l4Enabled").await.unwrap(),
+        before_l4_enabled
+    );
 }
 
 #[tokio::test]
@@ -436,7 +448,10 @@ async fn newer_config_version_is_refused_naming_the_max() {
     // Break caught: unsupported, missing, and pre-v1 envelopes reach the decoder.
     let fixture = TempDatabase::new("versions");
     let store = fixture.store().await;
+    let pool = fixture.pool().await;
     let settings = store.get_settings().await.unwrap();
+    let before_l3_enabled = store.history_state_get::<bool>("l3Enabled").await.unwrap();
+    let before_l4_enabled = store.history_state_get::<bool>("l4Enabled").await.unwrap();
 
     let mut newer = document(&settings);
     newer["tinytopConfigVersion"] = json!(2);
@@ -457,11 +472,37 @@ async fn newer_config_version_is_refused_naming_the_max() {
         ["tinytopConfigVersion is required and must be an integer (maximum supported: 1)"]
     );
 
+    for invalid_version in [json!("1"), json!(1.5)] {
+        let mut wrong_type = document(&settings);
+        wrong_type["tinytopConfigVersion"] = invalid_version;
+        let plan = plan_import(&store, &wrong_type, 0).await.unwrap();
+        assert!(!plan.valid);
+        assert_eq!(
+            plan.errors,
+            ["tinytopConfigVersion is required and must be an integer (maximum supported: 1)"]
+        );
+    }
+
     let mut old = document(&settings);
     old["tinytopConfigVersion"] = json!(0);
     assert_eq!(
         plan_import(&store, &old, 0).await.unwrap().errors,
         ["tinytopConfigVersion 0 must be ≥ 1 (maximum supported: 1)"]
+    );
+
+    assert!(matches!(
+        apply_import(&store, &newer, 0).await,
+        Err(StoreError::Validation(_))
+    ));
+    assert_eq!(store.get_settings().await.unwrap(), settings);
+    assert_eq!(event_count(&pool).await, 0);
+    assert_eq!(
+        store.history_state_get::<bool>("l3Enabled").await.unwrap(),
+        before_l3_enabled
+    );
+    assert_eq!(
+        store.history_state_get::<bool>("l4Enabled").await.unwrap(),
+        before_l4_enabled
     );
 }
 

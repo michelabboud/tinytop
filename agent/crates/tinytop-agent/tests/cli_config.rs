@@ -196,6 +196,64 @@ fn config_import_dry_run_prints_the_plan_and_exits_1_on_errors() {
 }
 
 #[tokio::test]
+async fn config_import_refuses_an_invalid_document_with_one_refused_object() {
+    // Break caught: a real invalid import prints multiple objects, mutates settings, or records a marker.
+    let fixture = TempDatabase::new("import-invalid-real");
+    fixture.initialize_v1();
+    let before_output = fixture.run(&["config", "export"]);
+    assert_success(&before_output);
+    let mut before = stdout_json(&before_output);
+    let mut invalid = before.clone();
+    invalid["tinytopConfigVersion"] = json!(2);
+    let document_path = fixture.write_document("newer.json", &invalid);
+    let document_path_arg = document_path.to_string_lossy().into_owned();
+
+    let output = fixture.run(&["config", "import", &document_path_arg]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let refusal = stdout_json(&output);
+    assert_eq!(refusal["status"], "refused");
+    assert!(
+        refusal["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.starts_with("settings document invalid:"))
+    );
+    assert_eq!(refusal["details"]["valid"], false);
+    assert!(
+        refusal["details"]["errors"][0]
+            .as_str()
+            .is_some_and(|error| error.contains("maximum supported 1"))
+    );
+
+    let after_output = fixture.run(&["config", "export"]);
+    assert_success(&after_output);
+    let mut after = stdout_json(&after_output);
+    before["exportedAtMs"] = json!(0);
+    after["exportedAtMs"] = json!(0);
+    assert_eq!(after, before);
+
+    let store = SqliteHistoryStore::connect_for_inspection(&fixture.database_url)
+        .await
+        .expect("fixture store should reopen for marker inspection");
+    let markers = store
+        .read_history_markers(
+            HistoryQuery {
+                since_ms: None,
+                until_ms: None,
+                limit: Some(100),
+            },
+            60_000,
+        )
+        .await
+        .expect("history markers should read");
+    store.close().await.expect("fixture store should close");
+    assert!(
+        markers.is_empty(),
+        "invalid import must not record a marker"
+    );
+}
+
+#[tokio::test]
 async fn config_import_round_trip_applies_and_records_the_marker() {
     // Break caught: CLI import reports success without persisting the edit and its import marker.
     let fixture = TempDatabase::new("import-round-trip");

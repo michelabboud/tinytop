@@ -434,6 +434,21 @@ describe("retention ladder validation mirror", () => {
 });
 
 describe("settings transfer plan description", () => {
+  test("can limit a save preview to retention consequences", () => {
+    const plan = {
+      wouldDelete: {},
+      changedKeys: ["defaultTheme"],
+      warnings: [],
+    };
+
+    expect(describeImportPlan(plan, ladder(), { retentionLadder: ladder() }, { includeOtherChanges: false })).toEqual(
+      [],
+    );
+    expect(describeImportPlan(plan, ladder(), { retentionLadder: ladder() })).toEqual([
+      "also changes: defaultTheme",
+    ]);
+  });
+
   test("describes deletions and queryable archive moves with server-computed counts", () => {
     const candidate = ladder();
     candidate.archive.queryable = true;

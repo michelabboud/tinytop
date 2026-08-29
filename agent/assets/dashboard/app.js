@@ -2843,8 +2843,8 @@ async function responseErrorMessage(response, fallback) {
   return fallback;
 }
 
-function candidateLadderFromDocument(document) {
-  const importedSettings = document?.settings;
+function candidateLadderFromDocument(importedDocument) {
+  const importedSettings = importedDocument?.settings;
   const mergedSettings =
     importedSettings && typeof importedSettings === "object"
       ? { ...state.settingsBaseline, ...importedSettings }
@@ -2893,7 +2893,9 @@ async function saveDaemonSettings() {
         renderSettingsStatus("Could not preview the retention change: invalid dry-run response");
         return;
       }
-      historyChanges = describeImportPlan(plan, settings.retentionLadder, state.settingsBaseline);
+      historyChanges = describeImportPlan(plan, settings.retentionLadder, state.settingsBaseline, {
+        includeOtherChanges: false,
+      });
       hasDeletions = planHasDeletions(plan);
     } catch (error) {
       const reason = error instanceof Error ? error.message : "request failed";
@@ -2970,9 +2972,9 @@ async function exportSettings() {
 }
 
 async function importSettingsFile(file) {
-  let document;
+  let importedDocument;
   try {
-    document = JSON.parse(await file.text());
+    importedDocument = JSON.parse(await file.text());
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown parse error";
     renderSettingsValidation([`Import file is not JSON: ${message}`]);
@@ -2982,7 +2984,7 @@ async function importSettingsFile(file) {
 
   let plan;
   try {
-    plan = await previewSettingsImport(document);
+    plan = await previewSettingsImport(importedDocument);
   } catch (error) {
     renderSettingsStatus(error instanceof Error ? error.message : "Settings import failed.");
     return;
@@ -2998,7 +3000,7 @@ async function importSettingsFile(file) {
   }
   renderSettingsValidation([]);
 
-  const candidateLadder = candidateLadderFromDocument(document);
+  const candidateLadder = candidateLadderFromDocument(importedDocument);
   const accepted = await requestConfirmation({
     title: "Import settings?",
     message: describeImportPlan(plan, candidateLadder, state.settingsBaseline).join("; "),
@@ -3011,7 +3013,7 @@ async function importSettingsFile(file) {
     const response = await fetch(apiPath("/api/settings/import"), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(document),
+      body: JSON.stringify(importedDocument),
     });
     if (!response.ok) {
       renderSettingsStatus(
