@@ -183,6 +183,8 @@ Response shape:
 }
 ```
 
+`runnable` is `0` and `totalThreads` is the process count on the macOS/Windows collectors (sysinfo has no thread totals); Linux reports the `/proc/loadavg` task totals.
+
 The example above is shortened. `filesystemsCapturedAtMs` is Unix time in milliseconds and can be older than `timestamp` between filesystem checks. `cpu.times` is optional: it is present on the Linux collector and absent on the sysinfo-based macOS/Windows collectors. Filesystem rows and pressure data are included when present, and `processes.length` is at most the configured `topProcessCount`.
 
 ### GET /api/settings

@@ -110,6 +110,9 @@ pub struct LoadSnapshot {
     pub five: f64,
     pub fifteen: f64,
     pub runnable: u64,
+    /// Kernel task total on Linux (`/proc/loadavg`); process count on the
+    /// sysinfo-based macOS/Windows collectors, where no thread total exists.
+    /// Schema v3 makes this optional.
     pub total_threads: u64,
     pub last_pid: u64,
 }
