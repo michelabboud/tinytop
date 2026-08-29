@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value as JsonValue;
 use sqlx::{
-    AssertSqlSafe, Row, SqlitePool,
+    AssertSqlSafe, Row, SqliteConnection, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use tinytop_types::SystemSnapshot;
@@ -521,6 +521,30 @@ pub struct SqliteHistoryStore {
     database_path: PathBuf,
 }
 
+pub(crate) async fn history_state_set_on<T: Serialize>(
+    connection: &mut SqliteConnection,
+    key: &str,
+    value: &T,
+    now_ms: i64,
+) -> Result<(), StoreError> {
+    let value_json = serde_json::to_string(value)?;
+    sqlx::query(
+        r#"
+        INSERT INTO history_state (state_key, value_json, updated_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(state_key) DO UPDATE SET
+          value_json = excluded.value_json,
+          updated_at_ms = excluded.updated_at_ms
+        "#,
+    )
+    .bind(key)
+    .bind(value_json)
+    .bind(now_ms)
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
 impl SqliteHistoryStore {
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
         let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
@@ -586,6 +610,17 @@ impl SqliteHistoryStore {
             .await?)
     }
 
+    #[doc(hidden)]
+    pub async fn attached_database_names(&self) -> Result<Vec<String>, StoreError> {
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query("PRAGMA database_list")
+            .fetch_all(&mut *connection)
+            .await?
+            .into_iter()
+            .map(|row| row.try_get("name").map_err(StoreError::from))
+            .collect()
+    }
+
     pub async fn get_settings(&self) -> Result<DashboardSettings, StoreError> {
         let row = sqlx::query(
             r#"
@@ -629,22 +664,8 @@ impl SqliteHistoryStore {
         value: &T,
         now_ms: i64,
     ) -> Result<(), StoreError> {
-        let value_json = serde_json::to_string(value)?;
-        sqlx::query(
-            r#"
-            INSERT INTO history_state (state_key, value_json, updated_at_ms)
-            VALUES (?, ?, ?)
-            ON CONFLICT(state_key) DO UPDATE SET
-              value_json = excluded.value_json,
-              updated_at_ms = excluded.updated_at_ms
-            "#,
-        )
-        .bind(key)
-        .bind(value_json)
-        .bind(now_ms)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
+        let mut connection = self.pool.acquire().await?;
+        history_state_set_on(&mut connection, key, value, now_ms).await
     }
 
     pub async fn put_settings(

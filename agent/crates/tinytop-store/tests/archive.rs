@@ -140,14 +140,14 @@ async fn read_only_archive_pool(path: &std::path::Path) -> SqlitePool {
 
 #[test]
 fn archive_error_remedy_is_step_aware() {
-    // Break caught: post-delete bookkeeping errors falsely claim main was unchanged.
+    // Break caught: remedy text describes the wrong durable state for an archive phase.
     let watermark = StoreError::Archive {
         step: "watermark",
         source: ArchiveErrorSource::Io(std::io::Error::other("fixture watermark failure")),
     }
     .to_string();
     assert!(watermark.contains(
-        "remedy: the batch is committed in history-archive.sqlite and removed from the main database; only the watermark bookkeeping failed — retrying is safe, nothing is duplicated or lost"
+        "remedy: the batch's copy is committed in history-archive.sqlite and is refreshed on retry; nothing was deleted from the main database — retrying is safe"
     ));
 
     let insert = StoreError::Archive {
@@ -156,7 +156,16 @@ fn archive_error_remedy_is_step_aware() {
     }
     .to_string();
     assert!(insert.contains(
-        "remedy: keep history-archive.sqlite and the main database unchanged, check the archive directory is writable, and retry — nothing was deleted from the main database"
+        "remedy: nothing was written to history-archive.sqlite and nothing was deleted from the main database; check the archive directory is writable and retry"
+    ));
+
+    let detach = StoreError::Archive {
+        step: "detach",
+        source: ArchiveErrorSource::Io(std::io::Error::other("fixture detach failure")),
+    }
+    .to_string();
+    assert!(detach.contains(
+        "remedy: the batch is committed in history-archive.sqlite and removed from the main database; only the detach bookkeeping failed — retrying is safe, nothing is duplicated or lost"
     ));
 }
 
@@ -206,7 +215,7 @@ async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() 
         assert!(
             error
                 .to_string()
-                .contains("remedy: keep history-archive.sqlite and the main database unchanged")
+                .contains("remedy: nothing was written to history-archive.sqlite")
         );
         assert!(std::error::Error::source(&error).is_some());
         match &error {
@@ -233,6 +242,13 @@ async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() 
                 .expect("watermark should read"),
             Some(2 * HOUR_MS)
         );
+        assert_eq!(
+            store
+                .attached_database_names()
+                .await
+                .expect("store pool database list should query after failure"),
+            ["main"]
+        );
         let mut connection = main_pool.acquire().await.expect("pool connection");
         assert_only_main(&mut connection).await;
         drop(connection);
@@ -244,6 +260,13 @@ async fn expired_l4_rows_move_and_main_rows_vanish_only_after_verified_insert() 
                 .await
                 .expect("retry should converge"),
             1
+        );
+        assert_eq!(
+            store
+                .attached_database_names()
+                .await
+                .expect("store pool database list should query after convergence"),
+            ["main"]
         );
     }
 
@@ -307,6 +330,13 @@ async fn archive_copy_is_committed_before_main_delete() {
         .execute(&main_pool)
         .await
         .expect("main row should mutate between phases");
+    sqlx::query(
+        "UPDATE metric_rollups_1h SET avg_cpu_usage_percent = 99.0 WHERE bucket_start_ms = ?1",
+    )
+    .bind(0_i64)
+    .execute(&main_pool)
+    .await
+    .expect("main payload should mutate between phases");
 
     assert_eq!(
         move_expired_l4(&store, &paths, 4 * HOUR_MS, 3)
@@ -327,6 +357,60 @@ async fn archive_copy_is_committed_before_main_delete() {
             .sample_count,
         61
     );
+    assert_eq!(
+        archived
+            .iter()
+            .find(|bucket| bucket.bucket_start_ms == 0)
+            .expect("payload-only mutated bucket should be archived")
+            .cpu
+            .avg,
+        99.0
+    );
+    assert_eq!(
+        store
+            .history_state_get::<i64>("archiveMovedUntilMs")
+            .await
+            .expect("watermark should read"),
+        Some(3 * HOUR_MS)
+    );
+}
+
+#[tokio::test]
+async fn partial_batch_does_not_livelock_the_next_move() {
+    // Break caught: verify counts stale archive keys inside the selected key range forever.
+    let fixture = TempDatabase::new("partial-batch-next-move");
+    let store = fixture.store().await;
+    let settings = DashboardSettings::default();
+    let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
+    seed_l4(&store, &[0, HOUR_MS, 2 * HOUR_MS]).await;
+
+    let copied = copy_expired_l4_batch(&store, &paths, 4 * HOUR_MS, 2)
+        .await
+        .expect("partial phase 1 copy should commit")
+        .expect("two expired rows should form a batch");
+    assert_eq!(copied.row_count, 2);
+
+    let main_pool = fixture.pool().await;
+    sqlx::query("DELETE FROM metric_rollups_1h WHERE bucket_start_ms = ?1")
+        .bind(HOUR_MS)
+        .execute(&main_pool)
+        .await
+        .expect("fixture should model a partial phase B delete");
+
+    assert_eq!(
+        move_expired_l4(&store, &paths, 4 * HOUR_MS, 10)
+            .await
+            .expect("next move should ignore extra archive keys in the selected interval"),
+        2
+    );
+    assert_eq!(main_l4_count(&main_pool).await, 0);
+    let archived_starts = read_archive_points(&paths, i64::MIN, i64::MAX, 100)
+        .await
+        .expect("converged archive should read")
+        .into_iter()
+        .map(|bucket| bucket.bucket_start_ms)
+        .collect::<Vec<_>>();
+    assert_eq!(archived_starts, [0, HOUR_MS, 2 * HOUR_MS]);
     assert_eq!(
         store
             .history_state_get::<i64>("archiveMovedUntilMs")
@@ -534,6 +618,13 @@ async fn archive_is_never_attached_while_idle() {
     let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
     seed_l4(&store, &[0]).await;
 
+    let zero_copy = copy_expired_l4_batch(&store, &paths, 2 * HOUR_MS, 0)
+        .await
+        .expect("zero-sized copy batch should be a no-op");
+    let zero_move = move_expired_l4(&store, &paths, 2 * HOUR_MS, 0)
+        .await
+        .expect("zero-sized move batch should be a no-op");
+    assert_eq!((zero_copy, zero_move, paths.db.exists()), (None, 0, false));
     assert_eq!(
         move_expired_l4(&store, &paths, 2 * HOUR_MS, 10)
             .await
@@ -541,10 +632,24 @@ async fn archive_is_never_attached_while_idle() {
         1
     );
     assert_eq!(
+        store
+            .attached_database_names()
+            .await
+            .expect("store pool database list should query after first move"),
+        ["main"]
+    );
+    assert_eq!(
         move_expired_l4(&store, &paths, 2 * HOUR_MS, 10)
             .await
             .expect("same pooled connection should attach again cleanly"),
         0
+    );
+    assert_eq!(
+        store
+            .attached_database_names()
+            .await
+            .expect("store pool database list should query after second move"),
+        ["main"]
     );
 
     let pool = fixture.pool().await;

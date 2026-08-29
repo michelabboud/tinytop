@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-- Added the queryable hourly archive at `history-archive.sqlite`, relocated by `retentionLadder.archive.directory` when configured. Per ADR 0018, expired L4 rows move by committing an `INSERT OR REPLACE` archive copy, verifying the committed count, and only then committing a content-matched main deletion; `archiveMovedUntilMs` advances only for a fully deleted batch and maintenance work remains bounded per tick.
+- Added the queryable hourly archive at `history-archive.sqlite`, relocated by `retentionLadder.archive.directory` when configured. Per ADRs 0018 and 0019, expired L4 rows move by committing and fsyncing an `INSERT OR REPLACE` archive copy with `archive.synchronous = FULL`, verifying every selected key exists in that committed copy, and only then committing a full-row-equality main deletion with `archiveMovedUntilMs` in the same transaction; maintenance work remains bounded per tick.
+- Made archive schema creation transactional across all three objects and `PRAGMA user_version`, preventing a stopped initialization from leaving a partial `user_version = 0` archive that later runs refuse.
 - Implemented read-only, no-create archive point and coverage reads. `source=auto` can now return archived hourly points with `available:true`, while explicit archive reads remain empty and unavailable when the queryable archive is disabled.
 - Added archive failure/convergence, relocation, auto-read, idle-detach, delete-mode, coverage/no-create, and in-process HTTP regression coverage using temp-directory databases only.
 - Restored the seven-column rollup history-point read path so migrated v0 one-minute rows remain readable without decoding migration-added nullable minimum/maximum columns.

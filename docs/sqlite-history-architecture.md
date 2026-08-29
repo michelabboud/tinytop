@@ -439,45 +439,48 @@ The Rust daemon's queryable archive is `history-archive.sqlite`. With an empty
 otherwise the validated absolute directory is used. The archive has
 `user_version = 1`, an hourly `metric_rollups_1h` table identical to the main
 L4 table (including the newest-time index), and `archive_manifest` for the later
-cold-export phase.
+cold-export phase. The tables, index, and `PRAGMA user_version = 1` are created
+inside one SQLite transaction, so interrupted initialization leaves no partial
+schema for the foreign-file guard to refuse on retry.
 
 When queryable archiving is enabled and L4 has a finite horizon, maintenance
 moves at most ten batches of 1,000 expired rows per tick. Each batch uses one
 main-pool connection: schema setup uses a standalone archive connection, then
-the main connection attaches the archive only for the move. Phase A uses a
-deferred `BEGIN`, selects the oldest expired range, copies it with `INSERT OR
-REPLACE`, and commits the archive-only write. The committed archive range count
-is then verified outside a transaction. Phase B uses `BEGIN IMMEDIATE`, deletes
-only main rows whose `sample_count` and `newest_captured_at_ms` still match their
-archive copies, and commits the main-only write. A fully deleted batch advances
-`history_state.archiveMovedUntilMs` through the store's single state writer;
-a partial batch leaves the advisory watermark unchanged. DETACH brackets every
-attached operation, and a failed DETACH discards the connection rather than
-returning it attached to the pool. With queryable archiving disabled,
-finite-horizon L4 expiry remains a direct main-table deletion and does not
-create an archive file.
+the main connection attaches the archive only for the move. Immediately after
+ATTACH it sets `PRAGMA archive.synchronous = FULL` and reads the value back;
+moving refuses unless SQLite reports `2` (`FULL`), while `main` remains at
+`NORMAL`. Phase A uses a deferred `BEGIN`, selects the oldest expired range,
+copies it with `INSERT OR REPLACE`, and commits the archive-only write. Outside
+a transaction, verification counts selected main keys that exist in the
+committed archive; extra archive keys inside the numeric interval do not count.
+Phase B uses `BEGIN IMMEDIATE` and deletes a main row only when all 18 non-key
+columns equal its archive copy (`IS` for the three nullable root-used columns).
+When every selected row was deleted, the same transaction writes
+`history_state.archiveMovedUntilMs`; a partial batch leaves the advisory
+watermark unchanged. DETACH brackets every attached operation, and a failed
+DETACH discards the connection rather than returning it attached to the pool.
+With queryable archiving disabled, finite-horizon L4 expiry remains a direct
+main-table deletion and does not create an archive file.
 
-ADR 0018 records why the two commits are ordered this way: with `main` in WAL,
-SQLite uses no super-journal and commits attached files in ATTACH order, so one
-cross-file transaction would make main's DELETE durable before the archive's
-INSERT. The crash matrix is therefore: before phase A commits, nothing changes;
-between the phase A and phase B commits, the batch is in both files and the next
-call converges through `OR REPLACE`; after phase B commits, the move is done and
-only the advisory watermark may lag. A batch absent from both files is
-unreachable. Failures at `create directory`, `open`, `schema`, `close`,
-`acquire`, `attach`, `begin copy`, `select`, `select decode`, `insert`, or
-`commit copy` remove nothing from main and do not advance the watermark. A
-`verify` failure leaves the committed archive copy in place but main and the
-watermark untouched. Failures at `begin delete`, `delete`, or `commit delete`
-leave the archive copy committed while the main delete transaction is rolled
-back and the watermark stays put. A content mismatch is not an error: the
+ADRs 0018 and 0019 record the two-commit order and its durability boundary: with
+`main` in WAL, SQLite uses no super-journal and commits attached files in ATTACH
+order, so one cross-file transaction would make main's DELETE durable before
+the archive's INSERT; `archive.synchronous = FULL` additionally fsyncs phase A
+before phase B can commit. The crash matrix is therefore: before phase A
+commits, nothing changes; between the commits, the batch is in both files and
+the archive copy is fsynced, so the next call converges through `OR REPLACE`;
+after phase B commits, the move and its watermark are done. A batch absent from
+both files is unreachable after either a process kill or a power cut. Failures
+through `commit copy` remove nothing from main. A `verify`, `begin delete`,
+`delete`, `watermark`, or `commit delete` failure leaves the committed archive
+copy in place while phase B is absent or rolled back, so nothing is deleted
+from main and retry refreshes the copy. A content mismatch is not an error: the
 changed main row stays, successfully matched rows may be deleted, and the
 partial batch does not advance the watermark; the next copy refreshes it. A
-`watermark` failure leaves both data commits complete and the old watermark; a
-`detach` failure after a successful move likewise leaves both data commits
-complete, with the connection discarded and the watermark unchanged. If an
-earlier operation and DETACH both fail, the earlier actionable error is
-returned and the detach failure is logged with its step.
+`detach` failure after a successful phase B leaves both data commits and the
+watermark complete, with the connection discarded. If an earlier operation and
+DETACH both fail, the earlier actionable error is returned and the detach
+failure is logged with its step.
 
 Archive point reads and coverage never attach and never create. They first
 check for the file, then use a dedicated `read_only(true)`,

@@ -13,6 +13,8 @@ pub const ARCHIVE_BATCH_ROWS: usize = 1_000;
 pub const MAX_ARCHIVE_BATCHES_PER_TICK: usize = 10;
 
 const ARCHIVE_SCHEMA_SQL: &str = r#"
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS metric_rollups_1h (
   bucket_start_ms INTEGER PRIMARY KEY,
   first_captured_at_ms INTEGER NOT NULL,
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS archive_manifest (
 );
 
 PRAGMA user_version = 1;
+
+COMMIT;
 "#;
 
 const ARCHIVE_COLUMNS: &str = r#"
@@ -57,6 +61,27 @@ const ARCHIVE_COLUMNS: &str = r#"
   avg_swap_used_percent, min_swap_used_percent, max_swap_used_percent,
   avg_load_percent, min_load_percent, max_load_percent,
   avg_root_used_percent, min_root_used_percent, max_root_used_percent
+"#;
+
+const ARCHIVE_ROW_MATCH: &str = r#"
+  a.first_captured_at_ms = metric_rollups_1h.first_captured_at_ms
+  AND a.newest_captured_at_ms = metric_rollups_1h.newest_captured_at_ms
+  AND a.sample_count = metric_rollups_1h.sample_count
+  AND a.avg_cpu_usage_percent = metric_rollups_1h.avg_cpu_usage_percent
+  AND a.min_cpu_usage_percent = metric_rollups_1h.min_cpu_usage_percent
+  AND a.max_cpu_usage_percent = metric_rollups_1h.max_cpu_usage_percent
+  AND a.avg_memory_used_percent = metric_rollups_1h.avg_memory_used_percent
+  AND a.min_memory_used_percent = metric_rollups_1h.min_memory_used_percent
+  AND a.max_memory_used_percent = metric_rollups_1h.max_memory_used_percent
+  AND a.avg_swap_used_percent = metric_rollups_1h.avg_swap_used_percent
+  AND a.min_swap_used_percent = metric_rollups_1h.min_swap_used_percent
+  AND a.max_swap_used_percent = metric_rollups_1h.max_swap_used_percent
+  AND a.avg_load_percent = metric_rollups_1h.avg_load_percent
+  AND a.min_load_percent = metric_rollups_1h.min_load_percent
+  AND a.max_load_percent = metric_rollups_1h.max_load_percent
+  AND a.avg_root_used_percent IS metric_rollups_1h.avg_root_used_percent
+  AND a.min_root_used_percent IS metric_rollups_1h.min_root_used_percent
+  AND a.max_root_used_percent IS metric_rollups_1h.max_root_used_percent
 "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,16 +97,35 @@ pub struct ArchiveBatch {
     pub row_count: i64,
 }
 
-pub(crate) fn archive_remedy(step: &'static str) -> &'static str {
+#[derive(Clone, Copy)]
+enum ArchivePhase {
+    BeforeCopyCommit,
+    BetweenCommits,
+    AfterDeleteCommit,
+}
+
+fn archive_phase(step: &'static str) -> ArchivePhase {
     match step {
-        "watermark" => {
-            "the batch is committed in history-archive.sqlite and removed from the main database; only the watermark bookkeeping failed — retrying is safe, nothing is duplicated or lost"
+        "create directory" | "open" | "schema" | "close" | "acquire" | "attach" | "begin copy"
+        | "select" | "select decode" | "insert" | "commit copy" => ArchivePhase::BeforeCopyCommit,
+        "verify" | "begin delete" | "delete" | "watermark" | "commit delete" => {
+            ArchivePhase::BetweenCommits
         }
-        "detach" => {
+        "detach" => ArchivePhase::AfterDeleteCommit,
+        _ => ArchivePhase::BeforeCopyCommit,
+    }
+}
+
+pub(crate) fn archive_remedy(step: &'static str) -> &'static str {
+    match archive_phase(step) {
+        ArchivePhase::BeforeCopyCommit => {
+            "nothing was written to history-archive.sqlite and nothing was deleted from the main database; check the archive directory is writable and retry"
+        }
+        ArchivePhase::BetweenCommits => {
+            "the batch's copy is committed in history-archive.sqlite and is refreshed on retry; nothing was deleted from the main database — retrying is safe"
+        }
+        ArchivePhase::AfterDeleteCommit => {
             "the batch is committed in history-archive.sqlite and removed from the main database; only the detach bookkeeping failed — retrying is safe, nothing is duplicated or lost"
-        }
-        _ => {
-            "keep history-archive.sqlite and the main database unchanged, check the archive directory is writable, and retry — nothing was deleted from the main database"
         }
     }
 }
@@ -222,31 +266,17 @@ pub async fn move_expired_l4(
     cutoff_ms: i64,
     batch: usize,
 ) -> Result<i64, StoreError> {
+    if batch == 0 {
+        return Ok(0);
+    }
     let mut connection = acquire_attached(store, paths).await?;
     let batch = batch.min(ARCHIVE_BATCH_ROWS).max(1) as i64;
     let result = match copy_attached_batch(&mut connection, cutoff_ms, batch).await {
-        Ok(Some(archive_batch)) => delete_attached_batch(&mut connection, archive_batch)
-            .await
-            .map(|deleted| (deleted, Some(archive_batch))),
-        Ok(None) => Ok((0, None)),
+        Ok(Some(archive_batch)) => delete_attached_batch(&mut connection, archive_batch).await,
+        Ok(None) => Ok(0),
         Err(error) => Err(error),
     };
-    let (deleted, archive_batch) = detach_after(&mut connection, result).await?;
-    drop(connection);
-
-    if let Some(archive_batch) = archive_batch
-        && deleted == archive_batch.row_count
-    {
-        let moved_until_ms = archive_batch
-            .max_ms
-            .saturating_add(Tier::L4.resolution_ms());
-        store
-            .history_state_set("archiveMovedUntilMs", &moved_until_ms, moved_until_ms)
-            .await
-            .map_err(|error| archive_store_error("watermark", error))?;
-    }
-
-    Ok(deleted)
+    detach_after(&mut connection, result).await
 }
 
 /// Phase 1 of `move_expired_l4`, public only so the crash-order test can stop between the two commits.
@@ -257,6 +287,9 @@ pub async fn copy_expired_l4_batch(
     cutoff_ms: i64,
     batch: usize,
 ) -> Result<Option<ArchiveBatch>, StoreError> {
+    if batch == 0 {
+        return Ok(None);
+    }
     let mut connection = acquire_attached(store, paths).await?;
     let batch = batch.min(ARCHIVE_BATCH_ROWS).max(1) as i64;
     let result = copy_attached_batch(&mut connection, cutoff_ms, batch).await;
@@ -376,6 +409,33 @@ async fn acquire_attached<'a>(
         connection.close_on_drop();
         return Err(archive_sqlx("attach", source));
     }
+    if let Err(source) = sqlx::query("PRAGMA archive.synchronous = FULL")
+        .execute(&mut *connection)
+        .await
+    {
+        connection.close_on_drop();
+        return Err(archive_sqlx("attach", source));
+    }
+    let synchronous: i64 = match sqlx::query_scalar("PRAGMA archive.synchronous")
+        .fetch_one(&mut *connection)
+        .await
+    {
+        Ok(value) => value,
+        Err(source) => {
+            connection.close_on_drop();
+            return Err(archive_sqlx("attach", source));
+        }
+    };
+    if synchronous != 2 {
+        connection.close_on_drop();
+        return Err(StoreError::Archive {
+            step: "attach",
+            source: ArchiveErrorSource::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("archive synchronous is {synchronous}, expected 2 (FULL)"),
+            )),
+        });
+    }
     Ok(connection)
 }
 
@@ -456,8 +516,10 @@ async fn copy_attached_batch(
     // (`aMJNeeded[WAL] = 0`, no super-journal), so a single cross-file transaction makes
     // main's DELETE durable before the archive's INSERT and a crash between them loses the
     // batch. Hence: copy + commit (archive only) -> verify the committed copy -> delete +
-    // commit (main only). `OR REPLACE` keeps a stale copy from freezing; the content-matched
-    // DELETE keeps a changed row until it is re-copied. ADR 0018.
+    // commit (main only). `OR REPLACE` keeps a stale copy from freezing; key-set verification
+    // ignores unrelated archive keys in the selected interval, and full-row equality keeps a
+    // changed row until it is re-copied. The archive commit is fsynced before phase B, whose
+    // watermark upsert commits with the delete. ADRs 0018 and 0019.
     let insert_sql = format!(
         "INSERT OR REPLACE INTO archive.metric_rollups_1h ({ARCHIVE_COLUMNS}) SELECT {ARCHIVE_COLUMNS} FROM main.metric_rollups_1h WHERE bucket_start_ms BETWEEN ?1 AND ?2"
     );
@@ -475,7 +537,16 @@ async fn copy_attached_batch(
     }
 
     let archived_count: i64 = match sqlx::query_scalar(
-        "SELECT COUNT(*) FROM archive.metric_rollups_1h WHERE bucket_start_ms BETWEEN ?1 AND ?2",
+        r#"
+        SELECT COUNT(*)
+        FROM main.metric_rollups_1h AS m
+        WHERE m.bucket_start_ms BETWEEN ?1 AND ?2
+          AND EXISTS (
+            SELECT 1
+            FROM archive.metric_rollups_1h AS a
+            WHERE a.bucket_start_ms = m.bucket_start_ms
+          )
+        "#,
     )
     .bind(min_ms)
     .bind(max_ms)
@@ -508,7 +579,7 @@ async fn delete_attached_batch(
         .await
         .map_err(|source| archive_sqlx("begin delete", source))?;
 
-    let deleted = match sqlx::query(
+    let delete_sql = format!(
         r#"
         DELETE FROM main.metric_rollups_1h
         WHERE bucket_start_ms BETWEEN ?1 AND ?2
@@ -516,19 +587,33 @@ async fn delete_attached_batch(
             SELECT 1
             FROM archive.metric_rollups_1h AS a
             WHERE a.bucket_start_ms = metric_rollups_1h.bucket_start_ms
-              AND a.sample_count = metric_rollups_1h.sample_count
-              AND a.newest_captured_at_ms = metric_rollups_1h.newest_captured_at_ms
+              AND {ARCHIVE_ROW_MATCH}
           )
-        "#,
-    )
-    .bind(batch.min_ms)
-    .bind(batch.max_ms)
-    .execute(&mut **connection)
-    .await
+        "#
+    );
+    let deleted = match sqlx::query(sqlx::AssertSqlSafe(delete_sql))
+        .bind(batch.min_ms)
+        .bind(batch.max_ms)
+        .execute(&mut **connection)
+        .await
     {
         Ok(result) => result.rows_affected() as i64,
         Err(source) => return rollback(connection, archive_sqlx("delete", source)).await,
     };
+
+    if deleted == batch.row_count {
+        let moved_until_ms = batch.max_ms.saturating_add(Tier::L4.resolution_ms());
+        if let Err(error) = crate::history_state_set_on(
+            &mut **connection,
+            "archiveMovedUntilMs",
+            &moved_until_ms,
+            crate::now_ms(),
+        )
+        .await
+        {
+            return rollback(connection, archive_store_error("watermark", error)).await;
+        }
+    }
 
     if let Err(source) = sqlx::query("COMMIT").execute(&mut **connection).await {
         return rollback(connection, archive_sqlx("commit delete", source)).await;
