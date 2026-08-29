@@ -518,7 +518,7 @@ async fn table_exists(pool: &SqlitePool, table: &str) -> Result<bool, StoreError
     Ok(count == 1)
 }
 
-fn pre_image_path(db_path: &Path) -> PathBuf {
+pub fn pre_image_path(db_path: &Path) -> PathBuf {
     let mut path = OsString::from(db_path.as_os_str());
     path.push(".pre-v0.sqlite");
     PathBuf::from(path)

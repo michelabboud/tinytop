@@ -19,6 +19,7 @@ use sqlx::{
 use tinytop_types::SystemSnapshot;
 
 use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, fold, raw_is_partial, raw_to_bucket};
+pub use crate::migration::pre_image_path;
 pub use crate::retention_ladder::DiskPressureState;
 use crate::retention_ladder::RetentionLadder;
 
@@ -276,6 +277,8 @@ pub struct HistoryCoverage {
     pub rollup_newest_captured_at_ms: Option<i64>,
     pub tiers: Vec<HistoryTierCoverage>,
     pub snapshot_json_oldest_ms: Option<i64>,
+    #[serde(default, skip_serializing)]
+    pub snapshot_json_sample_count: i64,
     pub detail_interval_sec: i64,
     pub disk: HistoryDiskCoverage,
     pub archive: HistoryArchiveCoverage,
@@ -539,6 +542,38 @@ impl SqliteHistoryStore {
         .await?;
         store.migrate_runtime_kind_to_canonical().await?;
         Ok(store)
+    }
+
+    /// Open the database for CLI inspection without running schema migration.
+    ///
+    /// A missing database is initialized normally at the current schema. An
+    /// existing database is opened as-is so pre-image removal checks can
+    /// observe a pre-migration `user_version` instead of changing it first.
+    pub async fn connect_for_inspection(database_url: &str) -> Result<Self, StoreError> {
+        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
+        let database_path = options.get_filename().to_path_buf();
+        if !database_path.exists() {
+            return Self::connect(database_url).await;
+        }
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        Ok(Self {
+            pool,
+            database_path,
+        })
+    }
+
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
+    pub async fn user_version(&self) -> Result<i64, StoreError> {
+        Ok(sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&self.pool)
+            .await?)
     }
 
     pub async fn get_settings(&self) -> Result<DashboardSettings, StoreError> {
@@ -1360,11 +1395,13 @@ impl SqliteHistoryStore {
         )
         .fetch_one(&self.pool)
         .await?;
-        let snapshot_json_oldest_ms: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(captured_at_ms) FROM metric_samples WHERE snapshot_json IS NOT NULL",
+        let snapshot_json_row = sqlx::query(
+            "SELECT COUNT(*) AS sample_count, MIN(captured_at_ms) AS oldest_ms FROM metric_samples WHERE snapshot_json IS NOT NULL",
         )
         .fetch_one(&self.pool)
         .await?;
+        let snapshot_json_sample_count = snapshot_json_row.try_get("sample_count")?;
+        let snapshot_json_oldest_ms = snapshot_json_row.try_get("oldest_ms")?;
         let l3_enabled = self
             .history_state_get::<bool>("l3Enabled")
             .await?
@@ -1454,6 +1491,7 @@ impl SqliteHistoryStore {
                 .try_get::<Option<i64>, _>("rollup_newest_captured_at_ms")?,
             tiers,
             snapshot_json_oldest_ms,
+            snapshot_json_sample_count,
             detail_interval_sec: settings.retention_ladder.detail_interval_sec,
             disk: HistoryDiskCoverage {
                 free_bytes: disk_pressure.as_ref().map(|state| state.free_bytes),

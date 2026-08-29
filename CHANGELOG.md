@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Expanded `tinytop-agent db stats --json` with four-tier ladder coverage, the JSON-bearing raw-sample count, and archive/disk state while preserving the existing `StoreStats` field names.
+- Added `tinytop-agent db pre-image status` and guarded `db pre-image remove --yes`. Removal refuses unless the exact canonical pre-image exists, the main database reports `user_version >= 1`, and `PRAGMA integrity_check` returns `ok`; refusal is structured JSON on stdout and never deletes a directory or glob.
+- Added black-box temp-database CLI coverage for the stats shape, absent status, all removal refusal paths, successful exact-file removal, and post-removal database integrity, plus pure predicate tests for the non-confirmed, absent, pre-v1, and failed-integrity checks.
+- Documented the 0.3.0 migration window and disk requirement, the four-tier architecture/read surface, the new CLI, and the Phase 1 T1–T6 close-out state.
+
 ## 0.2.11 - 2026-08-28
 
 - Expanded the Rust history-points API to read L1 raw, L2 one-minute, L3 five-minute, and L4 hourly data. `source=auto` now selects the finest enabled tier that retains the requested start and fits the clamped page limit, reports `source` and `resolutionMs`, falls back to the coarsest retaining tier on overflow, and returns a truthful unavailable archive page until queryable archive reads land.

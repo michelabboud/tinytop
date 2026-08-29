@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.2.0`
+- Version: `0.2.11`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Windows entrypoint: `.\tinytop.cmd` or process-scoped `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` before `.\tinytop.ps1`
 - Dashboard UI: Linux/WSL `http://127.0.0.1:4274`; native Windows defaults to `http://127.0.0.1:4275` to avoid loopback collisions with WSL
@@ -200,6 +200,22 @@ The root `./tinytop` command is the supported operator entrypoint:
 ./tinytop db stats
 ./tinytop db backup
 ```
+
+The Rust agent also exposes JSON-first database diagnostics and explicit
+pre-image management:
+
+| Command | Purpose |
+| --- | --- |
+| `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, JSON-bearing sample count, archive state, and disk state |
+| `tinytop-agent db pre-image status` | Show the canonical `<database>.pre-v0.sqlite` path, existence/size, schema version, and main-database integrity result |
+| `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation, schema v1, and a successful SQLite integrity check |
+
+Rust history is retained as an L1 raw → L2 one-minute → L3 five-minute → L4
+hourly ladder. Completed buckets are folded from every finer row, frozen after
+their grace window, promoted before finer data is pruned, and selected
+automatically for long-range reads. See
+[SQLite History Architecture](docs/sqlite-history-architecture.md) for the schema,
+retention, migration, and read-path contract.
 
 For persistent background collection, install user-space systemd services:
 
