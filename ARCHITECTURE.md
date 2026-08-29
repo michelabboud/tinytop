@@ -131,6 +131,29 @@ The Rust daemon exposes these routes on `127.0.0.1:4274`. The legacy split Bun c
 
 The legacy collector API is internal. It binds to loopback by default and should not be exposed publicly.
 
+## Tiered History Ladder
+
+The Rust store retains history as four tiers: L1 raw samples, L2 one-minute
+buckets, L3 five-minute buckets, and L4 hourly buckets. One weighted fold shape
+serves every rung; completed buckets freeze after their grace window, and each
+enabled coarser tier is promoted before its finer source may be pruned. The
+retention horizons and L3/L4 toggles come from `retentionLadder` settings.
+
+Existing populated v0 databases migrate to SQLite `user_version = 1` only after
+`VACUUM INTO` has created the complete, non-overwriting
+`<database>.pre-v0.sqlite` pre-image. Migration then changes the schema in one
+transaction; the pre-image remains until an operator explicitly removes it with
+the guarded CLI.
+
+The additive read surface keeps `/api/history` for JSON-bearing raw snapshots,
+uses `/api/history/points?source=auto` to choose the finest enabled tier that
+retains and fits the requested range, reports the ladder through
+`/api/history/coverage`, and exposes typed filesystem/process detail endpoints.
+The full schema and maintenance/read algorithms live in
+[SQLite History Architecture](docs/sqlite-history-architecture.md); the decision
+and approved design are [ADR 0013](docs/adr/0013-tiered-history-ladder.md) and the
+[tiered-history design](docs/superpowers/specs/2026-08-28-tiered-history-ladder-design.md).
+
 ## SQLite
 
 Default database path:

@@ -19,6 +19,7 @@ use sqlx::{
 use tinytop_types::SystemSnapshot;
 
 use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, fold, raw_is_partial, raw_to_bucket};
+pub use crate::migration::pre_image_path;
 pub use crate::retention_ladder::DiskPressureState;
 use crate::retention_ladder::RetentionLadder;
 
@@ -276,6 +277,8 @@ pub struct HistoryCoverage {
     pub rollup_newest_captured_at_ms: Option<i64>,
     pub tiers: Vec<HistoryTierCoverage>,
     pub snapshot_json_oldest_ms: Option<i64>,
+    #[serde(default, skip_serializing)]
+    pub snapshot_json_sample_count: i64,
     pub detail_interval_sec: i64,
     pub disk: HistoryDiskCoverage,
     pub archive: HistoryArchiveCoverage,
@@ -539,6 +542,47 @@ impl SqliteHistoryStore {
         .await?;
         store.migrate_runtime_kind_to_canonical().await?;
         Ok(store)
+    }
+
+    /// Open an existing database for CLI inspection without running schema migration.
+    ///
+    /// Inspection never creates a missing database. Existing databases are
+    /// opened as-is so pre-image removal checks can observe a pre-migration
+    /// `user_version` instead of changing it first.
+    pub async fn connect_for_inspection(database_url: &str) -> Result<Self, StoreError> {
+        let database_path = match inspect_database_path(database_url)? {
+            Some(database_path) => database_path,
+            None => {
+                let configured_path = database_path_from_url(database_url)?;
+                return Err(StoreError::Migration {
+                    reason: format!(
+                        "cannot inspect database {} because it does not exist",
+                        configured_path.display()
+                    ),
+                    remedy: "restore or recreate the database before inspecting it".to_string(),
+                });
+            }
+        };
+        let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(false);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await?;
+        Ok(Self {
+            pool,
+            database_path,
+        })
+    }
+
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
+    pub async fn user_version(&self) -> Result<i64, StoreError> {
+        Ok(sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&self.pool)
+            .await?)
     }
 
     pub async fn get_settings(&self) -> Result<DashboardSettings, StoreError> {
@@ -1360,11 +1404,13 @@ impl SqliteHistoryStore {
         )
         .fetch_one(&self.pool)
         .await?;
-        let snapshot_json_oldest_ms: Option<i64> = sqlx::query_scalar(
-            "SELECT MIN(captured_at_ms) FROM metric_samples WHERE snapshot_json IS NOT NULL",
+        let snapshot_json_row = sqlx::query(
+            "SELECT COUNT(*) AS sample_count, MIN(captured_at_ms) AS oldest_ms FROM metric_samples WHERE snapshot_json IS NOT NULL",
         )
         .fetch_one(&self.pool)
         .await?;
+        let snapshot_json_sample_count = snapshot_json_row.try_get("sample_count")?;
+        let snapshot_json_oldest_ms = snapshot_json_row.try_get("oldest_ms")?;
         let l3_enabled = self
             .history_state_get::<bool>("l3Enabled")
             .await?
@@ -1454,6 +1500,7 @@ impl SqliteHistoryStore {
                 .try_get::<Option<i64>, _>("rollup_newest_captured_at_ms")?,
             tiers,
             snapshot_json_oldest_ms,
+            snapshot_json_sample_count,
             detail_interval_sec: settings.retention_ladder.detail_interval_sec,
             disk: HistoryDiskCoverage {
                 free_bytes: disk_pressure.as_ref().map(|state| state.free_bytes),
@@ -1878,6 +1925,27 @@ impl SqliteHistoryStore {
             .await?;
 
         Ok(())
+    }
+}
+
+pub fn database_path_from_url(database_url: &str) -> Result<PathBuf, StoreError> {
+    let options = SqliteConnectOptions::from_str(database_url)?;
+    Ok(options.get_filename().to_path_buf())
+}
+
+pub fn inspect_database_path(database_url: &str) -> Result<Option<PathBuf>, StoreError> {
+    let database_path = database_path_from_url(database_url)?;
+    match std::fs::metadata(&database_path) {
+        Ok(_) => migration::canonical_database_path(&database_path).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(StoreError::Migration {
+            reason: format!(
+                "cannot inspect database path {}: {error}",
+                database_path.display()
+            ),
+            remedy: "make the database path accessible and retry; no database was created"
+                .to_string(),
+        }),
     }
 }
 

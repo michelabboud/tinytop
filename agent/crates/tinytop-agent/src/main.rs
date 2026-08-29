@@ -5,7 +5,10 @@ use std::{
 
 use serde::Serialize;
 use tinytop_collectors::NativeCollector;
-use tinytop_store::SqliteHistoryStore;
+use tinytop_store::{
+    HistoryArchiveCoverage, HistoryDiskCoverage, HistoryTierCoverage, SqliteHistoryStore,
+    StoreStats, database_path_from_url, inspect_database_path, pre_image_path,
+};
 
 mod writer;
 
@@ -18,7 +21,14 @@ const DEFAULT_POLL_MS: u64 = 1500;
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("{error}");
+        if let Some(refusal) = error.downcast_ref::<PreImageRemovalRefused>() {
+            println!(
+                "{}",
+                serde_json::json!({ "status": "refused", "reason": refusal.reason })
+            );
+        } else {
+            eprintln!("{error}");
+        }
         std::process::exit(1);
     }
 }
@@ -44,8 +54,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[serde(rename_all = "camelCase")]
 struct DbStatus<T: Serialize> {
     status: &'static str,
-    #[serde(flatten)]
     value: T,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DbStatsOutput {
+    #[serde(flatten)]
+    stats: StoreStats,
+    tiers: Vec<HistoryTierCoverage>,
+    snapshot_json_sample_count: i64,
+    archive: HistoryArchiveCoverage,
+    disk: HistoryDiskCoverage,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,6 +79,38 @@ struct IntegrityResult {
 struct VacuumResult {
     action: &'static str,
 }
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreImageStatus {
+    path: String,
+    exists: bool,
+    bytes: Option<u64>,
+    database_exists: bool,
+    user_version: Option<i64>,
+    integrity_check: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreImageRemoveResult {
+    action: &'static str,
+    path: String,
+    bytes: u64,
+}
+
+#[derive(Debug)]
+struct PreImageRemovalRefused {
+    reason: String,
+}
+
+impl std::fmt::Display for PreImageRemovalRefused {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for PreImageRemovalRefused {}
 
 #[derive(Debug, Clone)]
 struct ServeDefaults {
@@ -121,40 +173,82 @@ async fn collect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let Some(subcommand) = args.first().map(String::as_str) else {
-        return Err("db requires a subcommand: stats, check, or vacuum".into());
+        return Err("db requires a subcommand: stats, check, vacuum, or pre-image".into());
     };
 
-    let mut sqlite_url = default_sqlite_url()?;
-    let mut index = 1;
+    let (pre_image_action, mut index) = if subcommand == "pre-image" {
+        let action = args
+            .get(1)
+            .map(String::as_str)
+            .ok_or("db pre-image requires an action: status or remove")?;
+        (Some(action), 2)
+    } else {
+        (None, 1)
+    };
+
+    let mut sqlite_url: Option<String> = None;
+    let mut yes = false;
     while index < args.len() {
         match args[index].as_str() {
             "--sqlite" => {
-                sqlite_url = normalize_sqlite_url(&require_value(args, index, "--sqlite")?)?;
+                sqlite_url = Some(normalize_sqlite_url(&require_value(
+                    args, index, "--sqlite",
+                )?)?);
                 index += 2;
+            }
+            "--json" if subcommand == "stats" => {
+                index += 1;
+            }
+            "--yes" if subcommand == "pre-image" && pre_image_action == Some("remove") => {
+                yes = true;
+                index += 1;
             }
             other => return Err(format!("unknown db option: {other}").into()),
         }
     }
+    let sqlite_url = match sqlite_url {
+        Some(url) => url,
+        None => default_sqlite_url()?,
+    };
 
-    let store = SqliteHistoryStore::connect(&sqlite_url).await?;
     match subcommand {
-        "stats" => println!(
-            "{}",
-            serde_json::to_string_pretty(&DbStatus {
-                status: "ok",
-                value: store.stats().await?,
-            })?
-        ),
-        "check" => println!(
-            "{}",
-            serde_json::to_string_pretty(&DbStatus {
-                status: "ok",
-                value: IntegrityResult {
-                    result: store.integrity_check().await?,
-                },
-            })?
-        ),
+        "stats" => {
+            let store = SqliteHistoryStore::connect(&sqlite_url).await?;
+            let settings = store.get_settings().await?;
+            let coverage = store.history_coverage(&settings).await?;
+            let stats = StoreStats {
+                sample_count: coverage.sample_count,
+                oldest_captured_at_ms: coverage.oldest_captured_at_ms,
+                newest_captured_at_ms: coverage.newest_captured_at_ms,
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&DbStatus {
+                    status: "ok",
+                    value: DbStatsOutput {
+                        stats,
+                        tiers: coverage.tiers,
+                        snapshot_json_sample_count: coverage.snapshot_json_sample_count,
+                        archive: coverage.archive,
+                        disk: coverage.disk,
+                    },
+                })?
+            );
+        }
+        "check" => {
+            let store = SqliteHistoryStore::connect(&sqlite_url).await?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&DbStatus {
+                    status: "ok",
+                    value: IntegrityResult {
+                        result: store.integrity_check().await?,
+                    },
+                })?
+            );
+        }
         "vacuum" => {
+            let store = SqliteHistoryStore::connect(&sqlite_url).await?;
             store.vacuum().await?;
             println!(
                 "{}",
@@ -164,9 +258,126 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 })?
             );
         }
+        "pre-image" => {
+            let Some(action) = pre_image_action else {
+                return Err("db pre-image requires an action: status or remove".into());
+            };
+            db_pre_image(action, &sqlite_url, yes).await?;
+        }
         unknown => return Err(format!("unknown db command: {unknown}").into()),
     }
 
+    Ok(())
+}
+
+async fn db_pre_image(
+    action: &str,
+    sqlite_url: &str,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let inspected_database_path = inspect_database_path(sqlite_url)?;
+    let raw_database_path = database_path_from_url(sqlite_url)?;
+    let database_exists = inspected_database_path.is_some();
+    let database_path = inspected_database_path.unwrap_or(raw_database_path);
+    let path = pre_image_path(&database_path);
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let database_checks = if database_exists {
+        let store = SqliteHistoryStore::connect_for_inspection(sqlite_url).await?;
+        Some((store.user_version().await?, store.integrity_check().await?))
+    } else {
+        None
+    };
+
+    match action {
+        "status" => println!(
+            "{}",
+            serde_json::to_string_pretty(&DbStatus {
+                status: "ok",
+                value: PreImageStatus {
+                    path: path.display().to_string(),
+                    exists: metadata.is_some(),
+                    bytes: metadata.as_ref().map(std::fs::Metadata::len),
+                    database_exists,
+                    user_version: database_checks.as_ref().map(|(version, _)| *version),
+                    integrity_check: database_checks
+                        .as_ref()
+                        .map(|(_, integrity)| integrity.clone()),
+                },
+            })?
+        ),
+        "remove" => {
+            let observed_database_checks = database_checks
+                .as_ref()
+                .map(|(version, integrity)| (*version, integrity.as_str()));
+            if let Err(reason) = pre_image_remove_allowed(
+                observed_database_checks,
+                metadata.is_some(),
+                yes,
+                &database_path,
+            ) {
+                return Err(PreImageRemovalRefused {
+                    reason: format!("{reason}; path is {}", path.display()),
+                }
+                .into());
+            }
+            let Some(metadata) = metadata else {
+                return Err("pre-image metadata disappeared after removal checks".into());
+            };
+            let bytes = metadata.len();
+            std::fs::remove_file(&path)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&DbStatus {
+                    status: "ok",
+                    value: PreImageRemoveResult {
+                        action: "remove",
+                        path: path.display().to_string(),
+                        bytes,
+                    },
+                })?
+            );
+        }
+        unknown => return Err(format!("unknown db pre-image action: {unknown}").into()),
+    }
+
+    Ok(())
+}
+
+fn pre_image_remove_allowed(
+    database_checks: Option<(i64, &str)>,
+    pre_image_exists: bool,
+    yes: bool,
+    database_path: &std::path::Path,
+) -> Result<(), String> {
+    if !yes {
+        return Err(
+            "pre-image remove --yes confirmation check observed false; pass --yes to confirm removal"
+                .to_string(),
+        );
+    }
+    if !pre_image_exists {
+        return Err("pre-image exists check observed false; nothing can be removed".to_string());
+    }
+    let Some((user_version, integrity)) = database_checks else {
+        return Err(format!(
+            "database exists check observed false: database {} does not exist; the pre-image may be the only copy — restore or recreate the database before removing it",
+            database_path.display()
+        ));
+    };
+    if user_version < 1 {
+        return Err(format!(
+            "user_version check observed {user_version}; expected at least 1 because the schema v1 migration must run before removal"
+        ));
+    }
+    if integrity != "ok" {
+        return Err(format!(
+            "integrity_check is {integrity:?}; expected \"ok\" before removing the pre-image"
+        ));
+    }
     Ok(())
 }
 
@@ -185,7 +396,7 @@ fn parse_serve_options(
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
         .unwrap_or(defaults.default_port);
-    let mut sqlite_url = default_sqlite_url()?;
+    let mut sqlite_url: Option<String> = None;
     let mut poll_ms = std::env::var("HISTORY_POLL_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -208,7 +419,9 @@ fn parse_serve_options(
                 index += 2;
             }
             "--sqlite" => {
-                sqlite_url = normalize_sqlite_url(&require_value(args, index, "--sqlite")?)?;
+                sqlite_url = Some(normalize_sqlite_url(&require_value(
+                    args, index, "--sqlite",
+                )?)?);
                 index += 2;
             }
             "--poll-ms" => {
@@ -228,6 +441,10 @@ fn parse_serve_options(
             other => return Err(format!("unknown serve option: {other}").into()),
         }
     }
+    let sqlite_url = match sqlite_url {
+        Some(url) => url,
+        None => default_sqlite_url()?,
+    };
 
     Ok(writer::ServeOptions {
         host,
@@ -349,7 +566,10 @@ fn print_help() {
 
 Usage:
   tinytop-agent collect [--json] [--sqlite <database-url>]
-  tinytop-agent db stats|check|vacuum [--sqlite <database-url>]
+  tinytop-agent db stats [--json] [--sqlite <database-url>]
+  tinytop-agent db check|vacuum [--sqlite <database-url>]
+  tinytop-agent db pre-image status [--sqlite <database-url>]
+  tinytop-agent db pre-image remove [--yes] [--sqlite <database-url>]
   tinytop-agent serve [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>] [--public-dir <path>]
   tinytop-agent serve-writer [--host <host>] [--port <port>] [--sqlite <database-url>] [--poll-ms <ms>]
   tinytop-agent help
@@ -358,6 +578,7 @@ Examples:
   tinytop-agent collect --json
   tinytop-agent collect --sqlite sqlite::memory:
   tinytop-agent db stats
+  tinytop-agent db pre-image remove --yes
   tinytop-agent serve --host 127.0.0.1 --port 4274
   tinytop-agent serve-writer --host 127.0.0.1 --port 4276
 "#
@@ -405,5 +626,82 @@ mod tests {
         assert!(url.contains(r"Local"));
         assert!(url.contains(r"TinyTop"));
         assert!(url.contains(r"history.sqlite"));
+    }
+
+    #[test]
+    fn pre_image_remove_predicate_refuses_without_yes() {
+        let reason = pre_image_remove_allowed(
+            Some((1, "ok")),
+            true,
+            false,
+            std::path::Path::new("h.sqlite"),
+        )
+        .expect_err("removal without --yes must be refused");
+
+        assert!(reason.contains("--yes"));
+        assert!(reason.contains("false"));
+    }
+
+    #[test]
+    fn pre_image_remove_predicate_refuses_when_absent() {
+        let reason = pre_image_remove_allowed(
+            Some((1, "ok")),
+            false,
+            true,
+            std::path::Path::new("h.sqlite"),
+        )
+        .expect_err("an absent pre-image must be refused");
+
+        assert!(reason.contains("exists"));
+        assert!(reason.contains("false"));
+    }
+
+    #[test]
+    fn pre_image_remove_predicate_refuses_when_database_is_missing() {
+        let reason = pre_image_remove_allowed(None, true, true, std::path::Path::new("h.sqlite"))
+            .expect_err("a missing database must be refused");
+
+        assert!(reason.contains("database exists"));
+        assert!(reason.contains("false"));
+        assert!(reason.contains("h.sqlite"));
+    }
+
+    #[test]
+    fn pre_image_remove_predicate_refuses_before_schema_v1() {
+        let reason = pre_image_remove_allowed(
+            Some((0, "ok")),
+            true,
+            true,
+            std::path::Path::new("h.sqlite"),
+        )
+        .expect_err("removal before schema v1 must be refused");
+
+        assert!(reason.contains("user_version"));
+        assert!(reason.contains('0'));
+    }
+
+    #[test]
+    fn pre_image_remove_predicate_refuses_failed_integrity_check() {
+        let reason = pre_image_remove_allowed(
+            Some((1, "database disk image is malformed")),
+            true,
+            true,
+            std::path::Path::new("h.sqlite"),
+        )
+        .expect_err("removal after a failed integrity check must be refused");
+
+        assert!(reason.contains("integrity_check"));
+        assert!(reason.contains("database disk image is malformed"));
+    }
+
+    #[test]
+    fn pre_image_remove_predicate_allows_every_check_to_pass() {
+        pre_image_remove_allowed(
+            Some((1, "ok")),
+            true,
+            true,
+            std::path::Path::new("h.sqlite"),
+        )
+        .expect("removal should be allowed after every check passes");
     }
 }

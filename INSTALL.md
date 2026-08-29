@@ -312,7 +312,22 @@ ok
 5. Start `./tinytop systemd start` or `./tinytop start`.
 6. Open the dashboard and confirm the sidebar version line, Settings toggle layout, and History hydration after a browser refresh.
 
-The current schema is created with `CREATE TABLE IF NOT EXISTS` and indexes are created if missing. The Rust daemon adds the `app_settings`, `metric_rollups_1m`, and `app_events` tables automatically when it starts.
+The first Rust-daemon start after upgrading an existing database to 0.3.0 migrates
+SQLite to schema v1. Before touching any row, TinyTop creates a complete
+`<database>.pre-v0.sqlite` pre-image. This can take minutes for a large database,
+and startup refuses unless free space is at least 1.2 times the database size.
+Stop every TinyTop writer for the upgrade and leave it stopped until migration
+finishes.
+
+TinyTop never deletes or overwrites the pre-image automatically. Inspect it, and
+remove it only after schema v1 and the main database have been verified:
+
+If the main database is missing, `db pre-image status` reports `databaseExists: false` and `remove` refuses: the pre-image may be your only copy.
+
+```bash
+tinytop-agent db pre-image status
+tinytop-agent db pre-image remove --yes
+```
 
 ## Platform Collector Features
 
