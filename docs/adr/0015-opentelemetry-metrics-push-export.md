@@ -1,6 +1,6 @@
 # ADR 0015 — Push-only OpenTelemetry metrics export from the Rust daemon
 
-**Status:** Proposed (2026-08-28) — awaiting Michel's go.
+**Status:** Accepted (2026-08-29; T11, 0.5.0) — Michel's go for the ladder A→Z (2026-08-28) covers Phase 4; dispatched as lane T11 from `v0.4.1`.
 
 ## Context
 
