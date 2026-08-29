@@ -22,6 +22,46 @@ import {
 
 const MIB = 1024 * 1024;
 
+describe("history sample normalization", () => {
+  test("stamps the window source, preserves explicit sources, de-duplicates, and sorts", () => {
+    const first = { timestamp: "2026-08-29T12:00:01.000Z" };
+    const duplicate = { timestamp: "2026-08-29T12:00:03.000Z" };
+    const replacement = { timestamp: "2026-08-29T12:00:03.000Z" };
+
+    const normalized = ladderRules.normalizeHistorySamples(
+      [
+        { capturedAtMs: 3_000, snapshot: duplicate },
+        { capturedAtMs: 1_000, snapshot: first },
+        { capturedAtMs: 3_000, snapshot: replacement, source: "archive" },
+      ],
+      "raw",
+    );
+
+    expect(normalized).toEqual([
+      { capturedAt: 1_000, snapshot: first, source: "raw" },
+      { capturedAt: 3_000, snapshot: replacement, source: "archive" },
+    ]);
+  });
+});
+
+describe("history no-data formatting", () => {
+  test("renders missing pressure as an em dash and finite pressure to two decimals", () => {
+    expect(ladderRules.formatPressureValue(null)).toBe("—");
+    expect(ladderRules.formatPressureValue(0.42)).toBe("0.42");
+  });
+
+  test("finds the maximum finite pressure value without inventing zero", () => {
+    expect(ladderRules.pressureMaximum([null, null, null])).toBeNull();
+    expect(ladderRules.pressureMaximum([null, 0.42, Number.NaN, 0.21])).toBe(0.42);
+  });
+
+  test("renders absent counts honestly and preserves finite zero and positive counts", () => {
+    expect(ladderRules.formatCount(undefined)).toBe("—");
+    expect(ladderRules.formatCount(0)).toBe("0");
+    expect(ladderRules.formatCount(12)).toBe("12");
+  });
+});
+
 describe("filesystem freshness", () => {
   const snapshotMs = Date.parse("2026-08-29T12:00:00.000Z");
   const pollMs = 1_500;
@@ -111,7 +151,6 @@ function ladder() {
     l2: { keepDays: 30 },
     l3: { enabled: true, keepDays: 90 },
     l4: { enabled: true, keepDays: 730 },
-    snapshotJsonKeepMinutes: 60,
     detailIntervalSec: 60,
     processFastKeepHours: 24,
     archive: {
@@ -231,22 +270,14 @@ describe("history ladder windows", () => {
     expect(result).toMatchObject({ disabled: false });
   });
 
-  test("disables raw presets when coverage reports no retained snapshot JSON", () => {
-    const result = historyWindowFor("1h", {
-      snapshotJsonOldestMs: null,
+  test("keeps raw presets enabled without a JSON horizon", () => {
+    const coverage = {
       tiers: [{ tier: "l1", enabled: true, bucketCount: 10, oldestMs: 100, newestMs: 200 }],
-    });
+    };
 
-    expect(result).toMatchObject({
-      disabled: true,
-      reason: "retentionLadder.snapshotJsonKeepMinutes",
-    });
-    expect(
-      historyWindowFor("live", {
-        snapshotJsonOldestMs: null,
-        tiers: [],
-      }),
-    ).toMatchObject({ disabled: false });
+    for (const key of ["live", "15m", "1h"]) {
+      expect(historyWindowFor(key, coverage)).toMatchObject({ disabled: false, source: "raw" });
+    }
   });
 
   test("starts all-history at the oldest tier or queryable archive bucket", () => {
@@ -353,13 +384,6 @@ describe("retention ladder validation mirror", () => {
         candidate.l4.keepDays = 36501;
       },
       message: "retentionLadder.l4.keepDays must be between 0 and 36500; observed 36501",
-    },
-    {
-      name: "snapshot JSON range",
-      mutate: (candidate) => {
-        candidate.snapshotJsonKeepMinutes = 59;
-      },
-      message: "retentionLadder.snapshotJsonKeepMinutes must be between 60 and 1440; observed 59",
     },
     {
       name: "detail interval range",
@@ -741,7 +765,6 @@ describe("settings transfer plan description", () => {
             l2Buckets: 0,
             l3Buckets: 0,
             l4Buckets: 0,
-            snapshotJsonRows: 0,
           },
           changedKeys: ["retentionLadder", "defaultTheme"],
           warnings: [],
@@ -765,7 +788,6 @@ describe("settings transfer plan description", () => {
         l2Buckets: 0,
         l3Buckets: 0,
         l4Buckets: 0,
-        snapshotJsonRows: 0,
         processFastRows: 0,
       },
       changedKeys: ["retentionLadder", "defaultTheme"],
@@ -808,7 +830,6 @@ describe("settings transfer plan description", () => {
             l2Buckets: 0,
             l3Buckets: 0,
             l4Buckets: 0,
-            snapshotJsonRows: 0,
           },
           changedKeys: ["retentionLadder"],
           warnings: [],
@@ -828,7 +849,6 @@ describe("settings transfer plan description", () => {
             l2Buckets: 0,
             l3Buckets: 0,
             l4Buckets: 0,
-            snapshotJsonRows: 0,
           },
           changedKeys: [],
           warnings: [],
@@ -846,7 +866,6 @@ describe("settings transfer plan description", () => {
         l2Buckets: 0,
         l3Buckets: 0,
         l4Buckets: 0,
-        snapshotJsonRows: 0,
         processFastRows: 0,
       },
       changedKeys: [],
@@ -870,7 +889,6 @@ describe("settings transfer plan description", () => {
             l2Buckets: 56,
             l3Buckets: 7,
             l4Buckets: 8,
-            snapshotJsonRows: 90,
             processFastRows: 3,
           },
           changedKeys: ["retentionLadder", "pollIntervalMs"],
@@ -884,7 +902,6 @@ describe("settings transfer plan description", () => {
       "56 L2 buckets",
       "7 L3 buckets",
       "8 L4 buckets (moved to the queryable archive)",
-      "90 snapshot JSON blobs stripped",
       "3 fast process rows deleted",
       "also changes: pollIntervalMs",
       "settings.bogus: unknown key ignored",
@@ -951,7 +968,6 @@ describe("settings transfer plan description", () => {
           l2Buckets: 0,
           l3Buckets: 0,
           l4Buckets: 0,
-          snapshotJsonRows: 0,
         },
       }),
     ).toBe(false);
@@ -965,7 +981,6 @@ describe("settings transfer plan description", () => {
         l2Buckets: 0,
         l3Buckets: 0,
         l4Buckets: 0,
-        snapshotJsonRows: 0,
         processFastRows: 0,
       },
     };
@@ -979,7 +994,7 @@ describe("settings transfer plan description", () => {
     expect(
       isValidImportPlan({
         ...validPlan,
-        wouldDelete: { ...validPlan.wouldDelete, snapshotJsonRows: Number.NaN },
+        wouldDelete: { ...validPlan.wouldDelete, processFastRows: Number.NaN },
       }),
     ).toBe(false);
     expect(
@@ -989,5 +1004,21 @@ describe("settings transfer plan description", () => {
       }),
     ).toBe(false);
     expect(isValidImportPlan(validPlan)).toBe(true);
+  });
+
+  test("accepts an extra legacy deletion count from an older daemon", () => {
+    expect(
+      isValidImportPlan({
+        valid: true,
+        wouldDelete: {
+          l1Rows: 0,
+          l2Buckets: 0,
+          l3Buckets: 0,
+          l4Buckets: 0,
+          processFastRows: 0,
+          snapshotJsonRows: 90,
+        },
+      }),
+    ).toBe(true);
   });
 });

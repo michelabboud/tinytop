@@ -14,7 +14,6 @@ const WOULD_DELETE_FIELDS = [
   "l2Buckets",
   "l3Buckets",
   "l4Buckets",
-  "snapshotJsonRows",
   "processFastRows",
 ];
 
@@ -64,6 +63,41 @@ export const HISTORY_WINDOWS = Object.freeze({
   all: { label: "All", durationMs: null, pageSize: MAX_HISTORY_PAGE_SIZE, source: "auto" },
 });
 
+export function normalizeHistorySamples(samples, source) {
+  const byTimestamp = new Map();
+  if (!Array.isArray(samples)) return [];
+
+  for (const sample of samples) {
+    if (!sample?.snapshot) continue;
+    const snapshotTimestamp = Date.parse(sample.snapshot.timestamp);
+    const capturedAt = Number.isFinite(Number(sample.capturedAtMs))
+      ? Number(sample.capturedAtMs)
+      : Number.isFinite(snapshotTimestamp)
+        ? snapshotTimestamp
+        : Date.now();
+    byTimestamp.set(capturedAt, {
+      capturedAt,
+      snapshot: sample.snapshot,
+      source: typeof sample.source === "string" ? sample.source : source,
+    });
+  }
+
+  return Array.from(byTimestamp.values()).sort((left, right) => left.capturedAt - right.capturedAt);
+}
+
+export function formatPressureValue(value) {
+  return Number.isFinite(value) ? value.toFixed(2) : "—";
+}
+
+export function pressureMaximum(values) {
+  const finiteValues = values.filter((value) => Number.isFinite(value));
+  return finiteValues.length > 0 ? Math.max(...finiteValues) : null;
+}
+
+export function formatCount(value) {
+  return Number.isFinite(value) ? String(value) : "—";
+}
+
 function finiteTimestamp(value) {
   const timestamp = Number(value);
   return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;
@@ -110,14 +144,6 @@ export function historyWindowFor(key, coverage) {
 
   if (windowKey === "live") return config;
 
-  if (
-    config.source === "raw" &&
-    coverage != null &&
-    Object.hasOwn(coverage, "snapshotJsonOldestMs") &&
-    finiteTimestamp(coverage.snapshotJsonOldestMs) === null
-  ) {
-    return { ...config, disabled: true, reason: "retentionLadder.snapshotJsonKeepMinutes" };
-  }
   if (config.source === "raw" || !Array.isArray(coverage?.tiers)) return config;
   if (coverage?.archive?.queryable?.enabled === true) return config;
 
@@ -403,7 +429,6 @@ export function describeImportPlan(
     "L4 buckets",
     candidateLadder?.archive?.queryable ? " (moved to the queryable archive)" : " deleted",
   );
-  addCount("snapshotJsonRows", "snapshot JSON blobs", " stripped");
   addCount("processFastRows", "fast process rows", " deleted");
 
   const previousLadder = previousSettings?.retentionLadder;
@@ -464,7 +489,6 @@ function growsFrom(candidate, previous) {
     candidate.l2.keepDays > previous.l2.keepDays ||
     enabledHorizonGrew(candidate.l3, previous.l3) ||
     enabledHorizonGrew(candidate.l4, previous.l4, true) ||
-    candidate.snapshotJsonKeepMinutes > previous.snapshotJsonKeepMinutes ||
     candidate.processFastKeepHours > previous.processFastKeepHours ||
     (candidate.archive.queryable && !previous.archive.queryable) ||
     (candidate.archive.cold && !previous.archive.cold)
@@ -477,7 +501,6 @@ export function validateRetentionLadder(ladder, previous, diskPressure) {
     ["retentionLadder.l2.keepDays", ladder?.l2?.keepDays, 7, 3_650],
     ["retentionLadder.l3.keepDays", ladder?.l3?.keepDays, 0, 3_650],
     ["retentionLadder.l4.keepDays", ladder?.l4?.keepDays, 0, 36_500],
-    ["retentionLadder.snapshotJsonKeepMinutes", ladder?.snapshotJsonKeepMinutes, 60, 1_440],
     ["retentionLadder.detailIntervalSec", ladder?.detailIntervalSec, 15, 3_600],
     ["retentionLadder.processFastKeepHours", ladder?.processFastKeepHours, 1, 72],
     ["retentionLadder.archive.coldAfterMonths", ladder?.archive?.coldAfterMonths, 1, 120],

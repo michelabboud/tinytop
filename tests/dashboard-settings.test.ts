@@ -98,7 +98,6 @@ describe("dashboard settings", () => {
       "daemon-l4-enabled",
       "daemon-l4-keep-days",
       "daemon-l4-forever",
-      "daemon-snapshot-json-keep-minutes",
       "daemon-detail-interval-sec",
       "daemon-process-fast-keep-hours",
       "daemon-archive-queryable",

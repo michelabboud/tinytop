@@ -6,12 +6,16 @@ import {
   describeOtelCoverage,
   exportFilenameFrom,
   fallbackWindowKey,
+  formatCount,
+  formatPressureValue,
   formatResourceAttributes,
   historyWindowFor,
   isValidImportPlan,
   ladderCapabilityFrom,
+  normalizeHistorySamples,
   otelCapabilityFrom,
   parseResourceAttributes,
+  pressureMaximum,
   settingsPutPayload,
   shouldFetchCoverage,
   validateOtelSettings,
@@ -130,7 +134,6 @@ const DEFAULT_DAEMON_SETTINGS = {
     l2: { keepDays: 30 },
     l3: { enabled: true, keepDays: 90 },
     l4: { enabled: true, keepDays: 730 },
-    snapshotJsonKeepMinutes: 60,
     detailIntervalSec: 60,
     processFastKeepHours: 24,
     archive: {
@@ -387,7 +390,6 @@ const elements = {
   daemonL4Enabled: document.querySelector("#daemon-l4-enabled"),
   daemonL4KeepDays: document.querySelector("#daemon-l4-keep-days"),
   daemonL4Forever: document.querySelector("#daemon-l4-forever"),
-  daemonSnapshotJsonKeepMinutes: document.querySelector("#daemon-snapshot-json-keep-minutes"),
   daemonDetailIntervalSec: document.querySelector("#daemon-detail-interval-sec"),
   daemonProcessFastKeepHours: document.querySelector("#daemon-process-fast-keep-hours"),
   daemonArchiveQueryable: document.querySelector("#daemon-archive-queryable"),
@@ -616,7 +618,6 @@ function settingsFormControls() {
     elements.daemonL4Enabled,
     elements.daemonL4KeepDays,
     elements.daemonL4Forever,
-    elements.daemonSnapshotJsonKeepMinutes,
     elements.daemonDetailIntervalSec,
     elements.daemonProcessFastKeepHours,
     elements.daemonArchiveQueryable,
@@ -699,6 +700,7 @@ function loadPercent(snapshot) {
 }
 
 function metricStatus(value, warn, critical) {
+  if (value == null) return "unknown";
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return "unknown";
   if (numericValue >= critical) return "critical";
@@ -952,21 +954,6 @@ function pushHistory(snapshot, capturedAtMs = snapshotCapturedAtMs(snapshot)) {
   trimHistory();
 }
 
-function normalizedHistorySamples(samples) {
-  const byTimestamp = new Map();
-  if (!Array.isArray(samples)) return [];
-
-  for (const sample of samples) {
-    if (!sample?.snapshot) continue;
-    const capturedAt = Number.isFinite(Number(sample.capturedAtMs))
-      ? Number(sample.capturedAtMs)
-      : snapshotCapturedAtMs(sample.snapshot);
-    byTimestamp.set(capturedAt, { capturedAt, snapshot: sample.snapshot });
-  }
-
-  return Array.from(byTimestamp.values()).sort((left, right) => left.capturedAt - right.capturedAt);
-}
-
 function snapshotFromHistoryPoint(point) {
   const base = state.lastSnapshot ? structuredClone(state.lastSnapshot) : emptySnapshot(point.capturedAtMs);
   const capturedAt = Number(point.capturedAtMs) || Date.now();
@@ -1035,10 +1022,10 @@ function downsampleHistorySamples(samples, maxSamples) {
   return selected;
 }
 
-function hydrateHistory(samples, { keepSelection = false } = {}) {
+function hydrateHistory(samples, { keepSelection = false, source } = {}) {
   const selectedAtMs = state.selectedAtMs;
   resetHistory({ keepSelection });
-  state.snapshots = downsampleHistorySamples(normalizedHistorySamples(samples), MAX_HISTORY_RENDER_SAMPLES);
+  state.snapshots = downsampleHistorySamples(normalizeHistorySamples(samples, source), MAX_HISTORY_RENDER_SAMPLES);
   if (keepSelection) state.selectedAtMs = selectedAtMs;
   if (state.snapshots.length === 0) state.selectedAtMs = null;
   rebuildHistoryValues();
@@ -1813,7 +1800,8 @@ function moveHistorySelection(delta) {
 }
 
 function pressureValue(snapshot, key) {
-  return snapshot.pressure[key]?.some?.avg10 ?? 0;
+  const value = snapshot.pressure?.[key]?.some?.avg10;
+  return Number.isFinite(value) ? value : null;
 }
 
 function rootFilesystem(filesystems) {
@@ -1956,7 +1944,8 @@ function renderPressure(snapshot) {
       const strong = document.createElement("strong");
       const amount = document.createElement("span");
       strong.textContent = name;
-      amount.textContent = `${Number(value).toFixed(2)} avg10`;
+      const formattedValue = formatPressureValue(value);
+      amount.textContent = formattedValue === "—" ? formattedValue : `${formattedValue} avg10`;
       top.append(strong, amount);
 
       const descriptionNode = document.createElement("span");
@@ -2185,7 +2174,11 @@ function computeSnapshotStatus(snapshot, nowMs = Date.now()) {
   }
 
   const rootFs = rootFilesystem(snapshot.filesystems);
-  const pressureMax = Math.max(pressureValue(snapshot, "cpu"), pressureValue(snapshot, "memory"), pressureValue(snapshot, "io"));
+  const pressureMax = pressureMaximum([
+    pressureValue(snapshot, "cpu"),
+    pressureValue(snapshot, "memory"),
+    pressureValue(snapshot, "io"),
+  ]);
   const candidates = [
     {
       name: "CPU",
@@ -2231,7 +2224,7 @@ function computeSnapshotStatus(snapshot, nowMs = Date.now()) {
       name: "PSI",
       key: "pressure",
       value: pressureMax,
-      formatted: `${pressureMax.toFixed(2)} avg10`,
+      formatted: pressureMax === null ? "—" : `${formatPressureValue(pressureMax)} avg10`,
       warn: thresholds.pressureWarn,
       critical: thresholds.pressureCritical,
       trend: { label: "current", delta: 0 },
@@ -2355,8 +2348,8 @@ function renderSnapshotDetails(snapshot) {
 
   setText(elements.loadOne, snapshot.load.one.toFixed(2));
   setText(elements.loadContext, `${snapshot.load.five.toFixed(2)} / ${snapshot.load.fifteen.toFixed(2)} 5m/15m`);
-  setText(elements.threadCount, String(snapshot.load.totalThreads));
-  setText(elements.runnableCount, `${snapshot.load.runnable} runnable`);
+  setText(elements.threadCount, formatCount(snapshot.load.totalThreads));
+  setText(elements.runnableCount, `${formatCount(snapshot.load.runnable)} runnable`);
   setText(elements.rootUsed, rootFs ? formatPercent(rootFs.usedPercent) : "-");
   setText(elements.rootMount, rootFs ? `${rootFs.mount} on ${rootFs.filesystem}` : "-");
 
@@ -2676,7 +2669,6 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
     setCheckboxValue(elements.daemonL4Enabled, nextSettings.retentionLadder.l4.enabled);
     setControlValue(elements.daemonL4KeepDays, nextSettings.retentionLadder.l4.keepDays);
     setCheckboxValue(elements.daemonL4Forever, nextSettings.retentionLadder.l4.keepDays === 0);
-    setControlValue(elements.daemonSnapshotJsonKeepMinutes, nextSettings.retentionLadder.snapshotJsonKeepMinutes);
     setControlValue(elements.daemonDetailIntervalSec, nextSettings.retentionLadder.detailIntervalSec);
     setControlValue(elements.daemonProcessFastKeepHours, nextSettings.retentionLadder.processFastKeepHours);
     setCheckboxValue(elements.daemonArchiveQueryable, nextSettings.retentionLadder.archive.queryable);
@@ -2770,7 +2762,6 @@ function collectDaemonSettingsFromForm() {
             ? 0
             : numberControlValue(elements.daemonL4KeepDays, 730),
         },
-        snapshotJsonKeepMinutes: numberControlValue(elements.daemonSnapshotJsonKeepMinutes, 60),
         detailIntervalSec: numberControlValue(elements.daemonDetailIntervalSec, 60),
         processFastKeepHours: numberControlValue(elements.daemonProcessFastKeepHours, 24),
         archive: {
@@ -3415,13 +3406,13 @@ async function fetchHistoryWindow() {
       if (pageSamples.length === 0) break;
 
       samples.push(...pageSamples);
-      const normalizedPage = normalizedHistorySamples(pageSamples);
+      const normalizedPage = normalizeHistorySamples(pageSamples, windowConfig.source);
       const oldestSample = normalizedPage[0];
       if (pageSamples.length < limit || !oldestSample || oldestSample.capturedAt <= sinceMs) break;
       pageUntilMs = oldestSample.capturedAt - 1;
     }
 
-    hydrateHistory(samples, { keepSelection: state.selectedAtMs !== null });
+    hydrateHistory(samples, { keepSelection: state.selectedAtMs !== null, source: windowConfig.source });
   } catch {
     // Live polling still gives the dashboard useful data when history is unavailable.
   }
