@@ -2,12 +2,12 @@
 
 ## Current Version
 
-- Version: `0.3.3`
+- Version: `0.4.0`
 - Date: 2026-08-29
-- Status: Phase 2 complete on main — T7 (queryable archive, ADRs 0018/0019) shipped as 0.3.1,
-  T8 (cold CSV export + CLI carry-overs) as 0.3.2, T9 (disk check, ADR 0020) as 0.3.3; next =
-  the Phase 2 close: deep dual-blind review over `v0.3.0..HEAD`, fix round, 0.4.0 + GitHub
-  release with audits.
+- Status: Phase 2 CLOSED as 0.4.0 — T7 (queryable archive, ADRs 0018/0019) 0.3.1, T8 (cold
+  CSV export + CLI carry-overs) 0.3.2, T9 (disk check, ADR 0020) 0.3.3, then the deep
+  dual-blind review over `v0.3.0..v0.3.3` and its fix round (two P0s, one P1; clippy now in
+  the gate). Next = Phase 3: T10 settings export/import (ADR 0016) → 0.4.1.
   Deploying 0.3.x onto the live database is a separate, explicitly ordered step
   (pre-image + backup first).
 
@@ -28,13 +28,17 @@
 
 ## Completed
 
+### 0.4.0 - Tiered history ladder, Phase 2 close
+
+- [x] Phase 2 close / 0.4.0: deep dual-blind review (sol + luna, one 21-claim brief over `v0.3.0..v0.3.3`) and its fix round — the cold export now requires main to hold no rows for a month and stops at the first month still being moved (P0); the command-centre test harness runs every case under a per-call temp `HOME`/XDG root with stubbed `systemctl`/`ss`/`curl`/`pgrep` (P0 — the earlier fix had isolated only the unit directory); `put_settings` reads, validates and writes inside one `BEGIN IMMEDIATE` (P1); strict RFC 4180 verifier; schema-checked archive point reads; 12-month cap per export pass; INSTALL.md operations guidance; clippy-clean workspace with `cargo clippy -- -D warnings` in `check:rust`. GitHub release with `cargo audit` + `bun audit` pasted. Review record: Fabulous `docs/fleet/tinytop/2026-08-29-ari-dual-blind-phase2-review.md`.
+
 ### 0.3.3 - Tiered history ladder, Phase 2 (T9)
 
 - [x] T9 / 0.3.3: hourly disk check on the database's filesystem (first check at daemon start, measurement on a blocking thread) writing `history_state.diskPressure` / `lastDiskCheckMs` and the `diskPressure` / `diskRecovered` timeline markers as a four-transition state machine inside one `BEGIN IMMEDIATE` transaction; pressure refuses growth only, never deletes; undeterminable measurements keep the last state (ADR 0020); `pressureSinceMs` in coverage and `db stats`; marker colours in the dashboard. Fix round after luna run 600 (atomic read-modify-write, marker read-back test, full-row assertions, interval clamp). Run 596 escalated correctly on a brief that excluded a test file needing the new field.
 
 ### 0.3.2 - Tiered history ladder, Phase 2 (T8)
 
-- [x] T8 / 0.3.2: verified monthly cold export of the queryable archive (`tinytop-1h-YYYY-MM.csv.gz` + `.sha256`, RFC 4180, gzip 6, `.tmp` → fsync → hash → re-read verify → rename → sidecar → manifest → watermark; never deletes), exportable only once every hour of the month has expired from L4; hourly scheduler; real cold coverage; `db archive status|export-now`; carry-overs closed: CLI `close()` checkpoints the WAL, inspection never creates a database, `limit=0`/inverted ranges → 400. Fix round after luna run 589: step naming, record-width verification, incomplete-archive reporting, month-listing boundary; `TINYTOP_SYSTEMD_UNIT_DIR` makes the command-center tests hermetic (the gate had stopped the live service). `flate2` 1.1.10 + `sha2` 0.11.0 vetted (`docs/reports/2026-08-29-dependency-vetting-flate2-sha2.md`).
+- [x] T8 / 0.3.2: verified monthly cold export of the queryable archive (`tinytop-1h-YYYY-MM.csv.gz` + `.sha256`, RFC 4180, gzip 6, `.tmp` → fsync → hash → re-read verify → rename → sidecar → manifest → watermark; never deletes), exportable only once every hour of the month has expired from L4; hourly scheduler; real cold coverage; `db archive status|export-now`; carry-overs closed: CLI `close()` checkpoints the WAL, inspection never creates a database, `limit=0`/inverted ranges → 400. Fix round after luna run 589: step naming, record-width verification, incomplete-archive reporting, month-listing boundary; `TINYTOP_SYSTEMD_UNIT_DIR` isolates the command-center tests from the real user units (the gate had stopped the live service; the Phase-2 close fix then isolated `HOME`/XDG and stubbed the host commands too). `flate2` 1.1.10 + `sha2` 0.11.0 vetted (`docs/reports/2026-08-29-dependency-vetting-flate2-sha2.md`).
 
 ### 0.3.1 - Tiered history ladder, Phase 2 (T7)
 

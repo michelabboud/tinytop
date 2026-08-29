@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-08-29
+
+Phase 2 of the tiered history ladder closes. Since 0.3.0 the daemon gained the queryable archive (0.3.1; ADRs 0014, 0018, 0019 — copy, fsynced commit, key-set verify, full-row delete, watermark inside the delete transaction, after the lane escalated on SQLite's file-by-file WAL commit order and the blind review found the interval-count livelock), the verified monthly cold export with its `db archive` commands and the Phase-1 CLI carry-overs (0.3.2; a month is exportable only once every hour of it has expired from L4; the command centre became hermetic under test after a gate stopped the live service), and the disk-pressure check with its two timeline markers (0.3.3; ADRs 0017 and 0020 — first check at start on a blocking thread, one `BEGIN IMMEDIATE` transaction per check, an undeterminable measurement keeps the last state). The Phase-2 deep dual-blind review over `v0.3.0..v0.3.3` (sol + luna, one brief, 21 claims) and its fix round are recorded in the Fabulous archive; its fix round closed two P0s (the cold export could seal a month whose rows were still leaving main; the command-centre harness still wrote a PID file under the real state directory) and a P1 (`put_settings` read the pressure state outside its transaction), tightened the CSV verifier and archive point reads, capped an export pass at twelve months, and made the workspace clippy-clean with clippy in the gate. Audits at the tag: `cargo audit` 0 vulnerabilities (3 pre-existing allowed warnings), `bun audit` clean. `user_version` stays 1; the archive and cold export stay off until enabled.
 
 - Prevented cold export from sealing a month until every row has left the main database; candidate evaluation now stops at the first month still being moved.
 - Made command-center test runs hermetic by isolating home/XDG paths and system command stubs per invocation.
