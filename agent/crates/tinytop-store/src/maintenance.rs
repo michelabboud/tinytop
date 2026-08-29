@@ -1,10 +1,12 @@
 use crate::{
     DashboardSettings, SqliteHistoryStore, StoreError,
-    ladder::{Tier, bucket_start_for, fold, grace_ms, is_complete},
+    ladder::{Tier, TierBucket, bucket_start_for, fold, grace_ms, is_complete},
+    retention_ladder::RetentionLadder,
 };
 
 const MAX_PROMOTIONS_PER_TICK: i64 = 50;
 const JSON_STRIP_BATCH: i64 = 500;
+const DAY_MS: i64 = 86_400_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LadderConfig {
@@ -27,11 +29,38 @@ pub struct MaintenanceReport {
     pub expired_l4: i64,
 }
 
+#[derive(Debug)]
+pub struct MaintenanceError {
+    pub report: MaintenanceReport,
+    pub error: StoreError,
+}
+
+impl std::fmt::Display for MaintenanceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for MaintenanceError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl From<StoreError> for MaintenanceError {
+    fn from(error: StoreError) -> Self {
+        Self {
+            report: MaintenanceReport::default(),
+            error,
+        }
+    }
+}
+
 pub async fn maintain(
     store: &SqliteHistoryStore,
     settings: &DashboardSettings,
     now_ms: i64,
-) -> Result<MaintenanceReport, StoreError> {
+) -> Result<MaintenanceReport, MaintenanceError> {
     settings.validate()?;
     maintain_with_config(
         store,
@@ -48,7 +77,7 @@ pub async fn maintain_with_config(
     store: &SqliteHistoryStore,
     config: &LadderConfig,
     now_ms: i64,
-) -> Result<MaintenanceReport, StoreError> {
+) -> Result<MaintenanceReport, MaintenanceError> {
     let mut report = MaintenanceReport::default();
     let mut first_error = None;
 
@@ -214,7 +243,7 @@ pub async fn maintain_with_config(
     }
 
     if let Some(error) = first_error {
-        Err(error)
+        Err(MaintenanceError { report, error })
     } else {
         Ok(report)
     }
@@ -273,6 +302,10 @@ async fn promote(
 pub(crate) async fn refold_ancestors_for_late_write(
     store: &SqliteHistoryStore,
     captured_at_ms: i64,
+    now_ms: i64,
+    ladder: &RetentionLadder,
+    new_sample: &TierBucket,
+    new_raw_row: bool,
 ) -> Result<(), StoreError> {
     let l3_watermark = store.history_state_get::<i64>("l3FoldedUntilMs").await?;
     let l4_watermark = store.history_state_get::<i64>("l4FoldedUntilMs").await?;
@@ -287,13 +320,38 @@ pub(crate) async fn refold_ancestors_for_late_write(
 
     let l3_start_ms = bucket_start_for(Tier::L3.resolution_ms(), captured_at_ms);
     if l3_enabled && l3_watermark.is_some_and(|watermark| l3_start_ms < watermark) {
-        refold_one(store, Tier::L2, Tier::L3, l3_start_ms).await?;
+        refold_one(
+            store,
+            Tier::L2,
+            Tier::L3,
+            l3_start_ms,
+            now_ms,
+            ladder.l2.keep_days,
+            new_sample,
+            new_raw_row,
+        )
+        .await?;
     }
 
     let l4_start_ms = bucket_start_for(Tier::L4.resolution_ms(), captured_at_ms);
     if l4_enabled && l4_watermark.is_some_and(|watermark| l4_start_ms < watermark) {
         let source_tier = if l3_enabled { Tier::L3 } else { Tier::L2 };
-        refold_one(store, source_tier, Tier::L4, l4_start_ms).await?;
+        let source_keep_days = if source_tier == Tier::L3 {
+            ladder.l3.keep_days
+        } else {
+            ladder.l2.keep_days
+        };
+        refold_one(
+            store,
+            source_tier,
+            Tier::L4,
+            l4_start_ms,
+            now_ms,
+            source_keep_days,
+            new_sample,
+            new_raw_row,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -303,12 +361,31 @@ async fn refold_one(
     source_tier: Tier,
     target_tier: Tier,
     target_start_ms: i64,
+    now_ms: i64,
+    source_keep_days: i64,
+    new_sample: &TierBucket,
+    new_raw_row: bool,
 ) -> Result<(), StoreError> {
     let target_end_ms = target_start_ms.saturating_add(target_tier.resolution_ms());
     let finer = store
         .read_tier_buckets(source_tier, target_start_ms, target_end_ms)
         .await?;
-    if let Some(bucket) = fold(target_start_ms, &finer) {
+    let source_count = finer.iter().map(|bucket| bucket.sample_count).sum::<i64>();
+    let source_holds_whole_range = source_count > 0
+        && target_start_ms >= now_ms.saturating_sub(source_keep_days.saturating_mul(DAY_MS));
+    if !source_holds_whole_range && !new_raw_row {
+        return Ok(());
+    }
+    let bucket = if source_holds_whole_range {
+        fold(target_start_ms, &finer)
+    } else {
+        let mut merge = store
+            .read_tier_buckets(target_tier, target_start_ms, target_end_ms)
+            .await?;
+        merge.push(new_sample.clone());
+        fold(target_start_ms, &merge)
+    };
+    if let Some(bucket) = bucket {
         store.upsert_tier_bucket(target_tier, &bucket).await?;
     }
     Ok(())

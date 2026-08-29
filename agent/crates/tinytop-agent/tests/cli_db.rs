@@ -46,6 +46,11 @@ impl TempDatabase {
         let output = self.run(&["db", "stats", "--json"]);
         assert_success(&output);
     }
+
+    fn initialize_populated_v1(&self) {
+        let output = self.run(&["collect", "--json"]);
+        assert_success(&output);
+    }
 }
 
 fn run_database_command(database_url: &str, args: &[&str]) -> Output {
@@ -117,6 +122,19 @@ fn set_sqlite_user_version(path: &Path, user_version: u32) {
         .expect("SQLite user_version header should be writable");
     file.sync_all()
         .expect("SQLite user_version fixture update should be durable");
+}
+
+fn sqlite_user_version(path: &Path) -> u32 {
+    let mut file = File::open(path).expect("SQLite fixture should open for user_version read");
+    let mut header = [0_u8; 64];
+    file.read_exact(&mut header)
+        .expect("SQLite fixture should have a complete header");
+    assert_eq!(&header[..16], b"SQLite format 3\0");
+    u32::from_be_bytes(
+        header[60..64]
+            .try_into()
+            .expect("SQLite user_version header slice should have four bytes"),
+    )
 }
 
 fn remove_owned_sqlite_database_and_sidecars(path: &Path) {
@@ -202,6 +220,56 @@ fn db_stats_json_reports_the_ladder() {
             "fileCount",
         ])
     );
+}
+
+#[test]
+fn db_check_never_migrates_a_v0_database() {
+    let fixture = TempDatabase::new("check-v0-no-migration");
+    fixture.initialize_populated_v1();
+    set_sqlite_user_version(&fixture.db_path, 0);
+
+    let output = fixture.run(&["db", "check"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["value"]["result"], "ok");
+    assert_eq!(sqlite_user_version(&fixture.db_path), 0);
+    assert!(!fixture.pre_image_path.exists());
+}
+
+#[test]
+fn db_vacuum_never_migrates_a_v0_database() {
+    let fixture = TempDatabase::new("vacuum-v0-no-migration");
+    fixture.initialize_populated_v1();
+    set_sqlite_user_version(&fixture.db_path, 0);
+
+    let output = fixture.run(&["db", "vacuum"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["value"]["action"], "vacuum");
+    assert_eq!(sqlite_user_version(&fixture.db_path), 0);
+    assert!(!fixture.pre_image_path.exists());
+}
+
+#[test]
+fn db_stats_refuses_a_v0_database() {
+    let fixture = TempDatabase::new("stats-v0-refusal");
+    fixture.initialize_populated_v1();
+    set_sqlite_user_version(&fixture.db_path, 0);
+
+    let output = fixture.run(&["db", "stats", "--json"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "refused");
+    let reason = json["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("user_version"));
+    assert!(reason.contains('0'));
+    assert_eq!(sqlite_user_version(&fixture.db_path), 0);
+    assert!(!fixture.pre_image_path.exists());
 }
 
 #[test]
@@ -316,6 +384,29 @@ fn explicit_sqlite_url_never_touches_the_default_state_directory() {
         .expect("tinytop-agent database command should run");
 
     assert_success(&output);
+    assert!(!home.exists());
+}
+
+#[test]
+fn pre_image_status_without_sqlite_does_not_create_default_directories() {
+    let fixture = TempDatabase::new("default-status-no-directories");
+    let home = fixture.dir.join("home");
+    assert!(!home.exists());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tinytop-agent"))
+        .args(["db", "pre-image", "status"])
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("LOCALAPPDATA", &home)
+        .env("XDG_STATE_HOME", &home)
+        .env_remove("TINYTOP_HISTORY_DB")
+        .output()
+        .expect("tinytop-agent pre-image status command should run");
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["value"]["databaseExists"], false);
     assert!(!home.exists());
 }
 

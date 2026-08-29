@@ -16,6 +16,17 @@
 - Fixed pre-image status and removal through symlinked database paths by sharing the migration's canonical database-path resolution.
 - Removed the duplicate raw-sample stats scan from `tinytop-agent db stats` by reusing the stats already carried by history coverage without changing its JSON shape.
 - Deferred default database-path resolution for `db` and `serve` until after parsing, so an explicit `--sqlite` never creates the default state directory.
+- Fixed same-timestamp detail replacement to remove filesystem and process members omitted by the replacement snapshot.
+- Included the SQLite WAL sidecar in migration headroom and `bytesBefore`/`bytesAfter` audit accounting.
+- Guarded frozen/partial minute merges against duplicate raw-row replays while documenting that the first post-prune replay remains indistinguishable from a late write.
+- Prevented `db stats`, `db check`, and `db vacuum` from migrating existing databases; stats now returns a structured pre-v1 refusal while check and vacuum inspect any schema version in place.
+- Added an authentic post-schema-commit migration crash seam and recovery test covering the pending audit, post-commit VACUUM, audit completion, and exactly one migration marker.
+- Preserved completed maintenance counts in `MaintenanceError` when a later step fails, and included the partial report in the agent's error log.
+- Replaced bare history-detail/points query extraction with field-aware parsing whose JSON rejections name the parameter, observed value, rule, and remedy.
+- Removed directory creation from SQLite URL normalization and limited parent creation to commands that may create a database.
+- Protected retained L3/L4 buckets from late-write replacement when their finer source tier has passed its retention horizon, merging one new sample instead.
+- Replaying an already-counted timestamp older than the L2 horizon no longer merges it into a retained L3/L4 bucket again; only a genuinely new raw row takes the merge path.
+- Counted both inclusive range endpoints during `source=auto` tier selection so a `k × resolution` range requires room for `k + 1` points.
 
 ## 0.2.11 - 2026-08-28
 

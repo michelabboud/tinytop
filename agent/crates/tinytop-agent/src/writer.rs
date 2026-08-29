@@ -7,7 +7,7 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Query, RawQuery, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -345,8 +345,9 @@ async fn history_coverage(State(state): State<AppState>) -> Result<Response, Ser
 
 async fn history_points(
     State(state): State<AppState>,
-    Query(params): Query<HistoryPointsParams>,
+    RawQuery(raw_query): RawQuery,
 ) -> Result<Response, ServeError> {
+    let params = parse_history_points_params(raw_query.as_deref())?;
     let query = history_points_query(params)?;
     let settings = state.store.get_settings().await?;
     let source = resolve_history_point_source_with_poll(
@@ -382,8 +383,9 @@ async fn history_markers(
 
 async fn history_filesystems(
     State(state): State<AppState>,
-    Query(params): Query<HistoryFilesystemsParams>,
+    RawQuery(raw_query): RawQuery,
 ) -> Result<Response, ServeError> {
+    let params = parse_history_filesystems_params(raw_query.as_deref())?;
     let query = detail_history_query(params.since_ms, params.until_ms, params.limit);
     let filesystems = state
         .store
@@ -394,8 +396,9 @@ async fn history_filesystems(
 
 async fn history_processes(
     State(state): State<AppState>,
-    Query(params): Query<HistoryProcessesParams>,
+    RawQuery(raw_query): RawQuery,
 ) -> Result<Response, ServeError> {
+    let params = parse_history_processes_params(raw_query.as_deref())?;
     let query = detail_history_query(params.since_ms, params.until_ms, params.limit);
     let captures = state.store.read_history_processes(query).await?;
     Ok(no_store(Json(HistoryProcessesResponse { captures })).into_response())
@@ -552,7 +555,10 @@ async fn maintain_history(
     let report = match tinytop_store::maintenance::maintain(&state.store, settings, now).await {
         Ok(report) => report,
         Err(error) => {
-            eprintln!("history maintenance completed with an error: {error}");
+            eprintln!(
+                "history maintenance completed with an error: {error}; partial report: {:?}",
+                error.report
+            );
             return Ok(());
         }
     };
@@ -641,6 +647,153 @@ fn detail_history_query(
         until_ms,
         limit: Some(limit.unwrap_or(DEFAULT_HISTORY_LIMIT).clamp(1, 10_000)),
     }
+}
+
+fn parse_history_points_params(raw_query: Option<&str>) -> Result<HistoryPointsParams, ServeError> {
+    let pairs = parse_query_pairs(raw_query)?;
+    Ok(HistoryPointsParams {
+        limit: query_i64(&pairs, "limit", &["limit"])?,
+        window_seconds: query_i64(
+            &pairs,
+            "windowSeconds",
+            &["windowSeconds", "window_seconds"],
+        )?,
+        since_ms: query_i64(&pairs, "sinceMs", &["sinceMs", "since_ms"])?,
+        until_ms: query_i64(&pairs, "untilMs", &["untilMs", "until_ms"])?,
+        source: query_string(&pairs, "source", &["source"])?,
+    })
+}
+
+fn parse_history_filesystems_params(
+    raw_query: Option<&str>,
+) -> Result<HistoryFilesystemsParams, ServeError> {
+    let pairs = parse_query_pairs(raw_query)?;
+    Ok(HistoryFilesystemsParams {
+        since_ms: query_i64(&pairs, "sinceMs", &["sinceMs", "since_ms"])?,
+        until_ms: query_i64(&pairs, "untilMs", &["untilMs", "until_ms"])?,
+        mount: query_string(&pairs, "mount", &["mount"])?,
+        limit: query_i64(&pairs, "limit", &["limit"])?,
+    })
+}
+
+fn parse_history_processes_params(
+    raw_query: Option<&str>,
+) -> Result<HistoryProcessesParams, ServeError> {
+    let pairs = parse_query_pairs(raw_query)?;
+    Ok(HistoryProcessesParams {
+        since_ms: query_i64(&pairs, "sinceMs", &["sinceMs", "since_ms"])?,
+        until_ms: query_i64(&pairs, "untilMs", &["untilMs", "until_ms"])?,
+        limit: query_i64(&pairs, "limit", &["limit"])?,
+    })
+}
+
+fn parse_query_pairs(raw_query: Option<&str>) -> Result<Vec<(String, String)>, ServeError> {
+    raw_query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (raw_name, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+            let name = decode_query_component("name", raw_name)?;
+            let value = decode_query_component(&name, raw_value)?;
+            Ok((name, value))
+        })
+        .collect()
+}
+
+fn query_i64(
+    pairs: &[(String, String)],
+    field: &str,
+    aliases: &[&str],
+) -> Result<Option<i64>, ServeError> {
+    let Some(value) = query_value(pairs, field, aliases)? else {
+        return Ok(None);
+    };
+    value.parse::<i64>().map(Some).map_err(|_| {
+        invalid_query(format!(
+            "query parameter {field}: invalid value {value:?}; expected a signed 64-bit integer; provide {field} as an integer"
+        ))
+    })
+}
+
+fn query_string(
+    pairs: &[(String, String)],
+    field: &str,
+    aliases: &[&str],
+) -> Result<Option<String>, ServeError> {
+    Ok(query_value(pairs, field, aliases)?.map(str::to_string))
+}
+
+fn query_value<'a>(
+    pairs: &'a [(String, String)],
+    field: &str,
+    aliases: &[&str],
+) -> Result<Option<&'a str>, ServeError> {
+    let mut matches = pairs
+        .iter()
+        .filter(|(name, _)| aliases.contains(&name.as_str()));
+    let first = matches.next();
+    if let Some((_, observed)) = matches.next() {
+        return Err(invalid_query(format!(
+            "query parameter {field}: invalid value {observed:?}; the parameter may appear at most once; remove the duplicate {field} value"
+        )));
+    }
+    Ok(first.map(|(_, value)| value.as_str()))
+}
+
+fn decode_query_component(field: &str, observed: &str) -> Result<String, ServeError> {
+    let input = observed.as_bytes();
+    let mut decoded = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        match input[index] {
+            b'+' => {
+                decoded.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < input.len() => {
+                let Some(high) = hex_value(input[index + 1]) else {
+                    return Err(invalid_query(format!(
+                        "query parameter {field}: invalid value {observed:?}; percent escapes require two hexadecimal digits; percent-encode {field} correctly"
+                    )));
+                };
+                let Some(low) = hex_value(input[index + 2]) else {
+                    return Err(invalid_query(format!(
+                        "query parameter {field}: invalid value {observed:?}; percent escapes require two hexadecimal digits; percent-encode {field} correctly"
+                    )));
+                };
+                decoded.push(high * 16 + low);
+                index += 3;
+            }
+            b'%' => {
+                return Err(invalid_query(format!(
+                    "query parameter {field}: invalid value {observed:?}; percent escapes require two hexadecimal digits; percent-encode {field} correctly"
+                )));
+            }
+            byte => {
+                decoded.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| {
+        invalid_query(format!(
+            "query parameter {field}: invalid value {observed:?}; decoded query values must be UTF-8; percent-encode {field} as UTF-8"
+        ))
+    })
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn invalid_query(message: String) -> ServeError {
+    ServeError::Store(tinytop_store::StoreError::Validation(message))
 }
 
 impl From<HistoryMarkersParams> for HistoryParams {
@@ -1080,6 +1233,74 @@ mod tests {
         );
     }
 
+    async fn assert_bad_query_names_parameter(
+        prefix: &str,
+        path: &str,
+        parameter: &str,
+        observed: &str,
+    ) {
+        let (_fixture, state) = test_state(prefix).await;
+        let (status, body) = request_json(router(state), path).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let error = body["error"].as_str().unwrap_or_default();
+        assert!(error.contains(parameter), "missing {parameter} in {error}");
+        assert!(error.contains(observed), "missing {observed} in {error}");
+    }
+
+    #[tokio::test]
+    async fn history_points_query_rejections_name_parameter_and_observed_value() {
+        assert_bad_query_names_parameter(
+            "points-bad-limit",
+            "/api/history/points?limit=abc",
+            "limit",
+            "abc",
+        )
+        .await;
+        assert_bad_query_names_parameter(
+            "points-bad-since",
+            "/api/history/points?sinceMs=x",
+            "sinceMs",
+            "x",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn history_filesystems_query_rejections_name_parameter_and_observed_value() {
+        assert_bad_query_names_parameter(
+            "filesystems-bad-limit",
+            "/api/history/filesystems?limit=abc",
+            "limit",
+            "abc",
+        )
+        .await;
+        assert_bad_query_names_parameter(
+            "filesystems-bad-since",
+            "/api/history/filesystems?sinceMs=x",
+            "sinceMs",
+            "x",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn history_processes_query_rejections_name_parameter_and_observed_value() {
+        assert_bad_query_names_parameter(
+            "processes-bad-limit",
+            "/api/history/processes?limit=abc",
+            "limit",
+            "abc",
+        )
+        .await;
+        assert_bad_query_names_parameter(
+            "processes-bad-since",
+            "/api/history/processes?sinceMs=x",
+            "sinceMs",
+            "x",
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn auto_picks_finest_tier_that_still_holds_the_range_start() {
         struct Case {
@@ -1267,6 +1488,24 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[tokio::test]
+    async fn auto_counts_both_inclusive_endpoints_against_the_limit() {
+        let (_fixture, state) = test_state("auto-inclusive-endpoints").await;
+        let now = now_ms().expect("test time");
+        let poll_interval_ms = 1_500;
+        let since_ms = now.saturating_sub(poll_interval_ms);
+        insert_fixture_snapshot(&state.store, since_ms).await;
+        insert_fixture_snapshot(&state.store, now).await;
+
+        let uri =
+            format!("/api/history/points?source=auto&sinceMs={since_ms}&untilMs={now}&limit=1");
+        let (status, body) = request_json(router(state), &uri).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_ne!(body["source"], "raw");
+        assert_eq!(body["source"], "rollup");
     }
 
     #[tokio::test]

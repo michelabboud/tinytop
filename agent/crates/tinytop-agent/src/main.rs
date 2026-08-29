@@ -21,7 +21,7 @@ const DEFAULT_POLL_MS: u64 = 1500;
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        if let Some(refusal) = error.downcast_ref::<PreImageRemovalRefused>() {
+        if let Some(refusal) = error.downcast_ref::<Refused>() {
             println!(
                 "{}",
                 serde_json::json!({ "status": "refused", "reason": refusal.reason })
@@ -100,17 +100,17 @@ struct PreImageRemoveResult {
 }
 
 #[derive(Debug)]
-struct PreImageRemovalRefused {
+struct Refused {
     reason: String,
 }
 
-impl std::fmt::Display for PreImageRemovalRefused {
+impl std::fmt::Display for Refused {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.reason)
     }
 }
 
-impl std::error::Error for PreImageRemovalRefused {}
+impl std::error::Error for Refused {}
 
 #[derive(Debug, Clone)]
 struct ServeDefaults {
@@ -163,6 +163,7 @@ async fn collect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = collector.collect()?;
 
     if let Some(database_url) = sqlite_url {
+        create_sqlite_parent(&database_url)?;
         let store = SqliteHistoryStore::connect(&database_url).await?;
         store.insert_snapshot(now_ms()?, &snapshot).await?;
     }
@@ -213,7 +214,18 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     match subcommand {
         "stats" => {
-            let store = SqliteHistoryStore::connect(&sqlite_url).await?;
+            let (store, database_existed) = connect_for_db_diagnostic(&sqlite_url).await?;
+            if database_existed {
+                let user_version = store.user_version().await?;
+                if user_version < 1 {
+                    return Err(Refused {
+                        reason: format!(
+                            "user_version check observed {user_version}; the schema v1 migration has not run — stop every TinyTop writer and start the daemon once (it takes the pre-image first; see INSTALL.md)"
+                        ),
+                    }
+                    .into());
+                }
+            }
             let settings = store.get_settings().await?;
             let coverage = store.history_coverage(&settings).await?;
             let stats = StoreStats {
@@ -236,7 +248,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         "check" => {
-            let store = SqliteHistoryStore::connect(&sqlite_url).await?;
+            let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&DbStatus {
@@ -248,7 +260,7 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         "vacuum" => {
-            let store = SqliteHistoryStore::connect(&sqlite_url).await?;
+            let (store, _) = connect_for_db_diagnostic(&sqlite_url).await?;
             store.vacuum().await?;
             println!(
                 "{}",
@@ -319,7 +331,7 @@ async fn db_pre_image(
                 yes,
                 &database_path,
             ) {
-                return Err(PreImageRemovalRefused {
+                return Err(Refused {
                     reason: format!("{reason}; path is {}", path.display()),
                 }
                 .into());
@@ -383,6 +395,7 @@ fn pre_image_remove_allowed(
 
 async fn serve(args: &[String], defaults: ServeDefaults) -> Result<(), Box<dyn std::error::Error>> {
     let options = parse_serve_options(args, defaults)?;
+    create_sqlite_parent(&options.sqlite_url)?;
     writer::serve(options).await?;
     Ok(())
 }
@@ -527,10 +540,30 @@ fn normalize_sqlite_url(value: &str) -> Result<String, Box<dyn std::error::Error
     }
 
     let expanded = expand_home(value)?;
-    if let Some(parent) = expanded.parent() {
+    Ok(format!("sqlite://{}", expanded.display()))
+}
+
+async fn connect_for_db_diagnostic(
+    sqlite_url: &str,
+) -> Result<(SqliteHistoryStore, bool), Box<dyn std::error::Error>> {
+    if inspect_database_path(sqlite_url)?.is_some() {
+        return Ok((
+            SqliteHistoryStore::connect_for_inspection(sqlite_url).await?,
+            true,
+        ));
+    }
+    create_sqlite_parent(sqlite_url)?;
+    Ok((SqliteHistoryStore::connect(sqlite_url).await?, false))
+}
+
+fn create_sqlite_parent(sqlite_url: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let database_path = database_path_from_url(sqlite_url)?;
+    if let Some(parent) = database_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
         std::fs::create_dir_all(parent)?;
     }
-    Ok(format!("sqlite://{}", expanded.display()))
+    Ok(())
 }
 
 fn expand_home(value: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
