@@ -333,6 +333,7 @@ export function describeImportPlan(
     if (count !== null) lines.push(`${count.toLocaleString()} ${label}${suffix}`);
   };
 
+  const ladderLinesStart = lines.length;
   addCount("l1Rows", "L1 rows");
   addCount("l2Buckets", "L2 buckets");
   addCount("l3Buckets", "L3 buckets");
@@ -355,13 +356,20 @@ export function describeImportPlan(
   if (previousLadder?.archive?.cold && !candidateLadder?.archive?.cold) {
     lines.push("cold export stops — exported files are kept");
   }
+  const ladderDescribed = lines.length > ladderLinesStart;
 
   if (includeOtherChanges) {
+    if (Array.isArray(plan?.changedKeys) && plan.changedKeys.includes("retentionLadder") && !ladderDescribed) {
+      lines.push("retention ladder changes — no stored history is affected");
+    }
     const otherChangedKeys = Array.isArray(plan?.changedKeys)
       ? plan.changedKeys.filter((key) => key !== "retentionLadder")
       : [];
     if (otherChangedKeys.length > 0) lines.push(`also changes: ${otherChangedKeys.join(", ")}`);
     if (Array.isArray(plan?.warnings)) lines.push(...plan.warnings);
+    if (Array.isArray(plan?.changedKeys) && plan.changedKeys.length === 0 && lines.length === 0) {
+      lines.push("no settings change — the document matches the current settings");
+    }
   }
   return lines;
 }
