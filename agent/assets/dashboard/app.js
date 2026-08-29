@@ -2,13 +2,18 @@ import {
   HISTORY_WINDOWS,
   describeDiskCoverage,
   describeImportPlan,
+  describeOtelCoverage,
   exportFilenameFrom,
   fallbackWindowKey,
+  formatResourceAttributes,
   historyWindowFor,
   isValidImportPlan,
   ladderCapabilityFrom,
+  otelCapabilityFrom,
+  parseResourceAttributes,
   settingsPutPayload,
   shouldFetchCoverage,
+  validateOtelSettings,
   validateRetentionLadder,
 } from "./ladder-rules.js";
 
@@ -137,6 +142,15 @@ const DEFAULT_DAEMON_SETTINGS = {
       minFreeBytes: 5 * 1024 * 1024 * 1024,
     },
   },
+  otel: {
+    enabled: false,
+    endpoint: "http://127.0.0.1:4318/v1/metrics",
+    protocol: "http/protobuf",
+    intervalSec: 60,
+    headersEnvVar: "TINYTOP_OTEL_HEADERS",
+    serviceName: "tinytop",
+    resourceAttributes: {},
+  },
   targetDatabaseBytes: 128 * 1024 * 1024,
   topProcessCount: 8,
   redactionDefault: false,
@@ -215,6 +229,8 @@ const state = {
   settingsDirty: false,
   settingsErrors: [],
   retentionLadderAvailable: false,
+  otelAvailable: false,
+  otelResourceAttributeErrors: [],
   theme: "midnight",
   graphMode: "line",
   historyWindowKey: "live",
@@ -316,6 +332,7 @@ const elements = {
   historyLadderCoverage: document.querySelector("#history-ladder-coverage"),
   historyDiskPressure: document.querySelector("#history-disk-pressure"),
   historyArchiveStatus: document.querySelector("#history-archive-status"),
+  historyOtelStatus: document.querySelector("#history-otel-status"),
   historyMarkerList: document.querySelector("#history-marker-list"),
   historySeriesInputs: Array.from(document.querySelectorAll("[data-history-series]")),
   sampleCount: document.querySelector("#sample-count"),
@@ -377,6 +394,13 @@ const elements = {
   daemonDiskCheckMinFreeGib: document.querySelector("#daemon-disk-check-min-free-gib"),
   historyLadderSettingsGroup: document.querySelector("#history-ladder-settings-group"),
   historyLadderUnavailable: document.querySelector("#history-ladder-unavailable"),
+  otelSettingsGroup: document.querySelector("#otel-settings-group"),
+  daemonOtelEnabled: document.querySelector("#daemon-otel-enabled"),
+  daemonOtelEndpoint: document.querySelector("#daemon-otel-endpoint"),
+  daemonOtelIntervalSec: document.querySelector("#daemon-otel-interval-sec"),
+  daemonOtelHeadersEnvVar: document.querySelector("#daemon-otel-headers-env-var"),
+  daemonOtelServiceName: document.querySelector("#daemon-otel-service-name"),
+  daemonOtelResourceAttributes: document.querySelector("#daemon-otel-resource-attributes"),
   daemonDbBudgetMib: document.querySelector("#daemon-db-budget-mib"),
   daemonTopProcessCount: document.querySelector("#daemon-top-process-count"),
   daemonCpuWarn: document.querySelector("#daemon-cpu-warn"),
@@ -502,6 +526,10 @@ function cloneSettings(settings = DEFAULT_DAEMON_SETTINGS) {
       archive: { ...settings.retentionLadder.archive },
       diskCheck: { ...settings.retentionLadder.diskCheck },
     },
+    otel: {
+      ...settings.otel,
+      resourceAttributes: { ...(settings.otel?.resourceAttributes ?? {}) },
+    },
   };
 }
 
@@ -539,6 +567,15 @@ function normalizeSettings(settings) {
     }
   }
 
+  const otel = {
+    ...fallback.otel,
+    ...(settings.otel ?? {}),
+    resourceAttributes: {
+      ...fallback.otel.resourceAttributes,
+      ...(settings.otel?.resourceAttributes ?? {}),
+    },
+  };
+
   return {
     ...fallback,
     ...settings,
@@ -550,6 +587,7 @@ function normalizeSettings(settings) {
       ? retentionLadder.l2.keepDays
       : Number(settings.rollupRetentionDays ?? fallback.rollupRetentionDays),
     retentionLadder,
+    otel,
     thresholds: normalizeThresholds(settings.thresholds),
     enabledSections: {
       ...fallback.enabledSections,
@@ -582,6 +620,12 @@ function settingsFormControls() {
     elements.daemonArchiveDirectory,
     elements.daemonDiskCheckIntervalMinutes,
     elements.daemonDiskCheckMinFreeGib,
+    elements.daemonOtelEnabled,
+    elements.daemonOtelEndpoint,
+    elements.daemonOtelIntervalSec,
+    elements.daemonOtelHeadersEnvVar,
+    elements.daemonOtelServiceName,
+    elements.daemonOtelResourceAttributes,
     elements.daemonDbBudgetMib,
     elements.daemonTopProcessCount,
     elements.daemonCpuWarn,
@@ -2457,6 +2501,9 @@ function validateDaemonSettings(settings = collectDaemonSettingsFromForm()) {
       ),
     );
   }
+  if (state.otelAvailable) {
+    errors.push(...state.otelResourceAttributeErrors, ...validateOtelSettings(settings.otel));
+  }
   for (const [label, warnKey, criticalKey] of [
     ["CPU", "cpuWarn", "cpuCritical"],
     ["RAM", "memoryWarn", "memoryCritical"],
@@ -2600,6 +2647,15 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
   setControlValue(elements.daemonPollInterval, nextSettings.pollIntervalMs);
   setControlValue(elements.daemonRetentionHours, nextSettings.retentionHours);
   setControlValue(elements.daemonRollupRetentionDays, nextSettings.rollupRetentionDays);
+  if (state.otelAvailable) {
+    setCheckboxValue(elements.daemonOtelEnabled, nextSettings.otel.enabled);
+    setControlValue(elements.daemonOtelEndpoint, nextSettings.otel.endpoint);
+    setControlValue(elements.daemonOtelIntervalSec, nextSettings.otel.intervalSec);
+    setControlValue(elements.daemonOtelHeadersEnvVar, nextSettings.otel.headersEnvVar);
+    setControlValue(elements.daemonOtelServiceName, nextSettings.otel.serviceName);
+    setControlValue(elements.daemonOtelResourceAttributes, formatResourceAttributes(nextSettings.otel.resourceAttributes));
+    state.otelResourceAttributeErrors = [];
+  }
   if (state.retentionLadderAvailable) {
     setControlValue(elements.daemonL1KeepDays, nextSettings.retentionLadder.l1.keepDays);
     setControlValue(elements.daemonL2KeepDays, nextSettings.retentionLadder.l2.keepDays);
@@ -2683,6 +2739,7 @@ function syncRetentionLadderAvailability() {
   if (elements.daemonRollupRetentionDays) elements.daemonRollupRetentionDays.readOnly = state.retentionLadderAvailable;
   setHidden(elements.daemonRetentionHoursDerived, !state.retentionLadderAvailable);
   setHidden(elements.daemonRollupRetentionDaysDerived, !state.retentionLadderAvailable);
+  setHidden(elements.otelSettingsGroup, !state.otelAvailable);
 }
 
 function collectDaemonSettingsFromForm() {
@@ -2722,6 +2779,20 @@ function collectDaemonSettingsFromForm() {
   const rollupRetentionDays = state.retentionLadderAvailable
     ? retentionLadder.l2.keepDays
     : numberControlValue(elements.daemonRollupRetentionDays, state.daemonSettings.rollupRetentionDays);
+  let otel = cloneSettings(state.daemonSettings).otel;
+  if (state.otelAvailable) {
+    const parsedAttributes = parseResourceAttributes(elements.daemonOtelResourceAttributes?.value ?? "");
+    state.otelResourceAttributeErrors = parsedAttributes.errors;
+    otel = {
+      ...otel,
+      enabled: Boolean(elements.daemonOtelEnabled?.checked),
+      endpoint: elements.daemonOtelEndpoint?.value ?? "",
+      intervalSec: numberControlValue(elements.daemonOtelIntervalSec, 60),
+      headersEnvVar: elements.daemonOtelHeadersEnvVar?.value ?? "",
+      serviceName: elements.daemonOtelServiceName?.value ?? "",
+      resourceAttributes: parsedAttributes.attributes,
+    };
+  }
   return {
     ...cloneSettings(state.daemonSettings),
     defaultTheme: elements.daemonDefaultTheme?.value ?? "midnight",
@@ -2731,6 +2802,7 @@ function collectDaemonSettingsFromForm() {
     retentionHours,
     rollupRetentionDays,
     retentionLadder,
+    otel,
     targetDatabaseBytes: numberControlValue(elements.daemonDbBudgetMib, 128) * 1024 * 1024,
     topProcessCount: numberControlValue(elements.daemonTopProcessCount, 8),
     redactionDefault: Boolean(elements.daemonRedactionDefault?.checked),
@@ -2810,6 +2882,7 @@ async function fetchSettings() {
     if (!response.ok) throw new Error(`Settings failed with HTTP ${response.status}`);
     const document = await response.json();
     state.retentionLadderAvailable = ladderCapabilityFrom(document);
+    state.otelAvailable = otelCapabilityFrom(document);
     const settings = normalizeSettings(document);
     populateDaemonSettings(settings);
     if (!state.retentionLadderAvailable) {
@@ -2819,6 +2892,7 @@ async function fetchSettings() {
     return settings;
   } catch (error) {
     state.retentionLadderAvailable = ladderCapabilityFrom(null);
+    state.otelAvailable = otelCapabilityFrom(null);
     const settings = cloneSettings(DEFAULT_DAEMON_SETTINGS);
     populateDaemonSettings(settings);
     setText(elements.historyLadderUnavailable, "Settings unavailable — ladder controls hidden.");
@@ -2883,7 +2957,7 @@ async function saveDaemonSettings() {
     try {
       const plan = await previewSettingsImport({
         tinytopConfigVersion: 1,
-        settings: settingsPutPayload(settings, true),
+        settings: settingsPutPayload(settings, true, state.otelAvailable),
       });
       if (plan.valid === false) {
         renderSettingsValidation(Array.isArray(plan.errors) ? plan.errors : []);
@@ -2923,11 +2997,12 @@ async function saveDaemonSettings() {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(settingsPutPayload(settings, state.retentionLadderAvailable)),
+      body: JSON.stringify(settingsPutPayload(settings, state.retentionLadderAvailable, state.otelAvailable)),
     });
     if (!response.ok) throw new Error(`Settings save failed with HTTP ${response.status}`);
     const savedDocument = await response.json();
     state.retentionLadderAvailable = ladderCapabilityFrom(savedDocument);
+    state.otelAvailable = otelCapabilityFrom(savedDocument);
     const saved = normalizeSettings(savedDocument);
     populateDaemonSettings(saved);
     state.settingsDirty = false;
@@ -3023,6 +3098,7 @@ async function importSettingsFile(file) {
     }
     const result = await response.json();
     state.retentionLadderAvailable = ladderCapabilityFrom(result.settings);
+    state.otelAvailable = otelCapabilityFrom(result.settings);
     populateDaemonSettings(normalizeSettings(result.settings));
     state.settingsDirty = false;
     renderSettingsDirtyIndicator();
@@ -3162,6 +3238,16 @@ function renderArchiveCoverage(archive) {
   setHidden(elements.historyArchiveStatus, false);
 }
 
+function renderOtelCoverage(otel) {
+  if (!elements.historyOtelStatus) return;
+  if (!otel || typeof otel !== "object") {
+    setHidden(elements.historyOtelStatus, true);
+    return;
+  }
+  elements.historyOtelStatus.textContent = describeOtelCoverage(otel);
+  setHidden(elements.historyOtelStatus, false);
+}
+
 function renderHistoryCoverage(coverage) {
   state.historyCoverage = coverage;
   setText(elements.historyOldest, formatCoverageTime(coverage?.oldestCapturedAtMs));
@@ -3176,6 +3262,7 @@ function renderHistoryCoverage(coverage) {
   renderTierCoverage(coverage?.tiers);
   renderDiskCoverage(coverage?.disk);
   renderArchiveCoverage(coverage?.archive);
+  renderOtelCoverage(coverage?.otel);
   syncHistoryWindowAvailability(coverage);
 }
 

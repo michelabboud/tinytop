@@ -971,6 +971,10 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
+.otel-settings-group textarea {
+  min-height: 8rem;
+}
+
 .settings-runtime-note {
   grid-column: 1 / -1;
   margin: 0;

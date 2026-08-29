@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   ladderCapabilityFrom,
+  otelCapabilityFrom,
   settingsPutPayload,
 } from "../agent/assets/dashboard/ladder-rules.js";
 
@@ -140,6 +141,21 @@ describe("dashboard settings", () => {
     expect(app).toContain("settingsPutPayload");
   });
 
+  test("renders the optional OpenTelemetry settings group and all controls", () => {
+    expect(html).toContain('id="otel-settings-group"');
+    expect(html).toContain('class="settings-group otel-settings-group"');
+    expect(html).toContain('id="daemon-otel-enabled"');
+    expect(html).toContain('id="daemon-otel-endpoint"');
+    expect(html).toContain('id="daemon-otel-interval-sec"');
+    expect(html).toContain('id="daemon-otel-headers-env-var"');
+    expect(html).toContain('id="daemon-otel-service-name"');
+    expect(html).toContain('id="daemon-otel-resource-attributes"');
+    expect(html).toContain('id="history-otel-status"');
+    expect(html).toContain("Headers (e.g. authorization) are read from the environment variable named here — never stored in settings.");
+    expect(app).toContain("otelCapabilityFrom");
+    expect(app).toContain("state.otelAvailable");
+  });
+
   test("renders the new history presets and ladder coverage surfaces", () => {
     for (const window of ["90d", "1y", "all"]) {
       expect(html).toContain(`data-history-window="${window}"`);
@@ -157,6 +173,15 @@ describe("dashboard settings", () => {
     expect(html).toContain('id="import-settings-button"');
     expect(html).toContain('id="import-settings-file"');
     expect(app).not.toContain("approx");
+  });
+
+  test("omits OpenTelemetry from a runtime PUT payload when unsupported", () => {
+    const settings = { defaultHistoryWindow: "live", otel: { enabled: true } };
+    expect(otelCapabilityFrom(null)).toBe(false);
+    expect(otelCapabilityFrom({ defaultHistoryWindow: "live" })).toBe(false);
+    expect(otelCapabilityFrom(settings)).toBe(true);
+    expect(settingsPutPayload(settings, false, false)).toEqual({ defaultHistoryWindow: "live" });
+    expect(settingsPutPayload(settings, false)).toEqual({ defaultHistoryWindow: "live" });
   });
 
   test("keeps native select dropdown options readable in every theme", () => {

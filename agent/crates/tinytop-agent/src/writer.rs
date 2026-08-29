@@ -363,7 +363,7 @@ async fn update_settings(
     Json(payload): Json<JsonValue>,
 ) -> Result<Response, ServeError> {
     let previous = state.store.get_settings().await?;
-    let settings = DashboardSettings::from_document(payload, Some(&previous.retention_ladder))?;
+    let settings = DashboardSettings::from_document(payload, Some(&previous))?;
     let saved = state.store.put_settings(&settings).await?;
     maintain_history(&state, &saved).await?;
     state

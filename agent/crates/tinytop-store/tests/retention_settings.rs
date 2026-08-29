@@ -429,11 +429,15 @@ fn from_document_without_ladder_merges_legacy_aliases_onto_the_persisted_ladder(
     persisted_ladder.l4.keep_days = 0;
     persisted_ladder.detail_interval_sec = 30;
     persisted_ladder.archive.queryable = true;
+    let persisted = DashboardSettings {
+        retention_ladder: persisted_ladder.clone(),
+        ..DashboardSettings::default()
+    };
     let mut document = settings_document_without_ladder(&DashboardSettings::default());
     document["retentionHours"] = json!(96);
     document["rollupRetentionDays"] = json!(14);
 
-    let settings = DashboardSettings::from_document(document, Some(&persisted_ladder))
+    let settings = DashboardSettings::from_document(document, Some(&persisted))
         .expect("legacy settings document should decode");
 
     assert_eq!(settings.retention_ladder.l1.keep_days, 4);
@@ -450,10 +454,14 @@ fn from_document_with_persisted_ladder_never_resets_customised_toggles() {
     persisted_ladder.l3.enabled = false;
     persisted_ladder.l4.keep_days = 0;
     persisted_ladder.archive.directory = "/x".to_string();
+    let persisted = DashboardSettings {
+        retention_ladder: persisted_ladder.clone(),
+        ..DashboardSettings::default()
+    };
     let mut document = settings_document_without_ladder(&DashboardSettings::default());
     document["retentionHours"] = json!(96);
 
-    let settings = DashboardSettings::from_document(document, Some(&persisted_ladder))
+    let settings = DashboardSettings::from_document(document, Some(&persisted))
         .expect("legacy settings document should decode");
 
     assert_eq!(settings.retention_ladder.l1.keep_days, 4);
@@ -628,7 +636,7 @@ async fn consecutive_legacy_edits_work_and_explicit_ladder_reset_wins() {
     let mut first_document = settings_document_without_ladder(&previous);
     first_document["retentionHours"] = json!(96);
     let first_legacy_edit =
-        DashboardSettings::from_document(first_document, Some(&previous.retention_ladder))
+        DashboardSettings::from_document(first_document, Some(&previous))
             .expect("first legacy document should decode");
     let first = store
         .put_settings(&first_legacy_edit)
@@ -639,7 +647,7 @@ async fn consecutive_legacy_edits_work_and_explicit_ladder_reset_wins() {
     let mut second_document = settings_document_without_ladder(&first);
     second_document["retentionHours"] = json!(120);
     let second_legacy_edit =
-        DashboardSettings::from_document(second_document, Some(&first.retention_ladder))
+        DashboardSettings::from_document(second_document, Some(&first))
             .expect("second legacy document should decode");
     let second = store
         .put_settings(&second_legacy_edit)
@@ -678,7 +686,7 @@ async fn legacy_alias_edit_preserves_non_legacy_ladder_settings() {
     let mut legacy_document = settings_document_without_ladder(&baseline);
     legacy_document["retentionHours"] = json!(96);
     let legacy_edit =
-        DashboardSettings::from_document(legacy_document, Some(&baseline.retention_ladder))
+        DashboardSettings::from_document(legacy_document, Some(&baseline))
             .expect("legacy document should decode");
     let saved = store
         .put_settings(&legacy_edit)

@@ -3,6 +3,7 @@ pub mod disk;
 pub mod ladder;
 pub mod maintenance;
 pub mod migration;
+pub mod otel_settings;
 pub mod retention_ladder;
 pub mod settings_transfer;
 
@@ -26,6 +27,7 @@ pub use crate::disk::{
 };
 use crate::ladder::{RawSampleRow, Stat, Tier, TierBucket, fold, raw_is_partial, raw_to_bucket};
 pub use crate::migration::pre_image_path;
+use crate::otel_settings::OtelSettings;
 pub use crate::retention_ladder::DiskPressureState;
 use crate::retention_ladder::RetentionLadder;
 
@@ -55,6 +57,8 @@ pub struct DashboardSettings {
     pub rollup_retention_days: i64,
     #[serde(default = "RetentionLadder::default_for_serde")]
     pub retention_ladder: RetentionLadder,
+    #[serde(default = "OtelSettings::default_for_serde")]
+    pub otel: OtelSettings,
     #[serde(default = "default_target_database_bytes")]
     pub target_database_bytes: i64,
     pub top_process_count: i64,
@@ -105,6 +109,7 @@ impl Default for DashboardSettings {
             retention_hours: 72,
             rollup_retention_days: 30,
             retention_ladder: RetentionLadder::default(),
+            otel: OtelSettings::default(),
             target_database_bytes: default_target_database_bytes(),
             top_process_count: 8,
             redaction_default: false,
@@ -146,16 +151,17 @@ impl Default for DashboardSections {
 impl DashboardSettings {
     pub fn from_document(
         document: JsonValue,
-        persisted_ladder: Option<&RetentionLadder>,
+        persisted: Option<&DashboardSettings>,
     ) -> Result<Self, StoreError> {
         let has_retention_ladder = document.get("retentionLadder").is_some();
+        let has_otel = document.get("otel").is_some();
         let mut settings: Self = serde_json::from_value(document).map_err(|error| {
             StoreError::Validation(format!("settings document could not be decoded: {error}"))
         })?;
         if !has_retention_ladder {
-            settings.retention_ladder = match persisted_ladder {
+            settings.retention_ladder = match persisted {
                 Some(persisted) => {
-                    let mut ladder = persisted.clone();
+                    let mut ladder = persisted.retention_ladder.clone();
                     ladder.apply_legacy_aliases(
                         settings.retention_hours,
                         settings.rollup_retention_days,
@@ -167,6 +173,9 @@ impl DashboardSettings {
                     settings.rollup_retention_days,
                 ),
             };
+        }
+        if !has_otel {
+            settings.otel = persisted.map(|value| value.otel.clone()).unwrap_or_default();
         }
         Ok(settings)
     }
@@ -192,6 +201,9 @@ impl DashboardSettings {
         }
         if previous.retention_ladder != next.retention_ladder {
             changed.push("retentionLadder");
+        }
+        if previous.otel != next.otel {
+            changed.push("otel");
         }
         if previous.target_database_bytes != next.target_database_bytes {
             changed.push("targetDatabaseBytes");
@@ -303,6 +315,7 @@ impl DashboardSettings {
             self.thresholds.pressure_critical,
         )?;
         self.retention_ladder.validate(None, None)?;
+        self.otel.validate()?;
         Ok(())
     }
 }
@@ -2475,7 +2488,11 @@ fn now_ms() -> i64 {
     millis.min(i64::MAX as u128) as i64
 }
 
-fn validate_one_of(field: &str, value: &str, allowed: &[&str]) -> Result<(), StoreError> {
+pub(crate) fn validate_one_of(
+    field: &str,
+    value: &str,
+    allowed: &[&str],
+) -> Result<(), StoreError> {
     if allowed.contains(&value) {
         return Ok(());
     }
@@ -2485,7 +2502,12 @@ fn validate_one_of(field: &str, value: &str, allowed: &[&str]) -> Result<(), Sto
     )))
 }
 
-fn validate_range(field: &str, value: i64, min: i64, max: i64) -> Result<(), StoreError> {
+pub(crate) fn validate_range(
+    field: &str,
+    value: i64,
+    min: i64,
+    max: i64,
+) -> Result<(), StoreError> {
     if (min..=max).contains(&value) {
         return Ok(());
     }

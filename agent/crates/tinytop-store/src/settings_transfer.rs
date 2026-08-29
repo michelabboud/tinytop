@@ -106,7 +106,7 @@ pub async fn plan_import(
     };
     let mut candidate = match DashboardSettings::from_document(
         settings_value.clone(),
-        Some(&previous.retention_ladder),
+        Some(&previous),
     ) {
         Ok(candidate) => candidate,
         Err(error) => return Ok(invalid_plan(vec![error.to_string()])),

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Dependencies: added exact-pinned OpenTelemetry metric exporter dependencies for Rust HTTP/protobuf push export.
+- Store: added the additive, secret-free `otel` settings block and persisted-value compatibility for imports that omit it.
+- Exporter: added Rust-daemon-only latest-snapshot OTLP gauges, environment-provided headers, independent task execution, and rate-limited failure handling.
+- API/coverage: exposed OTel status, interval, last success/failure, error, and failure count through `/api/history/coverage`.
+- CLI: extended `db stats` with OTel exporter status and the headers environment-variable name/presence, never its value.
+- Dashboard: added the Rust settings dialog's OpenTelemetry group and coverage status while keeping Bun without an exporter.
+- Docs: documented OTLP metrics, units and attributes, systemd environment setup, collector configuration, settings transfer, and two-runtime behavior.
+
 ## 0.4.1 - 2026-08-29
 
 Phase 3 of the tiered history ladder closes with one task: a versioned, secret-free settings document that moves between daemons (ADR 0016) — `GET /api/settings/export`, `POST /api/settings/import` (`?dryRun=true` previews with server-computed `wouldDelete`), the `config export` / `config import` CLI verbs, and the dashboard's Export/Import buttons, which also replace the client-side "approx." retention estimates with the same dry-run. The blind review (luna run 617) and its fix round closed a save-path regression the task had introduced (a theme-only save prompted "also changes: defaultTheme"), a stranded `<FILE>.tmp` after a failed export write, a missing directory fsync after the publish, and the hard-link publish on filesystems without `link(2)` (FAT/exFAT — now a re-checked rename fallback with its window documented), and added the missing version-type, invalid-path-invariant and one-object-refusal tests. Audits at the tag: `cargo audit` 0 vulnerabilities (3 pre-existing allowed warnings), `bun audit` clean; `user_version` stays 1 — no migration.

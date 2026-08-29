@@ -220,6 +220,7 @@ HISTORY_WRITER_URL=http://127.0.0.1:4276 bun run dev
 | `TINYTOP_SYSTEMD_UNIT_DIR` | `~/.config/systemd/user` | command center | Bash command-center systemd user-unit directory override |
 | `TINYTOP_DISABLE_WRITER_SPAWN` | unset | dashboard | Set to `1` to require an already-running legacy Bun collector |
 | `TINYTOP_PUBLIC_DIR` | unset | Rust daemon | Optional development override for dashboard assets; unset uses embedded assets |
+| `TINYTOP_OTEL_HEADERS` | unset | Rust daemon | OTLP request headers (`k1=v1,k2=v2`) when `otel.headersEnvVar` names this variable; never stored in settings |
 | `XDG_DATA_HOME` | `~/.local/share` | Legacy Bun collector | Base directory for default SQLite path |
 
 ## SQLite Location
@@ -391,6 +392,8 @@ Install persistent user services:
 `./tinytop systemd install` defaults to the Rust daemon. Use
 `./tinytop systemd install --bun` only when you explicitly want the legacy Bun
 dashboard/collector split.
+
+To provide OpenTelemetry authentication headers to the Rust user service, put an `Environment="TINYTOP_OTEL_HEADERS=authorization=Bearer <token>"` entry in a `tinytop.service.d` systemd drop-in. Keep the header value in the service environment, not in the exported settings document; `otel.headersEnvVar` stores only the variable name.
 
 Check or follow them:
 

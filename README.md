@@ -206,7 +206,7 @@ pre-image management:
 
 | Command | Purpose |
 | --- | --- |
-| `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, JSON-bearing sample count, archive state, and disk state (`freeBytes`, minimum, pressure, breach start, and last check) |
+| `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, JSON-bearing sample count, archive and disk state (`freeBytes`, minimum, pressure, breach start, and last check), and OTel status including the headers environment-variable name and whether it is set (never its value) |
 | `tinytop-agent db pre-image status` | Show the canonical `<database>.pre-v0.sqlite` path, existence/size, schema version, and main-database integrity result |
 | `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation when the main database exists, uses schema v1, and passes SQLite integrity check; otherwise refuse |
 | `tinytop-agent config export [--out FILE]` | Export the daemon settings as a versioned, secret-free JSON document; stdout is the default. File publishing uses atomic no-clobber hard links when supported; otherwise it re-checks the destination and renames, leaving a few-microsecond window in which a file created by another process could be replaced. |
@@ -403,13 +403,61 @@ Daemon dashboard defaults are stored in SQLite in `app_settings` through `GET /a
 
 Settings export is a versioned JSON document that contains daemon settings but no secrets: credential-bearing values are not settings, and integrations refer only to environment-variable names. Import uses the same decoder and validation as the settings dialog, including refusal of retention growth under disk pressure. A CLI import deliberately does not prune from a second process; a running daemon re-reads the saved settings and performs maintenance on its next collection tick.
 
+## OpenTelemetry export
+
+The Rust daemon can push the latest collected snapshot as OTLP metrics over HTTP/protobuf. It is disabled by default and never reads from OpenTelemetry. Configure it in the Settings dialog, or include the `otel` block in a `config import` document. Request headers are secret-free by design: set `TINYTOP_OTEL_HEADERS="authorization=Bearer <token>"` in the daemon's service environment, using an environment variable named by `headersEnvVar`; the value is never stored in settings or an export.
+
+For a user systemd service, create `~/.config/systemd/user/tinytop.service.d/otel.conf` with these three lines:
+
+```ini
+[Service]
+Environment="TINYTOP_OTEL_HEADERS=authorization=Bearer <token>"
+```
+
+Then run `systemctl --user daemon-reload` and restart TinyTop. A minimal local `otelcol-contrib` receiver is:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+exporters:
+  debug:
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [debug]
+```
+
+All exported instruments are gauges:
+
+| Metric | Unit | Attributes |
+| --- | --- | --- |
+| `system.cpu.utilization` | `[1]` | — |
+| `system.memory.utilization` | `[1]` | — |
+| `system.memory.usage` | `[By]` | `state=used` |
+| `system.memory.limit` | `[By]` | — |
+| `system.paging.utilization` | `[1]` | `state=used` |
+| `system.cpu.load_average.1m` | `[{thread}]` | — |
+| `system.cpu.load_average.5m` | `[{thread}]` | — |
+| `system.cpu.load_average.15m` | `[{thread}]` | — |
+| `system.filesystem.utilization` | `[1]` | `mountpoint`, `type` |
+| `system.filesystem.usage` | `[By]` | `mountpoint`, `state=used\|free` |
+| `tinytop.load.percent` | `[1]` | — |
+| `tinytop.pressure.some` | `[1]` | `resource=cpu\|memory\|io`; emitted only when reported |
+| `tinytop.pressure.full` | `[1]` | `resource=cpu\|memory\|io`; emitted only when reported |
+
+Resource attributes include `service.name`, `service.version` (the agent version), `host.name`, and configured `resourceAttributes`. Export runs in its own daemon task at the configured interval. Failed exports increment `otelExportFailures`, appear in `/api/history/coverage` under `otel`, and log at most one warning per minute; collection and persistence continue unaffected. The Bun runtime has no OTel exporter.
+
 ### History API
 
 | Endpoint | Rust response |
 | --- | --- |
 | `GET /api/history` | Complete raw snapshots whose `snapshot_json` is still retained; `limit` is clamped to 1–10,000. |
 | `GET /api/history/points` | Chart points from `auto`, `raw`, `rollup` (1 minute), `5m`, `1h`, or `archive`, plus top-level `source`, `resolutionMs`, and `available`. `archive` returns hourly points with `available:true` when `retentionLadder.archive.queryable` is enabled; an explicit archive request while it is disabled is an empty `available:false` page. |
-| `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, JSON horizon, detail cadence, disk state (`freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, `lastCheckMs`), archive state, and migration state. |
+| `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, JSON horizon, detail cadence, disk state (`freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, `lastCheckMs`), archive state, migration state, and Rust-daemon OTel status (`enabled`, `endpoint`, `intervalSec`, `lastSuccessMs`, `lastFailureMs`, `lastError`, `failures`). |
 | `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |
 | `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit. |
 | `GET /api/history/markers` | Persisted daemon/settings/migration/disk-pressure/disk-recovery events and computed coverage gaps. |
