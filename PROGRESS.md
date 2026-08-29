@@ -2,11 +2,12 @@
 
 ## Current Version
 
-- Version: `0.2.11`
-- Date: 2026-08-28
-- Status: `0.3.0 = Phase 1 close pending`. Tasks T1–T6 are implemented in
-  sequence through this CLI/docs lane; Fable's review, merge, version bump, tag,
-  release, and audits remain separate close-out work.
+- Version: `0.3.0`
+- Date: 2026-08-29
+- Status: Phase 1 closed (T1–T6 + the deep dual-blind fix round released as
+  0.3.0); Phase 2 (T7–T9: queryable archive, cold export, disk check + pressure banner) next.
+  Deploying 0.3.0 onto the live database is a separate, explicitly ordered step
+  (pre-image + backup first).
 
 ## Backlog
 
@@ -25,7 +26,8 @@
 - [x] T3 / 0.2.9: added validated `retentionLadder` settings, legacy aliases, and disk-pressure-aware growth rules.
 - [x] T5 / 0.2.10: added ladder settings/coverage UI, truthful long-range presets, and shrink confirmation.
 - [x] T4 / 0.2.11: added four-tier automatic reads, coverage, and typed filesystem/process detail APIs.
-- [x] T6 / this lane: added ladder-aware `db stats --json`, guarded pre-image status/removal, operator docs, and Phase 1 close-out material.
+- [x] T6 / 0.3.0: added ladder-aware `db stats --json`, guarded pre-image status/removal, operator docs, and Phase 1 close-out material.
+- [x] Phase 1 close / 0.3.0: deep dual-blind review (sol 568 + luna 569, 21 claims over `v0.2.6..HEAD`) and its fix round — P1-fix1 (store/CLI, incl. the source-pruned refold merge), P1-fix1b (replay never re-merges), P1-fix2 (dashboard + docs); tagged `v0.3.0`.
 
 ### 0.2.1 - Code-Review Hardening (C1, M1-M4, D1-D2)
 

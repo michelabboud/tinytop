@@ -1451,7 +1451,7 @@ dependencies = [
 
 [[package]]
 name = "tinytop-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "axum",
  "http-body-util",
@@ -1465,7 +1465,7 @@ dependencies = [
 
 [[package]]
 name = "tinytop-collectors"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "procfs",
  "rustix",
@@ -1477,7 +1477,7 @@ dependencies = [
 
 [[package]]
 name = "tinytop-store"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "tinytop-types"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",

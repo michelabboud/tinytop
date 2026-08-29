@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-08-29
+
+Phase 1 of the tiered history ladder (spec `docs/superpowers/specs/2026-08-28-tiered-history-ladder-design.md`; ADRs 0013 and 0017). This release consolidates the per-lane versions **0.2.7** (T1 — schema v1 and the fail-closed, pre-imaged migration), **0.2.8** (T2 — count-weighted fold, frozen buckets, promote-before-prune; the rollup decimation defect is fixed going forward, already-decimated rows are not repaired), **0.2.9** (T3 — `retentionLadder` settings with legacy aliases and disk-pressure rules), **0.2.10** (T5 — dashboard ladder group, coverage card, long-range presets, shrink confirmation) and **0.2.11** (T4 — `source=auto` four-tier reads, coverage, filesystem/process detail APIs), plus the T6 CLI and documentation work listed below. Upgrading migrates the database on the first daemon start: a complete `<db>.pre-v0.sqlite` pre-image is taken before any row is touched (needs free space ≥ 1.2 × the database size; minutes on a large file) and is never deleted automatically — see INSTALL.md. Reviewed by six per-lane blind reviews and one deep dual-blind review over `v0.2.6..v0.3.0` (Fabulous `docs/fleet/tinytop/`).
 
 - Coalesced history-coverage requests and throttled routine dashboard polling to one request per 15 seconds while forcing preset, confirmation-estimate, and post-save refreshes.
 - Made retention-ladder capability fail closed until settings prove support, hiding Rust-only controls and stripping `retentionLadder` from unavailable-runtime saves.
