@@ -449,6 +449,134 @@ describe("settings transfer plan description", () => {
     ]);
   });
 
+  test("names a zero-impact ladder change on the import path", () => {
+    const previous = ladder();
+    const candidate = ladder();
+    candidate.l2.keepDays = 12;
+
+    expect(
+      describeImportPlan(
+        {
+          wouldDelete: {
+            l1Rows: 0,
+            l2Buckets: 0,
+            l3Buckets: 0,
+            l4Buckets: 0,
+            snapshotJsonRows: 0,
+          },
+          changedKeys: ["retentionLadder", "defaultTheme"],
+          warnings: [],
+        },
+        candidate,
+        { retentionLadder: previous },
+      ),
+    ).toEqual([
+      "retention ladder changes — no stored history is affected",
+      "also changes: defaultTheme",
+    ]);
+  });
+
+  test("keeps a save preview silent for a zero-impact ladder change", () => {
+    const previous = ladder();
+    const candidate = ladder();
+    candidate.l2.keepDays = 12;
+    const plan = {
+      wouldDelete: {
+        l1Rows: 0,
+        l2Buckets: 0,
+        l3Buckets: 0,
+        l4Buckets: 0,
+        snapshotJsonRows: 0,
+      },
+      changedKeys: ["retentionLadder", "defaultTheme"],
+      warnings: [],
+    };
+
+    expect(
+      describeImportPlan(plan, candidate, { retentionLadder: previous }, { includeOtherChanges: false }),
+    ).toEqual([]);
+  });
+
+  test("does not add the ladder line when a count already describes it", () => {
+    const previous = ladder();
+    const candidate = ladder();
+    candidate.l2.keepDays = 12;
+
+    expect(
+      describeImportPlan(
+        {
+          wouldDelete: { l2Buckets: 5 },
+          changedKeys: ["retentionLadder", "defaultTheme"],
+          warnings: [],
+        },
+        candidate,
+        { retentionLadder: previous },
+      ),
+    ).toEqual(["5 L2 buckets", "also changes: defaultTheme"]);
+  });
+
+  test("does not add the ladder line when a transition describes it", () => {
+    const previous = ladder();
+    const candidate = ladder();
+    candidate.l3.enabled = false;
+
+    expect(
+      describeImportPlan(
+        {
+          wouldDelete: {
+            l1Rows: 0,
+            l2Buckets: 0,
+            l3Buckets: 0,
+            l4Buckets: 0,
+            snapshotJsonRows: 0,
+          },
+          changedKeys: ["retentionLadder"],
+          warnings: [],
+        },
+        candidate,
+        { retentionLadder: previous },
+      ),
+    ).toEqual(["L3 disabled — its table is retained; reads fall through to the next tier"]);
+  });
+
+  test("describes an identical document", () => {
+    expect(
+      describeImportPlan(
+        {
+          wouldDelete: {
+            l1Rows: 0,
+            l2Buckets: 0,
+            l3Buckets: 0,
+            l4Buckets: 0,
+            snapshotJsonRows: 0,
+          },
+          changedKeys: [],
+          warnings: [],
+        },
+        ladder(),
+        { retentionLadder: ladder() },
+      ),
+    ).toEqual(["no settings change — the document matches the current settings"]);
+  });
+
+  test("stays silent on the save path for an identical document", () => {
+    const plan = {
+      wouldDelete: {
+        l1Rows: 0,
+        l2Buckets: 0,
+        l3Buckets: 0,
+        l4Buckets: 0,
+        snapshotJsonRows: 0,
+      },
+      changedKeys: [],
+      warnings: [],
+    };
+
+    expect(
+      describeImportPlan(plan, ladder(), { retentionLadder: ladder() }, { includeOtherChanges: false }),
+    ).toEqual([]);
+  });
+
   test("describes deletions and queryable archive moves with server-computed counts", () => {
     const candidate = ladder();
     candidate.archive.queryable = true;
