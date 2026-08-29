@@ -1,6 +1,6 @@
 # ADR 0016 — A versioned, secret-free configuration document for export and import
 
-**Status:** Proposed (2026-08-28) — awaiting Michel's go.
+**Status:** Accepted (2026-08-28, Michel's go 17:20Z) — implemented in Phase 3 by T10 (0.4.1). Additive details fixed at dispatch (2026-08-29): the dry-run response also carries `warnings[]` (unknown keys inside `settings` are ignored, as `PUT /api/settings` ignores them, but listed) and `wouldDelete.snapshotJsonRows`; a real import answers `{applied, changedKeys, wouldDelete, settings}`; the CLI `config import` applies and records the marker but leaves maintenance to the daemon's next tick (a second process must not run the prune beside a live daemon); `config export --out` never overwrites.
 
 ## Context
 
