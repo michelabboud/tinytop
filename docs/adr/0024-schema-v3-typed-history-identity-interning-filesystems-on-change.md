@@ -134,3 +134,27 @@ implements the safe rebuild pattern (`rebuild_v0_schema`: create new, copy, drop
 - Every nullable column is read as `Option<T>` (sqlx-sqlite decodes NULL into `i64` as 0 silently).
 - The migration decodes up to one hour of JSON rows (≈ 2,400 × 28 KB on the live box) inside the
   transaction; plan §4's 60-second budget applies and is measured on the live-file copy at gate time.
+
+---
+
+**Amendment 2026-08-30 (T14-fix1, after the orchestrator's real-file gate of lane T14 — hexe run #661,
+commit `e29468d`).** Decision 2 says every row that still holds `snapshot_json` "is decoded"; the T14
+brief made an undecodable row REFUSE the migration and leave the file untouched (guard before the drop).
+The first real-file run (a fresh `sqlite3.backup()` of the live v1 database: 42,893 rows, 2,451 JSON
+rows) refused the whole file: 25 rows written by the legacy Bun collector during a 36-second window
+carry `filesystems[].inodeUsed = -999001` — that writer computes `inodeTotal − inodeFree` unclamped,
+and WSL's drvfs mount `/usr/lib/wsl/drivers` reports more free inodes than total (`f_files 999`,
+`f_ffree 1,000,000`; the Rust collector clamps and writes `0`). `FilesystemSnapshot.inode_used` is
+`Option<u64>`, so serde refuses the negative integer and the daemon exits 1 on every start until an
+operator edits rows by hand. **Ruling:** the refusal stays for JSON this version does not know, but a
+KNOWN quirk of our own legacy writer is normalised, not refused — during the v2→v3 backfill a negative
+`inodeUsed`/`inodeTotal` becomes absent (the backfill stores nothing from those two fields, so no value
+is lost or invented), the number of such rows is counted in the migration audit
+(`legacyInodeRowsNormalised`) and in the `history migration info` line, and the remaining refusal's
+remedy names the manual SQL (`INSTALL.md` §Upgrade) instead of `db check` (which is
+`PRAGMA integrity_check` and shows no row). **Rejected:** a lenient deserializer on the type (the type
+stays honest — a negative count is not a count — and the migration is the only place the daemon decodes
+legacy JSON); downgrading ANY undecodable row to non-assembleable (a count would hide a systematic type
+mismatch across the whole file); patching the Bun collector (Michel's ruling 2026-08-29: `legacy/` is
+not updated). Measured on the same copy with the 25 rows' payload cleared: v1→v2 363 ms, v2→v3 2,641 ms
+(2,426 JSON rows decoded, 1 identity, 27 filesystem events), total 3,266 ms — plan §4's 60 s budget holds.
