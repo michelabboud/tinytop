@@ -2,10 +2,11 @@
 
 ## Current Version
 
-- Version: `0.3.1`
+- Version: `0.3.2`
 - Date: 2026-08-29
-- Status: Phase 2 in progress — T7 (queryable archive, ADRs 0018/0019) shipped as 0.3.1;
-  T8 (cold CSV export) and T9 (disk check + pressure banner) next; 0.4.0 = Phase 2 close.
+- Status: Phase 2 in progress — T7 (queryable archive, ADRs 0018/0019) shipped as 0.3.1,
+  T8 (cold CSV export + CLI carry-overs) as 0.3.2; T9 (disk check + pressure banner, ADR 0020)
+  next; 0.4.0 = Phase 2 close.
   Deploying 0.3.x onto the live database is a separate, explicitly ordered step
   (pre-image + backup first).
 
@@ -18,6 +19,10 @@
   closed PR #1 (superseded; VERSION/ADR-number/dashboard-file conflicts made it unmergeable).
 
 ## Completed
+
+### 0.3.2 - Tiered history ladder, Phase 2 (T8)
+
+- [x] T8 / 0.3.2: verified monthly cold export of the queryable archive (`tinytop-1h-YYYY-MM.csv.gz` + `.sha256`, RFC 4180, gzip 6, `.tmp` → fsync → hash → re-read verify → rename → sidecar → manifest → watermark; never deletes), exportable only once every hour of the month has expired from L4; hourly scheduler; real cold coverage; `db archive status|export-now`; carry-overs closed: CLI `close()` checkpoints the WAL, inspection never creates a database, `limit=0`/inverted ranges → 400. Fix round after luna run 589: step naming, record-width verification, incomplete-archive reporting, month-listing boundary; `TINYTOP_SYSTEMD_UNIT_DIR` makes the command-center tests hermetic (the gate had stopped the live service). `flate2` 1.1.10 + `sha2` 0.11.0 vetted (`docs/reports/2026-08-29-dependency-vetting-flate2-sha2.md`).
 
 ### 0.3.1 - Tiered history ladder, Phase 2 (T7)
 
