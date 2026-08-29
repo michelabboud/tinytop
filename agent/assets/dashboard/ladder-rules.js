@@ -183,7 +183,7 @@ const OTEL_INTERVAL_ERROR = "otel.intervalSec must be between 5 and 3600";
 const OTEL_HEADERS_ERROR = "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$";
 const OTEL_SERVICE_ERROR = "otel.serviceName must be 1–128 characters without control characters";
 const OTEL_ATTRIBUTES_ERROR =
-  "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters";
+  "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters";
 
 function hasControlCharacters(value) {
   return /\p{Cc}/u.test(value);

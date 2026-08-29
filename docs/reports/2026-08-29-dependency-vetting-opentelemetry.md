@@ -146,6 +146,22 @@ After dependency resolution:
 These are measured release-build values; no size was inferred from a debug
 build or dependency metadata.
 
+### Build prerequisites and deferred TLS option
+
+`aws-lc-sys` builds native code, so local Rust daemon builds require CMake and
+a C compiler on Linux, WSL, macOS, and Windows. The lockfile also records
+target-conditional or otherwise unreferenced packages (`quinn`, `jni`,
+`wasm-bindgen`, `schannel`, and `security-framework`); they are not compiled
+in the Linux build. The Linux-target normal dependency tree contained none of
+those packages, and `cargo tree -i quinn --offline` reported `warning: nothing
+to print`, confirming that `quinn` has no Linux reverse dependency in this
+workspace.
+
+A ring-only Rustls provider is not reachable through the
+`opentelemetry-otlp` 0.32 feature set. Reaching that configuration would
+require a direct `reqwest`/`rustls` client passed through `with_http_client`,
+which is deferred; the orchestrator will list it in the `PROGRESS.md` Backlog.
+
 ## Sources
 
 - <https://github.com/open-telemetry/opentelemetry-rust/releases>

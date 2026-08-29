@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -21,7 +21,7 @@ use tinytop_store::{
     HistoryMarkerType, HistoryOtelCoverage, HistoryPoint, HistoryPointMode, HistoryPointsQuery,
     HistoryProcessCapture, HistoryQuery, HistorySample, SqliteHistoryStore, SysinfoFreeBytes,
     SystemSnapshot, apply_disk_measurement,
-    otel_settings::OtelSettings,
+    otel_settings::{OTEL_INTERVAL_SEC_RANGE, OtelSettings},
     resolve_history_point_source_with_poll,
     settings_transfer::{
         ImportOutcome, apply_import, export_document, export_filename, import_marker, plan_import,
@@ -61,6 +61,7 @@ impl OtelSchedule {
     }
 
     fn is_due(&self, now_ms: i64, interval_sec: i64) -> bool {
+        let interval_sec = used_otel_interval_sec(interval_sec);
         let interval_ms = interval_sec.saturating_mul(1_000);
         self.last_attempt_ms
             .is_none_or(|last| now_ms.saturating_sub(last) >= interval_ms)
@@ -73,6 +74,14 @@ impl OtelSchedule {
     fn make_immediately_due(&mut self) {
         self.last_attempt_ms = None;
     }
+}
+
+fn used_otel_interval_sec(stored_interval_sec: i64) -> i64 {
+    stored_interval_sec.clamp(OTEL_INTERVAL_SEC_RANGE.0, OTEL_INTERVAL_SEC_RANGE.1)
+}
+
+fn next_tick_delay(tick: Duration, elapsed: Duration) -> Duration {
+    tick.saturating_sub(elapsed)
 }
 
 #[derive(Debug, Clone)]
@@ -295,7 +304,8 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
     let _collection_task = spawn_collection_loop(state.clone(), options.poll_ms);
     let _cold_export_task = spawn_cold_export_loop(state.clone());
     let _disk_check_task = spawn_disk_check_loop(state.clone());
-    let _otel_export_task = spawn_otel_export_loop(state.clone());
+    let _otel_export_task =
+        spawn_otel_export_loop(state.clone(), Duration::from_secs(OTEL_TICK_SECS));
 
     let app = router(state);
     let address: SocketAddr = format!("{}:{}", options.host, options.port).parse()?;
@@ -678,15 +688,18 @@ pub(crate) async fn collect_and_store(state: &AppState) -> Result<HistorySample,
     Ok(sample)
 }
 
-pub(crate) fn spawn_otel_export_loop(state: AppState) -> JoinHandle<()> {
+pub(crate) fn spawn_otel_export_loop(state: AppState, tick: Duration) -> JoinHandle<()> {
     tokio::spawn(async move {
         let latest_snapshot = state.latest_snapshot.subscribe();
         let mut pipeline: Option<OtelPipeline> = None;
         let mut schedule = OtelSchedule::default();
         let mut last_warn_ms: Option<i64> = None;
 
+        // Lock invariant: no `.await`, pipeline shutdown, or store call may run
+        // while a `state.otel` status guard is alive.
         loop {
-            let settings = match state.store.get_settings().await {
+            let iteration_started = Instant::now();
+            let mut settings = match state.store.get_settings().await {
                 Ok(settings) => settings.otel,
                 Err(error) => {
                     eprintln!("otel export skipped: cannot read settings: {error}");
@@ -694,6 +707,16 @@ pub(crate) fn spawn_otel_export_loop(state: AppState) -> JoinHandle<()> {
                     continue;
                 }
             };
+            // Keep this defensive clamp aligned with OtelSettings::validate's 5..=3600 range;
+            // the persisted document may have been edited outside the validated settings API.
+            let stored_interval_sec = settings.interval_sec;
+            let interval_sec = used_otel_interval_sec(stored_interval_sec);
+            if interval_sec != stored_interval_sec {
+                eprintln!(
+                    "otel export interval out of range: stored {stored_interval_sec} seconds; using {interval_sec} seconds (validated range 5..=3600)"
+                );
+            }
+            settings.interval_sec = interval_sec;
 
             let settings_changed = schedule.observe(&settings);
             if settings_changed && let Some(existing) = pipeline.take() {
@@ -701,14 +724,14 @@ pub(crate) fn spawn_otel_export_loop(state: AppState) -> JoinHandle<()> {
             }
 
             if !settings.enabled {
-                let mut status = state.otel.lock().await;
-                disable_pipeline(
-                    &mut pipeline,
-                    &mut status,
-                    &settings,
-                    Duration::from_secs(OTEL_EXPORT_TIMEOUT_SECS),
-                );
-                tokio::time::sleep(Duration::from_secs(OTEL_TICK_SECS)).await;
+                if let Some(existing) = pipeline.take() {
+                    existing.shutdown_best_effort(Duration::from_secs(OTEL_EXPORT_TIMEOUT_SECS));
+                }
+                {
+                    let mut status = state.otel.lock().await;
+                    disable_pipeline(&mut status, &settings);
+                }
+                tokio::time::sleep(tick).await;
                 continue;
             }
 
@@ -723,44 +746,44 @@ pub(crate) fn spawn_otel_export_loop(state: AppState) -> JoinHandle<()> {
                 Ok(now) => now,
                 Err(error) => {
                     eprintln!("otel export skipped: cannot read clock: {error}");
-                    tokio::time::sleep(Duration::from_secs(OTEL_TICK_SECS)).await;
+                    tokio::time::sleep(tick).await;
                     continue;
                 }
             };
             let due = schedule.is_due(now, settings.interval_sec);
 
             if pipeline.is_none() && due {
-                schedule.mark_attempt(now);
-                let build_result = std::env::var(&settings.headers_env_var)
-                    .ok()
-                    .as_deref()
-                    .map_or_else(
-                        || parse_otlp_headers(None),
-                        |value| parse_otlp_headers(Some(value)),
-                    )
-                    .and_then(|headers| {
-                        let hostname = latest_snapshot
-                            .borrow()
-                            .as_ref()
-                            .map(|snapshot| snapshot.identity.hostname.as_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        build_pipeline(
-                            &settings,
-                            headers,
-                            &hostname,
-                            Duration::from_secs(OTEL_EXPORT_TIMEOUT_SECS),
+                let snapshot = latest_snapshot.borrow().clone();
+                if let Some(snapshot) = snapshot {
+                    schedule.mark_attempt(now);
+                    let build_result = std::env::var(&settings.headers_env_var)
+                        .ok()
+                        .as_deref()
+                        .map_or_else(
+                            || parse_otlp_headers(None),
+                            |value| parse_otlp_headers(Some(value)),
                         )
-                    });
-                match build_result {
-                    Ok(built) => {
-                        pipeline = Some(built);
-                        schedule.make_immediately_due();
-                    }
-                    Err(error) => {
-                        let mut status = state.otel.lock().await;
-                        if record_failure(&mut status, &mut last_warn_ms, now, &error) {
-                            eprintln!("otel export failed: {}: {error}", settings.endpoint);
+                        .and_then(|headers| {
+                            build_pipeline(
+                                &settings,
+                                headers,
+                                &snapshot.identity.hostname,
+                                Duration::from_secs(OTEL_EXPORT_TIMEOUT_SECS),
+                            )
+                        });
+                    match build_result {
+                        Ok(built) => {
+                            pipeline = Some(built);
+                            schedule.make_immediately_due();
+                        }
+                        Err(error) => {
+                            let warning_due = {
+                                let mut status = state.otel.lock().await;
+                                record_failure(&mut status, &mut last_warn_ms, now, &error)
+                            };
+                            if warning_due {
+                                eprintln!("otel export failed: {}: {error}", settings.endpoint);
+                            }
                         }
                     }
                 }
@@ -780,21 +803,27 @@ pub(crate) fn spawn_otel_export_loop(state: AppState) -> JoinHandle<()> {
                 let completed_ms = now_ms().unwrap_or(attempt_started_ms);
                 match result {
                     Ok(()) => {
-                        let mut status = state.otel.lock().await;
-                        if record_success(&mut status, completed_ms) {
+                        let recovered = {
+                            let mut status = state.otel.lock().await;
+                            record_success(&mut status, completed_ms)
+                        };
+                        if recovered {
                             eprintln!("otel export recovered: {}", settings.endpoint);
                         }
                     }
                     Err(error) => {
-                        let mut status = state.otel.lock().await;
-                        if record_failure(&mut status, &mut last_warn_ms, completed_ms, &error) {
+                        let warning_due = {
+                            let mut status = state.otel.lock().await;
+                            record_failure(&mut status, &mut last_warn_ms, completed_ms, &error)
+                        };
+                        if warning_due {
                             eprintln!("otel export failed: {}: {error}", settings.endpoint);
                         }
                     }
                 }
             }
 
-            tokio::time::sleep(Duration::from_secs(OTEL_TICK_SECS)).await;
+            tokio::time::sleep(next_tick_delay(tick, iteration_started.elapsed())).await;
         }
     })
 }
@@ -1504,6 +1533,24 @@ pub(crate) mod tests {
         &state.store
     }
 
+    async fn wait_for_otel_status(
+        state: &AppState,
+        maximum_wait: Duration,
+        predicate: impl Fn(&OtelStatus) -> bool,
+    ) -> Result<OtelStatus, String> {
+        tokio::time::timeout(maximum_wait, async {
+            loop {
+                let status = state.otel.lock().await.clone();
+                if predicate(&status) {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .map_err(|_| format!("OTel status did not converge within {maximum_wait:?}"))
+    }
+
     async fn request_json(app: Router, uri: &str) -> (StatusCode, JsonValue) {
         let response = app
             .oneshot(
@@ -2136,6 +2183,124 @@ pub(crate) mod tests {
         assert_eq!(*published, sample.snapshot);
     }
 
+    #[tokio::test]
+    async fn otel_loop_never_holds_the_status_lock_across_its_sleep() {
+        // Break caught: the disabled-by-default loop sleeps for a full tick while
+        // holding the status lock needed by /api/history/coverage.
+        let (_fixture, state) = test_state("otel-disabled-status-lock").await;
+        let handle = spawn_otel_export_loop(state.clone(), Duration::from_secs(OTEL_TICK_SECS));
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let status = tokio::time::timeout(Duration::from_millis(500), state.otel.lock()).await;
+        handle.abort();
+        let _ = handle.await;
+
+        let status = status.expect("the disabled loop must release the status lock before sleep");
+        assert!(!status.enabled);
+    }
+
+    #[tokio::test]
+    async fn otel_loop_counts_failures_through_the_status_and_collection_continues() {
+        // New wiring coverage: the real loop owns failure accounting while collection
+        // continues through the independent collector/store path.
+        let (_fixture, state) = test_state("otel-loop-failure-wiring").await;
+        let endpoint = "http://127.0.0.1:1/v1/metrics";
+        let mut settings = state.store.get_settings().await.expect("default settings");
+        settings.otel.enabled = true;
+        settings.otel.endpoint = endpoint.to_string();
+        settings.otel.interval_sec = OTEL_INTERVAL_SEC_RANGE.0;
+        state
+            .store
+            .put_settings(&settings)
+            .await
+            .expect("enabled OTel settings should persist");
+        let handle = spawn_otel_export_loop(state.clone(), Duration::from_millis(50));
+
+        let outcome: Result<(OtelStatus, i64), String> = async {
+            collect_and_store(&state)
+                .await
+                .map_err(|error| format!("first collection failed: {error}"))?;
+            let status = wait_for_otel_status(&state, Duration::from_secs(3), |status| {
+                status.failures >= 1
+            })
+            .await?;
+            collect_and_store(&state)
+                .await
+                .map_err(|error| format!("second collection failed: {error}"))?;
+            collect_and_store(&state)
+                .await
+                .map_err(|error| format!("third collection failed: {error}"))?;
+            let stats = test_store(&state)
+                .stats()
+                .await
+                .map_err(|error| format!("stats failed: {error}"))?;
+            Ok((status, stats.sample_count))
+        }
+        .await;
+
+        handle.abort();
+        let _ = handle.await;
+        let (status, sample_count) = outcome.expect("loop and collection should remain live");
+        assert!(status.enabled);
+        assert_eq!(status.endpoint, endpoint);
+        assert!(status.last_failure_ms.is_some());
+        assert!(status.last_error.is_some());
+        assert_eq!(sample_count, 3);
+    }
+
+    #[tokio::test]
+    async fn otel_loop_applies_a_disable_within_one_tick() {
+        // New wiring coverage: a persisted disable reaches runtime status promptly
+        // and prevents further export attempts.
+        let (_fixture, state) = test_state("otel-loop-disable-wiring").await;
+        let mut settings = state.store.get_settings().await.expect("default settings");
+        settings.otel.enabled = true;
+        settings.otel.endpoint = "http://127.0.0.1:1/v1/metrics".to_string();
+        settings.otel.interval_sec = OTEL_INTERVAL_SEC_RANGE.0;
+        state
+            .store
+            .put_settings(&settings)
+            .await
+            .expect("enabled OTel settings should persist");
+        let handle = spawn_otel_export_loop(state.clone(), Duration::from_millis(50));
+
+        let outcome: Result<(u64, u64), String> = async {
+            collect_and_store(&state)
+                .await
+                .map_err(|error| format!("collection failed: {error}"))?;
+            wait_for_otel_status(&state, Duration::from_secs(3), |status| {
+                status.failures >= 1
+            })
+            .await?;
+
+            let mut disabled = state
+                .store
+                .get_settings()
+                .await
+                .map_err(|error| format!("settings read failed: {error}"))?;
+            disabled.otel.enabled = false;
+            state
+                .store
+                .put_settings(&disabled)
+                .await
+                .map_err(|error| format!("disable write failed: {error}"))?;
+            let status =
+                wait_for_otel_status(&state, Duration::from_secs(1), |status| !status.enabled)
+                    .await?;
+            let failures_at_disable = status.failures;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let failures_after_six_ticks = state.otel.lock().await.failures;
+            Ok((failures_at_disable, failures_after_six_ticks))
+        }
+        .await;
+
+        handle.abort();
+        let _ = handle.await;
+        let (failures_at_disable, failures_after_six_ticks) =
+            outcome.expect("disable should be applied by the loop");
+        assert_eq!(failures_after_six_ticks, failures_at_disable);
+    }
+
     #[test]
     fn unchanged_build_failure_waits_for_interval() {
         // Break caught: an unchanged failed pipeline build is retried on every 5-second tick.
@@ -2172,6 +2337,39 @@ pub(crate) mod tests {
         };
         assert!(schedule.observe(&reenabled));
         assert!(schedule.is_due(6_000, reenabled.interval_sec));
+    }
+
+    #[test]
+    fn otel_schedule_clamps_intervals_edited_outside_the_settings_api() {
+        // Break caught: a hand-edited zero interval exports on every tick, while
+        // an oversized interval can postpone export indefinitely.
+        let mut schedule = OtelSchedule::default();
+        schedule.mark_attempt(1_000);
+
+        assert!(!schedule.is_due(2_000, 0));
+        assert!(schedule.is_due(6_000, 0));
+
+        let hour_ms = 3_600_000;
+        schedule.mark_attempt(1_000);
+        assert!(!schedule.is_due(1_000 + hour_ms - 1, i64::MAX));
+        assert!(schedule.is_due(1_000 + hour_ms, i64::MAX));
+    }
+
+    #[test]
+    fn next_tick_delay_subtracts_elapsed_work_and_saturates_at_zero() {
+        // Break caught: a completed export always waits one additional full tick
+        // before settings are read again.
+        let tick = Duration::from_secs(5);
+        assert_eq!(next_tick_delay(tick, Duration::ZERO), tick);
+        assert_eq!(next_tick_delay(tick, tick), Duration::ZERO);
+        assert_eq!(
+            next_tick_delay(tick, Duration::from_secs(7)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            next_tick_delay(tick, Duration::from_secs(2)),
+            Duration::from_secs(3)
+        );
     }
 
     #[tokio::test]

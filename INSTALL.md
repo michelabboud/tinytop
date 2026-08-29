@@ -369,6 +369,8 @@ TINYTOP_RELEASE_OS=windows ./tinytop rust build --print-command
 
 Cross-compiling the full daemon can require platform toolchains for SQLite. On Linux, the Windows collector crate can be checked without the daemon's SQLite C toolchain by targeting `tinytop-collectors` directly.
 
+Since 0.5.0, compiling the Rust daemon locally requires CMake and a C compiler on Linux, WSL, macOS, and Windows because `aws-lc-sys` builds native code. On Debian or Ubuntu, install them with `sudo apt install cmake build-essential`; on macOS with Homebrew, use `brew install cmake` (the Xcode Command Line Tools provide the compiler); on Windows, install Visual Studio Build Tools with the C++ workload and CMake. If CMake is missing, Cargo fails inside the `aws-lc-sys` build script with an error such as `failed to run custom build command for aws-lc-sys` followed by `cmake: command not found`.
+
 ## Reset Local History
 
 Stop the dashboard and collector first, then move the database files aside:

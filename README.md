@@ -103,6 +103,8 @@ If a release binary is not available for your platform, compile locally:
 ./tinytop systemd install --rust
 ```
 
+For local Rust build prerequisites, including CMake and a C compiler, see [INSTALL.md](INSTALL.md).
+
 `./tinytop setup` is the Telecode-style Bun wizard for source/development installs. It asks whether to install the Rust collector/dashboard daemon or the legacy Bun collector path. For Rust installs, it also asks whether to use a GitHub release binary or a local Cargo compile. Verification inside the wizard is runtime-specific: Rust selections do not run Bun tests, and legacy Bun selections do not run Rust tests.
 
 For full setup and configuration, see [INSTALL.md](INSTALL.md). For day-to-day usage, see [GUIDE.md](GUIDE.md).
@@ -446,11 +448,11 @@ All exported instruments are gauges:
 | `system.cpu.load_average.15m` | `{thread}` | — |
 | `system.filesystem.utilization` | `1` | `mountpoint`, `type` |
 | `system.filesystem.usage` | `By` | `mountpoint`, `type`, `state=used\|free` |
-| `tinytop.load.percent` | `1` | — |
-| `tinytop.pressure.some` | `1` | `resource=cpu\|memory\|io`; emitted only when reported |
-| `tinytop.pressure.full` | `1` | `resource=cpu\|memory\|io`; emitted only when reported |
+| `tinytop.load.percent` | `%` | — |
+| `tinytop.pressure.some` | `%` | `resource=cpu\|memory\|io`; emitted only when reported |
+| `tinytop.pressure.full` | `%` | `resource=cpu\|memory\|io`; emitted only when reported |
 
-Resource attributes include `service.name`, `service.version` (the agent version), `host.name`, and configured `resourceAttributes`. Export runs in its own daemon task at the configured interval. The header variable is read whenever the exporter pipeline is built: toggle export off and on or change the `otel` settings block to apply a rotated value; restarting the daemon also re-reads it. Changing only the environment of an already-running, unchanged pipeline does not. Failed exports increment `otel.failures` in `/api/history/coverage` and log at most one warning per minute; collection and persistence continue unaffected. The Bun runtime has no OTel exporter.
+Resource attributes include `service.name`, `service.version` (the agent version), `host.name`, and configured `resourceAttributes`. Export runs in its own daemon task at the configured interval. Settings changes are picked up on the exporter's next 5-second tick; an export already in flight (bounded by its 10-second timeout) can delay that tick, so a change is applied within 10 seconds at worst and within 5 seconds when the receiver answers promptly. The header variable is read whenever the exporter pipeline is built: toggle export off and on or change the `otel` settings block to apply a rotated value; restarting the daemon also re-reads it. Changing only the environment of an already-running, unchanged pipeline does not. Failed exports increment `otel.failures` in `/api/history/coverage` and log at most one warning per minute; collection and persistence continue unaffected. The Bun runtime has no OTel exporter.
 
 ### History API
 

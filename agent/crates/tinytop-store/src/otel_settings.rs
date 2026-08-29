@@ -71,7 +71,7 @@ impl OtelSettings {
             })
         {
             return Err(StoreError::Validation(
-                "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters".to_string(),
+                "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters".to_string(),
             ));
         }
         Ok(())
@@ -214,7 +214,7 @@ mod tests {
         };
         cases.push((
             too_many,
-            "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+            "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
         ));
 
         let mut bad_key = OtelSettings::default();
@@ -223,7 +223,7 @@ mod tests {
             .insert("Bad-Key".to_string(), "value".to_string());
         cases.push((
             bad_key,
-            "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+            "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
         ));
 
         for (settings, expected) in cases {

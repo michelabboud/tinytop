@@ -101,15 +101,7 @@ pub fn mark_disabled(status: &mut OtelStatus, settings: &OtelSettings) {
     status.interval_sec = settings.interval_sec;
 }
 
-pub(crate) fn disable_pipeline(
-    pipeline: &mut Option<OtelPipeline>,
-    status: &mut OtelStatus,
-    settings: &OtelSettings,
-    timeout: Duration,
-) {
-    if let Some(pipeline) = pipeline.take() {
-        pipeline.shutdown_best_effort(timeout);
-    }
+pub(crate) fn disable_pipeline(status: &mut OtelStatus, settings: &OtelSettings) {
     mark_disabled(status, settings);
 }
 
@@ -316,15 +308,15 @@ impl Instruments {
                 .build(),
             load_percent: meter
                 .f64_gauge("tinytop.load.percent")
-                .with_unit("1")
+                .with_unit("%")
                 .build(),
             pressure_some: meter
                 .f64_gauge("tinytop.pressure.some")
-                .with_unit("1")
+                .with_unit("%")
                 .build(),
             pressure_full: meter
                 .f64_gauge("tinytop.pressure.full")
-                .with_unit("1")
+                .with_unit("%")
                 .build(),
         }
     }
@@ -803,9 +795,9 @@ mod tests {
                 ("system.memory.usage", "By"),
                 ("system.memory.utilization", "1"),
                 ("system.paging.utilization", "1"),
-                ("tinytop.load.percent", "1"),
-                ("tinytop.pressure.full", "1"),
-                ("tinytop.pressure.some", "1"),
+                ("tinytop.load.percent", "%"),
+                ("tinytop.pressure.full", "%"),
+                ("tinytop.pressure.some", "%"),
             ])
         );
         assert_eq!(first_f64_value(&request, "system.cpu.utilization"), 0.25);
@@ -1058,12 +1050,10 @@ mod tests {
         };
         let mut status = OtelStatus::from_settings(&enabled);
 
-        disable_pipeline(
-            &mut pipeline,
-            &mut status,
-            &disabled,
-            Duration::from_millis(10),
-        );
+        if let Some(existing) = pipeline.take() {
+            existing.shutdown_best_effort(Duration::from_millis(10));
+        }
+        disable_pipeline(&mut status, &disabled);
 
         assert!(pipeline.is_none());
         assert!(!status.enabled);

@@ -474,7 +474,7 @@ describe("OpenTelemetry dashboard rules", () => {
     const result = parseResourceAttributes("deployment.note=before\u0085after");
     expect(result.attributes).toEqual({});
     expect(result.errors).toEqual([
-      "line 1: otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+      "line 1: otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
     ]);
   });
 
@@ -484,7 +484,7 @@ describe("OpenTelemetry dashboard rules", () => {
     const result = parseResourceAttributes(text);
     expect(Object.keys(result.attributes)).toHaveLength(32);
     expect(result.errors).toEqual([
-      "line 33: otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
+      "line 33: otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters",
     ]);
   });
 
@@ -517,8 +517,8 @@ describe("OpenTelemetry dashboard rules", () => {
       [{ ...base, headersEnvVar: "1TINYTOP_HEADERS" }, "otel.headersEnvVar must match ^[A-Z][A-Z0-9_]*$"],
       [{ ...base, serviceName: "" }, "otel.serviceName must be 1–128 characters without control characters"],
       [{ ...base, serviceName: "x".repeat(129) }, "otel.serviceName must be 1–128 characters without control characters"],
-      [{ ...base, resourceAttributes: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`key.${i}`, "v"])) }, "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
-      [{ ...base, resourceAttributes: { "Bad-Key": "v" } }, "otel.resourceAttributes must hold at most 32 entries with keys matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
+      [{ ...base, resourceAttributes: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`key.${i}`, "v"])) }, "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
+      [{ ...base, resourceAttributes: { "Bad-Key": "v" } }, "otel.resourceAttributes must hold at most 32 entries with keys of at most 64 characters matching ^[a-z][a-z0-9._]*$ and values of at most 256 characters"],
     ];
     for (const [candidate, message] of cases) expect(validateOtelSettings(candidate)).toEqual([message]);
     expect(validateOtelSettings(base)).toEqual([]);
