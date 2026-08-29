@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 - 2026-08-29
+
+Phase 4 of the tiered history ladder closes the plan with one task and its two review rounds: an OpenTelemetry metrics push exporter for the Rust daemon (ADR 0015, spec §12) — off by default, HTTP/protobuf only, driven by the daemon's own task through the SDK's `ManualReader` (behind `opentelemetry_sdk`'s `experimental_metrics_custom_reader` gate, accepted under exact pins `opentelemetry 0.32.0` / `opentelemetry_sdk 0.32.1` / `opentelemetry-otlp 0.32.0`; vetting report `docs/reports/2026-08-29-dependency-vetting-opentelemetry.md`), pushing the latest collected snapshot as the thirteen §12 gauges with a `service.name` / `service.version` / `host.name` resource, request headers read only from the environment variable the operator names (never stored, never exported, never logged), a cumulative failure counter with a once-a-minute warning, and status surfaced through `/api/history/coverage`, `db stats --json` and the dashboard's OpenTelemetry group (Bun keeps no exporter). The lock delta is 203 → 296 packages and the release binary grew by 7,170,632 B at T11 (10,614,800 → 17,785,432 B; re-measure at the next release build); `aws-lc-sys` makes a C compiler a build prerequisite (CMake only on its fallback paths). Lanes: T11 = hexe runs 625 (a correct escalation on the SDK feature gate) → 627; T10-fix2 = run 626; fast blind review luna 630 → fix round 632 (the status lock held across the disabled-branch sleep — coverage latency 4.15 s → 9 ms measured); the Phase-4 deep dual-blind sol 633 ∥ luna 634 (no P0; one P1) → fix round 637 (P4-fix1). With this release the tiered-history-ladder plan (T1–T11, four phases, ADRs 0013–0020) is complete.
 
 - Dependencies: added exact-pinned OpenTelemetry metric exporter dependencies for Rust HTTP/protobuf push export.
 - Store: added the additive, secret-free `otel` settings block and persisted-value compatibility for imports that omit it.

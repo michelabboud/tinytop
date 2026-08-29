@@ -2,18 +2,20 @@
 
 ## Current Version
 
-- Version: `0.4.1`
+- Version: `0.5.0`
 - Date: 2026-08-29
-- Status: Phase 3 CLOSED as 0.4.1 — T10 settings export/import (ADR 0016): export/import
-  routes with a server-computed dry-run, `config export` / `config import` CLI verbs, dashboard
-  Export/Import buttons; blind review (luna run 617) + fix round (save-path prompt regression,
-  `.tmp` cleanup, directory fsync, rename fallback where hard links are unsupported, test gaps).
-  Phases 1–3 (0.3.0 → 0.4.1) are on main. Next = Phase 4: T11 OpenTelemetry export (ADR 0015)
-  → 0.5.0. Deploying onto the live database is a separate, explicitly ordered step
-  (pre-image + backup first).
+- Status: Phase 4 CLOSED as 0.5.0 — the tiered-history-ladder plan is COMPLETE (T1–T11, four
+  phases, ADRs 0013–0020). T11 OpenTelemetry push export (ADR 0015): off by default, HTTP/protobuf,
+  daemon-driven `ManualReader`, headers from a named environment variable, coverage / `db stats` /
+  dashboard surfaces; two review rounds (luna 630 → fix 632; deep dual-blind sol 633 ∥ luna 634 → fix
+  637). Next = redeploy the live daemon on 0.5.0 (an explicitly ordered step), then the Backlog
+  (stale-check refusal, `--base-path`, ring-only rustls provider, `consecutiveFailures`, the
+  disabled-path cost measurement).
 
 ## Backlog
 
+- **`consecutiveFailures` beside the cumulative OTel `failures`** — deep review ruling 18 (d): sufficient today with `lastFailureMs > lastSuccessMs` and `lastError`; a consecutive count would sharpen operator diagnosis.
+- **Measure the disabled-path cost the exporter adds** — deep review ruling 18 (e): one snapshot clone into the watch channel per collection and one settings read per 5 s tick while `otel.enabled=false`; by design (the 5 s tick bounds settings latency), unmeasured — measure before optimising.
 - **Stale-check refusal (from the T9 blind review, luna run 600)** — ADR 0020 keeps the last known
   disk-pressure state when a measurement is undeterminable, so a persistent measurement failure
   after a real disk fill leaves `active:false` and growth is still permitted; `lastCheckMs` is a
@@ -34,6 +36,11 @@
   OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
+
+### 0.5.0 - Tiered history ladder, Phase 4 close (T11)
+
+- [x] T11 / 0.5.0: OTLP metrics push exporter (ADR 0015; spec §12): `otel` settings block (`enabled=false`, `http://127.0.0.1:4318/v1/metrics`, `http/protobuf`, `intervalSec` 5–3600, `headersEnvVar` name, `serviceName`, ≤ 32 `resourceAttributes`), absent-`otel` imports keep the persisted block; `otel.rs` builds `SdkMeterProvider` + a shared `ManualReader` + `MetricExporter` (Delta temporality, 10 s timeout) and the writer's 5 s-tick loop exports the latest `watch`-published snapshot at `intervalSec` without ever holding the status lock across an await or a sleep; headers parsed OTLP-style from the named variable at pipeline build only, `%`-re-encoded for the SDK, the standard OTLP header variables refused; cumulative `failures`, `lastSuccessMs`/`lastFailureMs`/sanitized `lastError`, one warn per minute, one recovered line; coverage `otel` block, `db stats` presence-only, dashboard group hidden on Bun. Reviews: luna 630 (P0 status lock across the disabled sleep — fixed in 632, measured 4.15 s → 9 ms), deep dual-blind 633/634 (no P0; P1 endpoint credentials — fixed in 637). Binary +7.2 MB at T11; lock 203 → 296; C compiler prerequisite.
+- [x] Phase 4 close / 0.5.0: P4-fix1 (run 637) — endpoint credential/host validation and secret-shaped attribute keys, settings merge inside the write transaction (`put_settings_document`), fail-closed standard-variable preflight, hung-receiver test, presence true-branch, docs (GUIDE privacy, C compiler vs CMake, `trace` feature, spec/ADR/plan amendments).
 
 ### 0.4.1 - Tiered history ladder, Phase 3 (T10)
 
