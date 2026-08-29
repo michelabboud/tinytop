@@ -614,10 +614,9 @@ fn spawn_disk_check_loop(state: AppState) -> JoinHandle<()> {
             .await
             {
                 Ok(measurement) => measurement,
-                Err(error) => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("disk measurement task failed: {error}"),
-                )),
+                Err(error) => Err(io::Error::other(format!(
+                    "disk measurement task failed: {error}"
+                ))),
             };
             match now_ms() {
                 Ok(now) => {

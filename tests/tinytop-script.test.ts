@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,9 +11,39 @@ type RunResult = {
   exitCode: number;
   stdout: string;
   stderr: string;
+  home: string;
+  runtimeDir: string;
 };
 
+function installCommandStubs(directory: string): void {
+  for (const [name, body] of [
+    ["systemctl", "#!/bin/sh\nexit 1\n"],
+    ["ss", "#!/bin/sh\nexit 0\n"],
+    ["curl", "#!/bin/sh\nexit 7\n"],
+    ["pgrep", "#!/bin/sh\nexit 1\n"],
+  ]) {
+    const path = join(directory, name);
+    if (existsSync(path)) continue;
+    writeFileSync(path, body);
+    chmodSync(path, 0o755);
+  }
+}
+
 async function runTinytop(args: string[], env: Record<string, string | undefined> = {}): Promise<RunResult> {
+  const root = mkdtempSync(join(tmpdir(), "tinytop-home-"));
+  const home = root;
+  const configHome = join(root, "config");
+  const dataHome = join(root, "data");
+  const stateHome = join(root, "state");
+  const cacheHome = join(root, "cache");
+  const runtimeDir = join(root, "runtime");
+  const unitDir = join(root, "systemd-units");
+  const stubDir = join(root, "stubs");
+  for (const path of [configHome, dataHome, stateHome, cacheHome, runtimeDir, unitDir, stubDir]) {
+    mkdirSync(path, { recursive: true });
+  }
+  installCommandStubs(stubDir);
+
   const proc = Bun.spawn([bashPath, scriptPath, ...args], {
     cwd: repoRoot,
     stdout: "pipe",
@@ -21,7 +51,14 @@ async function runTinytop(args: string[], env: Record<string, string | undefined
     env: {
       ...process.env,
       NO_COLOR: "1",
-      TINYTOP_SYSTEMD_UNIT_DIR: mkdtempSync(join(tmpdir(), "tinytop-systemd-units-")),
+      HOME: home,
+      XDG_CONFIG_HOME: configHome,
+      XDG_DATA_HOME: dataHome,
+      XDG_STATE_HOME: stateHome,
+      XDG_CACHE_HOME: cacheHome,
+      XDG_RUNTIME_DIR: runtimeDir,
+      TINYTOP_SYSTEMD_UNIT_DIR: unitDir,
+      PATH: `${stubDir}:/usr/bin:/bin`,
       ...env,
     },
   });
@@ -32,7 +69,13 @@ async function runTinytop(args: string[], env: Record<string, string | undefined
     proc.exited,
   ]);
 
-  return { exitCode, stdout, stderr };
+  return {
+    exitCode,
+    stdout,
+    stderr,
+    home: env.HOME ?? home,
+    runtimeDir: env.XDG_RUNTIME_DIR ?? runtimeDir,
+  };
 }
 
 describe("tinytop command center", () => {
@@ -66,9 +109,7 @@ describe("tinytop command center", () => {
   });
 
   test("doctor reports missing Bun without failing", async () => {
-    const result = await runTinytop(["doctor"], {
-      PATH: "/usr/bin:/bin",
-    });
+    const result = await runTinytop(["doctor"]);
 
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Bun: missing");
@@ -78,9 +119,7 @@ describe("tinytop command center", () => {
   });
 
   test("setup stops with clear Bun guidance when Bun is missing", async () => {
-    const result = await runTinytop(["setup"], {
-      PATH: "/usr/bin:/bin",
-    });
+    const result = await runTinytop(["setup"]);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Bun is required before the Bun setup wizard can run");
@@ -95,9 +134,7 @@ describe("tinytop command center", () => {
   });
 
   test("rust build reports missing Cargo with install guidance", async () => {
-    const result = await runTinytop(["rust", "build"], {
-      PATH: "/usr/bin:/bin",
-    });
+    const result = await runTinytop(["rust", "build"]);
 
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Rust/Cargo is required");
@@ -170,7 +207,6 @@ describe("tinytop command center", () => {
 
     const result = await runTinytop(["systemd", "render"], {
       HOME: home,
-      PATH: "/usr/bin:/bin",
     });
 
     expect(result.exitCode).toBe(0);
@@ -185,7 +221,6 @@ describe("tinytop command center", () => {
     chmodSync(agentPath, 0o755);
 
     const result = await runTinytop(["start"], {
-      PATH: "/usr/bin:/bin",
       TINYTOP_AGENT_BIN: agentPath,
       TINYTOP_RUNTIME: "auto",
     });
@@ -195,11 +230,28 @@ describe("tinytop command center", () => {
     expect(result.stdout).toContain("agent:serve");
   });
 
+  test("start_writes_its_pid_file_only_under_the_test_runtime_dir", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
+    const agentPath = join(dir, "tinytop-agent");
+    writeFileSync(agentPath, "#!/usr/bin/env bash\nprintf 'agent:%s\\n' \"$*\"\n");
+    chmodSync(agentPath, 0o755);
+
+    const result = await runTinytop(["start"], {
+      TINYTOP_AGENT_BIN: agentPath,
+      TINYTOP_RUNTIME: "auto",
+    });
+    expect(result.exitCode).toBe(0);
+    const pidFiles = readdirSync(join(result.runtimeDir, "tinytop")).filter((name) => name.endsWith(".pid"));
+    expect(pidFiles).toHaveLength(1);
+    expect(existsSync(join(result.home, ".local", "state"))).toBe(false);
+  });
+
   test("start honors the legacy Bun runtime override", async () => {
     const dir = mkdtempSync(join(tmpdir(), "tinytop-runtime-"));
     const bunPath = join(dir, "bun");
     writeFileSync(bunPath, "#!/usr/bin/env bash\nprintf 'bun:%s\\n' \"$*\"\n");
     chmodSync(bunPath, 0o755);
+    installCommandStubs(dir);
 
     const result = await runTinytop(["start"], {
       PATH: `${dir}:/usr/bin:/bin`,
@@ -216,6 +268,7 @@ describe("tinytop command center", () => {
     const bunPath = join(dir, "bun");
     writeFileSync(bunPath, "#!/usr/bin/env bash\nprintf 'bun:%s\\n' \"$*\"\n");
     chmodSync(bunPath, 0o755);
+    installCommandStubs(dir);
 
     const result = await runTinytop(["start"], {
       PATH: `${dir}:/usr/bin:/bin`,
@@ -242,6 +295,7 @@ describe("tinytop command center", () => {
       ].join("\n"),
     );
     chmodSync(curlPath, 0o755);
+    installCommandStubs(dir);
 
     const result = await runTinytop(["status"], {
       PATH: `${dir}:/usr/bin:/bin`,
@@ -263,6 +317,7 @@ describe("tinytop command center", () => {
       ].join("\n"),
     );
     chmodSync(pgrepPath, 0o755);
+    installCommandStubs(dir);
 
     const result = await runTinytop(["stop"], {
       PATH: `${dir}:/usr/bin:/bin`,
@@ -289,6 +344,7 @@ describe("tinytop command center", () => {
       ].join("\n"),
     );
     chmodSync(systemctlPath, 0o755);
+    installCommandStubs(dir);
     writeFileSync(join(unitDir, "tinytop.service"), "[Unit]\nDescription=TinyTop test unit\n");
 
     const result = await runTinytop(["stop"], {

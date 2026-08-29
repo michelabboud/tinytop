@@ -329,6 +329,157 @@ fn db_archive_status_on_fresh_v1_is_read_only() {
     assert!(!fixture.dir.join("history-archive.sqlite").exists());
 }
 
+#[tokio::test]
+async fn db_archive_status_excludes_a_month_that_still_has_main_rows() {
+    // Break caught: status promises a month that export-now will skip until its move catches up.
+    let fixture = TempDatabase::new("archive-status-main-rows");
+    let store = SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fixture store should connect");
+    let mut ladder = tinytop_store::retention_ladder::RetentionLadder::default();
+    ladder.l3.enabled = false;
+    ladder.l4.keep_days = 30;
+    ladder.archive.queryable = true;
+    ladder.archive.cold = true;
+    ladder.archive.cold_after_months = 1;
+    let settings = DashboardSettings {
+        retention_ladder: ladder,
+        ..DashboardSettings::default()
+    };
+    store
+        .put_settings(&settings)
+        .await
+        .expect("settings should persist");
+    let first = TierBucket {
+        bucket_start_ms: JAN_2023_MS,
+        first_captured_at_ms: JAN_2023_MS,
+        newest_captured_at_ms: JAN_2023_MS + HOUR_MS - 1,
+        sample_count: 60,
+        cpu: Stat {
+            avg: 1.0,
+            min: 1.0,
+            max: 1.0,
+        },
+        memory: Stat {
+            avg: 1.0,
+            min: 1.0,
+            max: 1.0,
+        },
+        swap: Stat {
+            avg: 1.0,
+            min: 1.0,
+            max: 1.0,
+        },
+        load: Stat {
+            avg: 1.0,
+            min: 1.0,
+            max: 1.0,
+        },
+        root_used: None,
+    };
+    let mut second = first.clone();
+    second.bucket_start_ms += HOUR_MS;
+    second.first_captured_at_ms += HOUR_MS;
+    second.newest_captured_at_ms += HOUR_MS;
+    store.upsert_tier_bucket(Tier::L4, &first).await.unwrap();
+    store.upsert_tier_bucket(Tier::L4, &second).await.unwrap();
+    let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 1).await.unwrap(),
+        1
+    );
+    store.close().await.expect("fixture store should close");
+
+    let output = fixture.run(&["db", "archive", "status"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    assert_eq!(
+        json["value"]["cold"]["nextExportableMonths"],
+        serde_json::json!([])
+    );
+}
+
+#[tokio::test]
+async fn db_archive_status_caps_next_exportable_months_to_one_pass() {
+    // Break caught: status promises more months than one export-now pass is allowed to write.
+    let fixture = TempDatabase::new("archive-status-month-cap");
+    let store = SqliteHistoryStore::connect(&fixture.database_url)
+        .await
+        .expect("fixture store should connect");
+    let mut ladder = tinytop_store::retention_ladder::RetentionLadder::default();
+    ladder.l3.enabled = false;
+    ladder.l4.keep_days = 30;
+    ladder.archive.queryable = true;
+    ladder.archive.cold = true;
+    ladder.archive.cold_after_months = 1;
+    let settings = DashboardSettings {
+        retention_ladder: ladder,
+        ..DashboardSettings::default()
+    };
+    store
+        .put_settings(&settings)
+        .await
+        .expect("settings should persist");
+    let starts = [
+        1_672_531_200_000,
+        1_675_209_600_000,
+        1_677_628_800_000,
+        1_680_307_200_000,
+        1_682_899_200_000,
+        1_685_577_600_000,
+        1_688_169_600_000,
+        1_690_848_000_000,
+        1_693_526_400_000,
+        1_696_118_400_000,
+        1_698_796_800_000,
+        1_701_388_800_000,
+        1_704_067_200_000,
+    ];
+    for (index, start_ms) in starts.into_iter().enumerate() {
+        let stat = Stat {
+            avg: index as f64,
+            min: index as f64,
+            max: index as f64,
+        };
+        store
+            .upsert_tier_bucket(
+                Tier::L4,
+                &TierBucket {
+                    bucket_start_ms: start_ms,
+                    first_captured_at_ms: start_ms,
+                    newest_captured_at_ms: start_ms + HOUR_MS - 1,
+                    sample_count: 60,
+                    cpu: stat,
+                    memory: stat,
+                    swap: stat,
+                    load: stat,
+                    root_used: None,
+                },
+            )
+            .await
+            .expect("fixture L4 bucket should insert");
+    }
+    let paths = archive_paths(store.database_path(), &settings.retention_ladder.archive);
+    assert_eq!(
+        move_expired_l4(&store, &paths, i64::MAX, 13)
+            .await
+            .expect("all fixture buckets should move"),
+        13
+    );
+    store.close().await.expect("fixture store should close");
+
+    let output = fixture.run(&["db", "archive", "status"]);
+
+    assert_success(&output);
+    let json = stdout_json(&output);
+    let next = json["value"]["cold"]["nextExportableMonths"]
+        .as_array()
+        .expect("status should list ready months");
+    assert_eq!(next.len(), 12);
+    assert_eq!(next.last(), Some(&serde_json::json!("2023-12")));
+}
+
 #[test]
 fn db_archive_export_now_refuses_when_cold_is_off() {
     // Break caught: the operator command bypasses its explicit setting gate.

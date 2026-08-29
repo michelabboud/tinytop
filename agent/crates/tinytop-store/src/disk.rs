@@ -120,7 +120,7 @@ pub async fn apply_disk_measurement(
         .await?;
 
     let transaction_result = async {
-        let previous = history_state_get_on::<DiskPressureState>(&mut *connection, "diskPressure")
+        let previous = history_state_get_on::<DiskPressureState>(&mut connection, "diskPressure")
             .await?
             .unwrap_or_default();
         let transition = match (previous.active, pressure) {
@@ -149,12 +149,12 @@ pub async fn apply_disk_measurement(
             "path": path.display().to_string(),
         });
 
-        history_state_set_on(&mut *connection, "diskPressure", &state, now_ms).await?;
-        history_state_set_on(&mut *connection, "lastDiskCheckMs", &now_ms, now_ms).await?;
+        history_state_set_on(&mut connection, "diskPressure", &state, now_ms).await?;
+        history_state_set_on(&mut connection, "lastDiskCheckMs", &now_ms, now_ms).await?;
         match transition {
             DiskTransition::Breached => {
                 record_event_on(
-                    &mut *connection,
+                    &mut connection,
                     now_ms,
                     HistoryMarkerType::DiskPressure,
                     &format!("Disk pressure: free {free_bytes} < minFreeBytes {min_free_bytes}"),
@@ -164,7 +164,7 @@ pub async fn apply_disk_measurement(
             }
             DiskTransition::Recovered => {
                 record_event_on(
-                    &mut *connection,
+                    &mut connection,
                     now_ms,
                     HistoryMarkerType::DiskRecovered,
                     &format!(
