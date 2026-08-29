@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 - 2026-08-29
+
+Phase 2 of the tiered history ladder opens with Task 7, the queryable archive (spec §6/§9/§10; ADRs 0014, 0018 and 0019). Expired hourly (L4) rows now move into `history-archive.sqlite` instead of being deleted when `retentionLadder.archive.queryable` is on, and `source=auto` reads fall through to it for ranges older than L4. The lane that built it (hexe run 573) escalated — correctly — on the move mechanic the plan prescribed: with the main database in WAL mode, SQLite commits attached files one by one, `main` first, so a single cross-file transaction could delete a batch before its copy was durable. ADR 0018 replaced it with copy → commit → verify → delete, and the blind review of that fix (luna, run 576) found the interval-count verify livelocking after a partial batch and the two-column delete match; ADR 0019 settled key-set verification, full-row equality, an fsynced archive commit and a watermark inside the delete transaction. Nothing here touches the on-disk main schema (`user_version` stays 1); the archive file is created only by a move, never by a read or by `db stats`.
 
 - Added the queryable hourly archive at `history-archive.sqlite`, relocated by `retentionLadder.archive.directory` when configured. Per ADRs 0018 and 0019, expired L4 rows move by committing and fsyncing an `INSERT OR REPLACE` archive copy with `archive.synchronous = FULL`, verifying every selected key exists in that committed copy, and only then committing a full-row-equality main deletion with `archiveMovedUntilMs` in the same transaction; maintenance work remains bounded per tick.
 - Made archive schema creation transactional across all three objects and `PRAGMA user_version`, preventing a stopped initialization from leaving a partial `user_version = 0` archive that later runs refuse.

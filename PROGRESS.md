@@ -2,11 +2,11 @@
 
 ## Current Version
 
-- Version: `0.3.0`
+- Version: `0.3.1`
 - Date: 2026-08-29
-- Status: Phase 1 closed (T1–T6 + the deep dual-blind fix round released as
-  0.3.0); Phase 2 (T7–T9: queryable archive, cold export, disk check + pressure banner) next.
-  Deploying 0.3.0 onto the live database is a separate, explicitly ordered step
+- Status: Phase 2 in progress — T7 (queryable archive, ADRs 0018/0019) shipped as 0.3.1;
+  T8 (cold CSV export) and T9 (disk check + pressure banner) next; 0.4.0 = Phase 2 close.
+  Deploying 0.3.x onto the live database is a separate, explicitly ordered step
   (pre-image + backup first).
 
 ## Backlog
@@ -18,6 +18,10 @@
   closed PR #1 (superseded; VERSION/ADR-number/dashboard-file conflicts made it unmergeable).
 
 ## Completed
+
+### 0.3.1 - Tiered history ladder, Phase 2 (T7)
+
+- [x] T7 / 0.3.1: expired L4 rows move into a queryable `history-archive.sqlite` (`retentionLadder.archive.queryable`), `source=auto` falls through to it, coverage and `db stats` report real archive counts, reads never create the file. The plan's single cross-file move transaction was ruled unsafe at SQLite source (main commits first under WAL) — the lane escalated on it correctly; ADR 0018 (copy → commit → verify → delete) and ADR 0019 (key-set verify, full-row delete match, fsynced archive commit, watermark inside the delete transaction) after the blind review. Known carry-overs to T8: the `cli_db` v0 fixture flake (deletes the `-wal` instead of checkpointing), `db stats` on a missing path creates a database, `limit=0`.
 
 ### 0.3.0 - Tiered history ladder, Phase 1 (T1–T6)
 
