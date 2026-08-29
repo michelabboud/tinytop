@@ -477,6 +477,20 @@ describe("retention ladder validation mirror", () => {
     ).toEqual(["disk pressure active: free 1000 < minFreeBytes 5000; shrink first or free disk"]);
   });
 
+  test("refuses fast process history growth while disk pressure is active", () => {
+    const previous = ladder();
+    const candidate = ladder();
+    candidate.processFastKeepHours = previous.processFastKeepHours + 1;
+
+    expect(
+      validateRetentionLadder(candidate, previous, {
+        pressure: true,
+        freeBytes: 1000,
+        minFreeBytes: 5000,
+      }),
+    ).toEqual(["disk pressure active: free 1000 < minFreeBytes 5000; shrink first or free disk"]);
+  });
+
   test("allows growth when the coverage pressure field is false", () => {
     const previous = ladder();
     const candidate = ladder();
@@ -752,6 +766,7 @@ describe("settings transfer plan description", () => {
         l3Buckets: 0,
         l4Buckets: 0,
         snapshotJsonRows: 0,
+        processFastRows: 0,
       },
       changedKeys: ["retentionLadder", "defaultTheme"],
       warnings: [],
@@ -832,6 +847,7 @@ describe("settings transfer plan description", () => {
         l3Buckets: 0,
         l4Buckets: 0,
         snapshotJsonRows: 0,
+        processFastRows: 0,
       },
       changedKeys: [],
       warnings: [],
@@ -950,6 +966,7 @@ describe("settings transfer plan description", () => {
         l3Buckets: 0,
         l4Buckets: 0,
         snapshotJsonRows: 0,
+        processFastRows: 0,
       },
     };
     expect(isValidImportPlan({ valid: true, wouldDelete: {} })).toBe(false);

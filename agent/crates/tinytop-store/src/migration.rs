@@ -548,14 +548,9 @@ pub(crate) async fn ensure_schema(
                 return Ok(None);
             }
 
-            let report = migrate_populated_v0(
-                pool,
-                db_path,
-                now_ms,
-                snapshot_json_keep_ms,
-                sample_count,
-            )
-            .await?;
+            let report =
+                migrate_populated_v0(pool, db_path, now_ms, snapshot_json_keep_ms, sample_count)
+                    .await?;
             migrate_v1_to_v2(pool, db_path, now_ms).await?;
             Ok(Some(report))
         }
@@ -572,9 +567,20 @@ pub(crate) async fn ensure_schema(
 }
 
 async fn apply_schema_v2(pool: &SqlitePool) -> Result<(), StoreError> {
-    for statement_group in CREATE_SCHEMA_V2_SQL {
-        sqlx::raw_sql(statement_group).execute(pool).await?;
+    apply_schema_groups(pool, &CREATE_SCHEMA_V2_SQL).await
+}
+
+async fn apply_schema_groups(
+    pool: &SqlitePool,
+    statement_groups: &[&'static str],
+) -> Result<(), StoreError> {
+    let mut transaction = pool.begin().await?;
+    for statement_group in statement_groups {
+        sqlx::raw_sql(*statement_group)
+            .execute(&mut *transaction)
+            .await?;
     }
+    transaction.commit().await?;
     Ok(())
 }
 
@@ -612,18 +618,18 @@ async fn migrate_v1_to_v2(
     .execute(&mut *transaction)
     .await?;
 
-    let missing_command_ids: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM process_samples WHERE command_id IS NULL",
-    )
-    .fetch_one(&mut *transaction)
-    .await?;
+    let missing_command_ids: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM process_samples WHERE command_id IS NULL")
+            .fetch_one(&mut *transaction)
+            .await?;
     if missing_command_ids > 0 {
         return Err(StoreError::Migration {
             reason: format!(
                 "schema v2 backfill left {missing_command_ids} process_samples rows without a command_id"
             ),
-            remedy: "report this with `tinytop-agent db stats --json`; the database was not modified"
-                .to_string(),
+            remedy:
+                "report this with `tinytop-agent db stats --json`; the database was not modified"
+                    .to_string(),
         });
     }
 
@@ -673,10 +679,7 @@ async fn migrate_v1_to_v2(
 }
 
 #[doc(hidden)]
-pub fn require_sqlite_at_least(
-    version: &str,
-    minimum: (u64, u64, u64),
-) -> Result<(), StoreError> {
+pub fn require_sqlite_at_least(version: &str, minimum: (u64, u64, u64)) -> Result<(), StoreError> {
     let parsed = version
         .split('.')
         .map(str::parse::<u64>)
@@ -1113,6 +1116,35 @@ fn database_bytes_with_wal(canonical_db_path: &Path) -> Result<u64, StoreError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn schema_group_failure_rolls_back_fresh_schema() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory fixture should connect");
+
+        let error = apply_schema_groups(
+            &pool,
+            &[
+                "CREATE TABLE partial_v2 (value INTEGER)",
+                "this is not valid SQLite",
+            ],
+        )
+        .await
+        .expect_err("the injected schema failure should be returned");
+        assert!(error.to_string().contains("syntax error"));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'partial_v2'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("schema should remain readable"),
+            0
+        );
+    }
 
     #[test]
     fn database_bytes_with_wal_counts_the_main_file_and_optional_sidecar() {

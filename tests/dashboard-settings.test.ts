@@ -114,7 +114,7 @@ describe("dashboard settings", () => {
     expect(html).toContain('id="daemon-rollup-retention-days" type="number" readonly');
     expect(html).toContain("derived from L1/L2");
     expect(app).toContain(
-      'elements.daemonProcessFastKeepHours = document.querySelector("#daemon-process-fast-keep-hours")',
+      'daemonProcessFastKeepHours: document.querySelector("#daemon-process-fast-keep-hours")',
     );
     expect(app).toContain("processFastKeepHours: numberControlValue(");
   });

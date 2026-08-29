@@ -11,8 +11,8 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current schema version: v1, with nullable recent-window `snapshot_json`, one-minute/five-minute/hourly rollup tables, typed filesystem/process detail tables, migration/disk/fold state, and daemon timeline events
-- Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, snapshot JSON retention, and detail cadence; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
+- Current schema version: v2, with nullable recent-window `snapshot_json`, one-minute/five-minute/hourly rollup tables, typed filesystem/process detail tables, a per-tick process table and command dictionary, migration/disk/fold state, and daemon timeline events
+- Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, snapshot JSON retention, detail cadence, and per-tick process history; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
 
 ## Process Boundary
 
@@ -332,11 +332,11 @@ then chains into v1→v2. Unsupported schema versions are refused with
 2)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
 `tinytop-agent db pre-image status` inspects its canonical path and main-database
 state; `tinytop-agent db pre-image remove --yes` removes only that exact file and
-refuses unless the main database is schema v1 and passes integrity checking.
+refuses unless the main database has completed schema v1 and passes integrity checking.
 
 ## Why Store Snapshot JSON
 
-The UI does not only need graph values. Timeline browsing needs the full selected sample so gauges, filesystem cards, pressure panels, and process rows can render the selected point in time. Storing recent `snapshot_json` lets refresh hydration restore the same UI state without re-collecting fake or partial data. Schema v1 makes the column nullable so older raw rows can retain their compact typed metrics without retaining the dominant JSON payload indefinitely.
+The UI does not only need graph values. Timeline browsing needs the full selected sample so gauges, filesystem cards, pressure panels, and process rows can render the selected point in time. Storing recent `snapshot_json` lets refresh hydration restore the same UI state without re-collecting fake or partial data. Schema v1 made the column nullable so older raw rows can retain their compact typed metrics without retaining the dominant JSON payload indefinitely; schema v2 retains that shape while adding typed fast process history.
 
 Typed columns are still stored for graph values and future rollups, so history is not trapped inside JSON.
 
@@ -451,7 +451,7 @@ Each insert compares the affected L2 minute's existing `sample_count` with the n
 - configured detail sampling interval
 - last persisted disk state as `freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, and `lastCheckMs`
 - queryable archive configuration plus real bucket count/range, and cold archive configuration/state
-- the persisted schema-migration document, or `null` on a fresh v1 database
+- the persisted schema-migration document, or `null` on a fresh v2 database
 
 ## Retention
 
@@ -477,7 +477,7 @@ Rust maintenance runs after each insert in this order:
 
 - L1 defaults to 3 days (range 3–3,650) and L2 to 30 days (range 7–3,650); both are always enabled.
 - L3 defaults to enabled for 90 days and must be at least L2 when enabled. L4 defaults to enabled for 730 days; `0` means forever, otherwise it must be at least L3, or L2 when L3 is disabled.
-- Snapshot JSON defaults to 60 minutes (range 60–1,440). Typed filesystem/process rows default to a 60-second cadence (range 15–3,600 seconds).
+- Snapshot JSON defaults to 60 minutes (range 60–1,440). Typed filesystem/process rows default to a 60-second cadence (range 15–3,600 seconds), and per-tick process rows default to 24 hours (range 1–72).
 - Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute.
 - Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB.
 
@@ -495,7 +495,7 @@ The `otel` block is part of the settings document, while `headersEnvVar` is only
 
 Import is split into a read-only plan and an authoritative apply. Planning rejects unknown envelope keys and unsupported versions, decodes through `DashboardSettings::from_document`, normalizes the legacy L1/L2 mirrors, validates the candidate against the persisted ladder and disk-pressure state, and reports ignored unknown keys inside `settings` as warnings. It returns changed keys and `wouldDelete` without writing. Applying repeats that plan and then calls `put_settings`, whose `BEGIN IMMEDIATE` validation is authoritative if pressure changes between preview and write.
 
-`wouldDelete` uses the same predicates as maintenance: L1 counts `captured_at_ms < cutoff`; rollups count `bucket_start_ms + resolution <= cutoff`; snapshot JSON counts non-null blobs with `captured_at_ms < cutoff`. The candidate ladder is converted through the maintenance configuration builder, so disabled tiers count zero and forever L4 counts zero. Queryable-archive L4 counts are the rows that leave `main` and move to the archive. Counts mean “older than the candidate horizon”: they can include rows already past the current horizon but not yet pruned because L2/L3 deletion is watermark-gated and each tick is bounded. The counts describe rows matching those predicates at preview time; maintenance may take several ticks to reach that number, and rows that cross the candidate cutoff between the preview and a maintenance tick are pruned as well—the ladder working as configured, not a preview error.
+`wouldDelete` uses the same predicates as maintenance: L1 counts `captured_at_ms < cutoff`; rollups count `bucket_start_ms + resolution <= cutoff`; snapshot JSON counts non-null blobs with `captured_at_ms < cutoff`; and `processFastRows` counts per-tick process rows older than the candidate `processFastKeepHours` horizon. The candidate ladder is converted through the maintenance configuration builder, so disabled tiers count zero and forever L4 counts zero. Queryable-archive L4 counts are the rows that leave `main` and move to the archive. Counts mean “older than the candidate horizon”: they can include rows already past the current horizon but not yet pruned because L2/L3 deletion is watermark-gated and each tick is bounded. The counts describe rows matching those predicates at preview time; maintenance may take several ticks to reach that number, and rows that cross the candidate cutoff between the preview and a maintenance tick are pruned as well—the ladder working as configured, not a preview error.
 
 HTTP import runs maintenance after the settings write and then records a `settingsChange` marker labelled `Settings imported` with `{"source":"import","changed":[…]}`. CLI import records the same marker but never runs maintenance: a running daemon re-reads settings on every collection tick and at startup, while running pruning from a second process beside the daemon would violate the maintenance ownership boundary.
 
@@ -635,7 +635,7 @@ Potential future normalized tables:
 
 - `pressure_samples`
 
-The next schema migration (v3) will add the normalized identity and on-change
+Task 14's schema-v3 migration will add the normalized identity and on-change
 filesystem tables needed to assemble typed history snapshots, then remove the
 remaining per-sample JSON payload. Pressure detail remains outside the typed
 history model until a consumer requires it. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).

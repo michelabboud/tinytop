@@ -7,8 +7,8 @@ use std::{
 };
 
 use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
-use tinytop_store::{SqliteHistoryStore, StoreError};
 use tinytop_store::migration::{CREATE_SCHEMA_V1_SQL, require_sqlite_at_least};
+use tinytop_store::{SqliteHistoryStore, StoreError};
 
 struct TempDatabase {
     dir: PathBuf,
@@ -260,8 +260,8 @@ async fn migrated_and_fresh_process_samples_have_identical_shape() {
 
 #[tokio::test]
 async fn sqlite_version_requirement_is_checked() {
-    let error = require_sqlite_at_least("3.34.1", (3, 35, 0))
-        .expect_err("SQLite 3.34.1 should be refused");
+    let error =
+        require_sqlite_at_least("3.34.1", (3, 35, 0)).expect_err("SQLite 3.34.1 should be refused");
     match error {
         StoreError::Migration { reason, .. } => assert_eq!(
             reason,
@@ -278,6 +278,7 @@ async fn sqlite_version_requirement_is_checked() {
         .fetch_one(&pool)
         .await
         .expect("linked SQLite version should read");
+    eprintln!("linked SQLite version: {linked}");
     require_sqlite_at_least(&linked, (3, 35, 0)).expect("linked SQLite should pass");
     pool.close().await;
 }
@@ -304,8 +305,9 @@ async fn newer_schema_version_is_refused() {
 #[tokio::test]
 #[ignore = "needs TINYTOP_V1_FIXTURE=<path to a v1 history.sqlite>"]
 async fn real_v1_file_copy_migrates_to_v2() {
-    let source = std::env::var("TINYTOP_V1_FIXTURE")
-        .unwrap_or_else(|error| panic!("TINYTOP_V1_FIXTURE must name a readable v1 database: {error}"));
+    let source = std::env::var("TINYTOP_V1_FIXTURE").unwrap_or_else(|error| {
+        panic!("TINYTOP_V1_FIXTURE must name a readable v1 database: {error}")
+    });
     let source_path = PathBuf::from(source);
     assert!(
         source_path.is_file(),
@@ -369,7 +371,10 @@ fn set_sqlite_user_version(path: &Path, user_version: u32) {
         match fs::remove_file(&sidecar) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => panic!("fixture sidecar {} should be removable: {error}", sidecar.display()),
+            Err(error) => panic!(
+                "fixture sidecar {} should be removable: {error}",
+                sidecar.display()
+            ),
         }
     }
     let mut file = OpenOptions::new()

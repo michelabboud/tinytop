@@ -446,6 +446,20 @@ pub struct HistoryProcessCapture {
     pub processes: Vec<HistoryProcessSample>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProcessHistorySource {
+    Fast,
+    Minute,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryProcessesRead {
+    pub source: ProcessHistorySource,
+    pub captures: Vec<HistoryProcessCapture>,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HistoryQuery {
     pub since_ms: Option<i64>,
@@ -763,6 +777,22 @@ pub(crate) async fn record_event_on(
     Ok(())
 }
 
+async fn intern_command(
+    connection: &mut SqliteConnection,
+    command: &str,
+) -> Result<i64, StoreError> {
+    sqlx::query("INSERT OR IGNORE INTO process_commands (command) VALUES (?)")
+        .bind(command)
+        .execute(&mut *connection)
+        .await?;
+    Ok(
+        sqlx::query_scalar("SELECT command_id FROM process_commands WHERE command = ?")
+            .bind(command)
+            .fetch_one(&mut *connection)
+            .await?,
+    )
+}
+
 impl SqliteHistoryStore {
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
         let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
@@ -1014,6 +1044,8 @@ impl SqliteHistoryStore {
         .execute(&self.pool)
         .await?;
 
+        self.write_process_fast_rows(captured_at_ms, &snapshot.processes)
+            .await?;
         let settings = self.get_settings().await?;
         let detail_interval_ms = settings
             .retention_ladder
@@ -1307,14 +1339,18 @@ impl SqliteHistoryStore {
             .await?;
         }
         for (rank, process) in snapshot.processes.iter().enumerate() {
+            // Keep the transaction-to-connection boundary explicit: command
+            // interning must never acquire a second connection.
+            #[allow(clippy::explicit_auto_deref)]
+            let command_id = intern_command(&mut *transaction, &process.command).await?;
             sqlx::query(
                 r#"
                 INSERT INTO process_samples (
-                  captured_at_ms, rank, pid, command, cpu_percent, memory_percent,
+                  captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
                   rss_bytes, parent_pid, started_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(captured_at_ms, rank) DO UPDATE SET
-                  pid = excluded.pid, command = excluded.command,
+                  pid = excluded.pid, command_id = excluded.command_id,
                   cpu_percent = excluded.cpu_percent, memory_percent = excluded.memory_percent,
                   rss_bytes = excluded.rss_bytes, parent_pid = excluded.parent_pid,
                   started_at = excluded.started_at
@@ -1323,7 +1359,7 @@ impl SqliteHistoryStore {
             .bind(captured_at_ms)
             .bind(to_i64(rank, "process rank")?)
             .bind(to_i64(process.pid, "process pid")?)
-            .bind(&process.command)
+            .bind(command_id)
             .bind(process.cpu_percent)
             .bind(process.memory_percent)
             .bind(to_i64(process.rss_bytes, "process rss bytes")?)
@@ -1365,6 +1401,50 @@ impl SqliteHistoryStore {
         .await?;
         transaction.commit().await?;
         Ok(detail_rows)
+    }
+
+    async fn write_process_fast_rows(
+        &self,
+        captured_at_ms: i64,
+        processes: &[tinytop_types::ProcessSnapshot],
+    ) -> Result<i64, StoreError> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("DELETE FROM process_samples_fast WHERE captured_at_ms = ?")
+            .bind(captured_at_ms)
+            .execute(&mut *transaction)
+            .await?;
+        for (rank, process) in processes.iter().enumerate() {
+            // Keep the transaction-to-connection boundary explicit: command
+            // interning must never acquire a second connection.
+            #[allow(clippy::explicit_auto_deref)]
+            let command_id = intern_command(&mut *transaction, &process.command).await?;
+            sqlx::query(
+                r#"
+                INSERT INTO process_samples_fast (
+                  captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
+                  rss_bytes, parent_pid, started_at, gpu_percent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                "#,
+            )
+            .bind(captured_at_ms)
+            .bind(to_i64(rank, "process rank")?)
+            .bind(to_i64(process.pid, "process pid")?)
+            .bind(command_id)
+            .bind(process.cpu_percent)
+            .bind(process.memory_percent)
+            .bind(to_i64(process.rss_bytes, "process rss bytes")?)
+            .bind(
+                process
+                    .parent_pid
+                    .map(|value| to_i64(value, "process parent pid"))
+                    .transpose()?,
+            )
+            .bind(&process.started_at)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        to_i64(processes.len(), "fast process row count")
     }
 
     pub async fn latest_snapshot(&self) -> Result<Option<HistorySample>, StoreError> {
@@ -1517,33 +1597,60 @@ impl SqliteHistoryStore {
         Ok(samples)
     }
 
+    /// Reads per-tick rows only when the requested lower bound is wholly inside
+    /// the configured fast-retention window; older and open-ended requests use
+    /// the once-a-minute process tier.
     pub async fn read_history_processes(
         &self,
         query: HistoryQuery,
-    ) -> Result<Vec<HistoryProcessCapture>, StoreError> {
+    ) -> Result<HistoryProcessesRead, StoreError> {
+        const PROCESS_FAST_TABLE: &str = "process_samples_fast";
+        const PROCESS_MINUTE_TABLE: &str = "process_samples";
+
+        let process_fast_keep_ms = self
+            .get_settings()
+            .await?
+            .retention_ladder
+            .process_fast_keep_hours
+            .saturating_mul(3_600_000);
+        let fast_floor_ms = now_ms().saturating_sub(process_fast_keep_ms);
+        let source = if query
+            .since_ms
+            .is_some_and(|since_ms| since_ms >= fast_floor_ms)
+        {
+            ProcessHistorySource::Fast
+        } else {
+            ProcessHistorySource::Minute
+        };
+        let table = match source {
+            ProcessHistorySource::Fast => PROCESS_FAST_TABLE,
+            ProcessHistorySource::Minute => PROCESS_MINUTE_TABLE,
+        };
         let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
-        let rows = sqlx::query(
+        let sql = format!(
             r#"
             WITH capture_times AS (
               SELECT DISTINCT captured_at_ms
-              FROM process_samples
+              FROM {table}
               WHERE (?1 IS NULL OR captured_at_ms >= ?1)
                 AND (?2 IS NULL OR captured_at_ms <= ?2)
               ORDER BY captured_at_ms DESC
               LIMIT ?3
             )
-            SELECT p.captured_at_ms, p.rank, p.pid, p.command, p.cpu_percent,
+            SELECT p.captured_at_ms, p.rank, p.pid, c.command AS command, p.cpu_percent,
                    p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at
-            FROM process_samples p
-            INNER JOIN capture_times c ON c.captured_at_ms = p.captured_at_ms
+            FROM {table} p
+            INNER JOIN capture_times t ON t.captured_at_ms = p.captured_at_ms
+            INNER JOIN process_commands c ON c.command_id = p.command_id
             ORDER BY p.captured_at_ms, p.rank
             "#,
-        )
-        .bind(query.since_ms)
-        .bind(query.until_ms)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        );
+        let rows = sqlx::query(AssertSqlSafe(sql))
+            .bind(query.since_ms)
+            .bind(query.until_ms)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?;
 
         let mut captures = Vec::<HistoryProcessCapture>::new();
         for row in rows {
@@ -1574,7 +1681,7 @@ impl SqliteHistoryStore {
             };
             capture.processes.push(process);
         }
-        Ok(captures)
+        Ok(HistoryProcessesRead { source, captures })
     }
 
     pub async fn record_event(
@@ -1843,6 +1950,20 @@ impl SqliteHistoryStore {
         .await?)
     }
 
+    pub async fn count_process_fast_rows_older_than(
+        &self,
+        cutoff_ms: i64,
+    ) -> Result<i64, StoreError> {
+        Ok(
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM process_samples_fast WHERE captured_at_ms < ?",
+            )
+            .bind(cutoff_ms)
+            .fetch_one(&self.pool)
+            .await?,
+        )
+    }
+
     pub async fn prune_rollups(&self, tier: Tier, cutoff_end_ms: i64) -> Result<u64, StoreError> {
         if tier == Tier::L1 {
             return Err(StoreError::Validation(
@@ -1899,6 +2020,62 @@ impl SqliteHistoryStore {
             .rows_affected();
         transaction.commit().await?;
         Ok(fs.saturating_add(processes))
+    }
+
+    pub(crate) async fn prune_process_fast_history(
+        &self,
+        cutoff_ms: i64,
+    ) -> Result<u64, StoreError> {
+        const PROCESS_FAST_PRUNE_BATCH: i64 = 5_000;
+
+        let mut total = 0_u64;
+        loop {
+            let deleted = sqlx::query(
+                r#"
+                DELETE FROM process_samples_fast
+                WHERE (captured_at_ms, rank) IN (
+                  SELECT captured_at_ms, rank FROM process_samples_fast
+                  WHERE captured_at_ms < ?1
+                  ORDER BY captured_at_ms, rank
+                  LIMIT ?2
+                )
+                "#,
+            )
+            .bind(cutoff_ms)
+            .bind(PROCESS_FAST_PRUNE_BATCH)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+            total = total.saturating_add(deleted);
+            if deleted < PROCESS_FAST_PRUNE_BATCH as u64 {
+                return Ok(total);
+            }
+        }
+    }
+
+    pub(crate) async fn prune_orphan_commands(&self, limit: i64) -> Result<u64, StoreError> {
+        // Both NOT EXISTS clauses are command_id index probes, so each
+        // dictionary candidate avoids scanning either process table.
+        let deleted = sqlx::query(
+            r#"
+            DELETE FROM process_commands
+            WHERE command_id IN (
+              SELECT c.command_id
+              FROM process_commands c
+              WHERE NOT EXISTS (
+                SELECT 1 FROM process_samples p WHERE p.command_id = c.command_id
+              )
+                AND NOT EXISTS (
+                  SELECT 1 FROM process_samples_fast f WHERE f.command_id = c.command_id
+                )
+              LIMIT ?
+            )
+            "#,
+        )
+        .bind(limit)
+        .execute(&self.pool)
+        .await?;
+        Ok(deleted.rows_affected())
     }
 
     pub async fn integrity_check(&self) -> Result<String, StoreError> {

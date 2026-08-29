@@ -132,6 +132,7 @@ const DEFAULT_DAEMON_SETTINGS = {
     l4: { enabled: true, keepDays: 730 },
     snapshotJsonKeepMinutes: 60,
     detailIntervalSec: 60,
+    processFastKeepHours: 24,
     archive: {
       queryable: false,
       cold: false,
@@ -388,6 +389,7 @@ const elements = {
   daemonL4Forever: document.querySelector("#daemon-l4-forever"),
   daemonSnapshotJsonKeepMinutes: document.querySelector("#daemon-snapshot-json-keep-minutes"),
   daemonDetailIntervalSec: document.querySelector("#daemon-detail-interval-sec"),
+  daemonProcessFastKeepHours: document.querySelector("#daemon-process-fast-keep-hours"),
   daemonArchiveQueryable: document.querySelector("#daemon-archive-queryable"),
   daemonArchiveCold: document.querySelector("#daemon-archive-cold"),
   daemonArchiveColdAfterMonths: document.querySelector("#daemon-archive-cold-after-months"),
@@ -616,6 +618,7 @@ function settingsFormControls() {
     elements.daemonL4Forever,
     elements.daemonSnapshotJsonKeepMinutes,
     elements.daemonDetailIntervalSec,
+    elements.daemonProcessFastKeepHours,
     elements.daemonArchiveQueryable,
     elements.daemonArchiveCold,
     elements.daemonArchiveColdAfterMonths,
@@ -2675,6 +2678,7 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
     setCheckboxValue(elements.daemonL4Forever, nextSettings.retentionLadder.l4.keepDays === 0);
     setControlValue(elements.daemonSnapshotJsonKeepMinutes, nextSettings.retentionLadder.snapshotJsonKeepMinutes);
     setControlValue(elements.daemonDetailIntervalSec, nextSettings.retentionLadder.detailIntervalSec);
+    setControlValue(elements.daemonProcessFastKeepHours, nextSettings.retentionLadder.processFastKeepHours);
     setCheckboxValue(elements.daemonArchiveQueryable, nextSettings.retentionLadder.archive.queryable);
     setCheckboxValue(elements.daemonArchiveCold, nextSettings.retentionLadder.archive.cold);
     setControlValue(elements.daemonArchiveColdAfterMonths, nextSettings.retentionLadder.archive.coldAfterMonths);
@@ -2768,6 +2772,7 @@ function collectDaemonSettingsFromForm() {
         },
         snapshotJsonKeepMinutes: numberControlValue(elements.daemonSnapshotJsonKeepMinutes, 60),
         detailIntervalSec: numberControlValue(elements.daemonDetailIntervalSec, 60),
+        processFastKeepHours: numberControlValue(elements.daemonProcessFastKeepHours, 24),
         archive: {
           queryable: Boolean(elements.daemonArchiveQueryable?.checked),
           cold: Boolean(elements.daemonArchiveCold?.checked),

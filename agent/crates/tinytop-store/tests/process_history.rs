@@ -163,24 +163,21 @@ async fn prune_process_fast_history_is_limit_bounded_and_leaves_no_orphans() {
             .await
             .expect("command fixture should insert");
     }
-    let old_id: i64 = sqlx::query_scalar(
-        "SELECT command_id FROM process_commands WHERE command = 'old-only'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("old command id should read");
-    let new_id: i64 = sqlx::query_scalar(
-        "SELECT command_id FROM process_commands WHERE command = 'new-only'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("new command id should read");
-    let minute_id: i64 = sqlx::query_scalar(
-        "SELECT command_id FROM process_commands WHERE command = 'minute-only'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("minute command id should read");
+    let old_id: i64 =
+        sqlx::query_scalar("SELECT command_id FROM process_commands WHERE command = 'old-only'")
+            .fetch_one(&pool)
+            .await
+            .expect("old command id should read");
+    let new_id: i64 =
+        sqlx::query_scalar("SELECT command_id FROM process_commands WHERE command = 'new-only'")
+            .fetch_one(&pool)
+            .await
+            .expect("new command id should read");
+    let minute_id: i64 =
+        sqlx::query_scalar("SELECT command_id FROM process_commands WHERE command = 'minute-only'")
+            .fetch_one(&pool)
+            .await
+            .expect("minute command id should read");
     sqlx::query(
         "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 12000) INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) SELECT ?, n, n, ?, 1.0, 2.0, 3, NULL, NULL, NULL FROM seq",
     )

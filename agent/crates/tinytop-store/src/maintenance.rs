@@ -7,6 +7,7 @@ use crate::{
 
 const MAX_PROMOTIONS_PER_TICK: i64 = 50;
 const JSON_STRIP_BATCH: i64 = 500;
+const ORPHAN_COMMAND_PRUNE_BATCH: i64 = 1_000;
 const DAY_MS: i64 = 86_400_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +29,9 @@ pub struct MaintenanceReport {
     pub json_stripped: i64,
     pub pruned: [i64; 4],
     pub detail_rows: i64,
+    pub detail_rows_pruned: u64,
+    pub process_fast_rows: u64,
+    pub orphan_commands: u64,
     pub expired_l4: i64,
     pub archived_l4: i64,
 }
@@ -211,11 +215,56 @@ async fn maintain_with_archive(
         .await
     {
         Ok(count) => {
+            report.detail_rows_pruned = count;
             if count > 0 {
                 eprintln!("history maintenance info: deleted {count} expired detail rows");
             }
         }
         Err(error) => record_step_error(&mut first_error, "prune detail rows", error),
+    }
+
+    match store
+        .prune_process_fast_history(now_ms.saturating_sub(config.process_fast_keep_ms))
+        .await
+    {
+        Ok(count) => {
+            report.process_fast_rows = count;
+            if count > 0 {
+                eprintln!("history maintenance info: deleted {count} expired fast process rows");
+            }
+        }
+        Err(error) => record_step_error(&mut first_error, "prune fast process rows", error),
+    }
+
+    // A command can only become orphaned when process rows are deleted.
+    if report
+        .detail_rows_pruned
+        .saturating_add(report.process_fast_rows)
+        > 0
+    {
+        loop {
+            match store
+                .prune_orphan_commands(ORPHAN_COMMAND_PRUNE_BATCH)
+                .await
+            {
+                Ok(count) => {
+                    report.orphan_commands = report.orphan_commands.saturating_add(count);
+                    if count < ORPHAN_COMMAND_PRUNE_BATCH as u64 {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    record_step_error(&mut first_error, "prune orphan commands", error);
+                    break;
+                }
+            }
+        }
+        if report.orphan_commands > 0 {
+            eprintln!(
+                "history maintenance info: deleted {} orphaned process commands",
+                report.orphan_commands
+            );
+        }
     }
 
     let l2_dependent_watermark = if config.l3.is_some() {
