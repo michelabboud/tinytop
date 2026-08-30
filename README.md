@@ -208,7 +208,7 @@ pre-image management:
 
 | Command | Purpose |
 | --- | --- |
-| `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, JSON-bearing sample count, archive and disk state (`freeBytes`, minimum, pressure, breach start, and last check), and OTel status including the headers environment-variable name and whether it is set (never its value) |
+| `tinytop-agent db stats --json` | Report the unchanged raw-sample stats plus all four ladder tiers, archive and disk state (`freeBytes`, minimum, pressure, breach start, and last check), and OTel status including the headers environment-variable name and whether it is set (never its value) |
 | `tinytop-agent db pre-image status` | Show the canonical `<database>.pre-v0.sqlite` path, existence/size, schema version, and main-database integrity result |
 | `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation when the main database exists, uses schema v1, and passes SQLite integrity check; otherwise refuse |
 | `tinytop-agent config export [--out FILE]` | Export the daemon settings as a versioned, secret-free JSON document; stdout is the default. File publishing uses atomic no-clobber hard links when supported; otherwise it re-checks the destination and renames, leaving a few-microsecond window in which a file created by another process could be replaced. |
@@ -390,9 +390,9 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 ## Persistence
 
-Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API.
+Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API. From schema v3, the Rust daemon and Bun runtime **must not share a database path**: Bun reads and writes the legacy `metric_samples` payload column that v3 removes, and the Rust daemon does not refuse on Bun's behalf.
 
-In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder horizon, the recent snapshot-JSON window, and typed filesystem/process sampling cadence. `retentionHours` and `rollupRetentionDays` remain in every saved document as derived compatibility mirrors for the Bun runtime, so a typed save that edits only those mirrors is overwritten from authoritative L1/L2. Legacy Bun split mode keeps the older manual archive/reset behavior.
+In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder horizon, filesystem check cadence, and typed process sampling cadence. `retentionHours` and `rollupRetentionDays` remain in every saved document as derived compatibility mirrors for the Bun runtime, so a typed save that edits only those mirrors is overwritten from authoritative L1/L2. Legacy settings documents may still carry `snapshotJsonKeepMinutes`; Rust accepts and ignores it on both write paths, and imports warn `snapshotJsonKeepMinutes is no longer used and was ignored`. Legacy Bun split mode keeps the older manual archive/reset behavior.
 
 | Setting | Default | Validation / meaning |
 | --- | ---: | --- |
@@ -400,8 +400,7 @@ In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder h
 | `retentionLadder.l2.keepDays` | `30` | One-minute rollups and typed detail retention; 7–3,650 days; always enabled |
 | `retentionLadder.l3` | enabled, `90` days | Five-minute rollups; when enabled, retention must be at least L2 and at most 3,650 days |
 | `retentionLadder.l4` | enabled, `730` days | Hourly rollups; `0` means forever, otherwise retention must be at least the nearest enabled finer tier and at most 36,500 days |
-| `retentionLadder.snapshotJsonKeepMinutes` | `60` | Complete raw snapshot JSON; 60–1,440 minutes |
-| `retentionLadder.detailIntervalSec` | `60` | Filesystem check interval (collector slow class; also the typed detail-row cadence until the typed-history migration); 15–3,600 seconds |
+| `retentionLadder.detailIntervalSec` | `60` | Filesystem check interval; schema v3 stores filesystem detail only when it changes; 15–3,600 seconds |
 | `retentionLadder.processFastKeepHours` | `24` | Per-tick process rows kept before falling back to the once-a-minute rows; 1–72 hours |
 | `retentionLadder.archive` | off | `queryable` moves expired L4 rows into `history-archive.sqlite`; `directory` is empty (beside the main DB) or absolute. `cold` requires `queryable` and exports complete eligible UTC months as verified `csv.gz` files plus `sha256sum`-compatible sidecars after 1–120 months. |
 | `retentionLadder.diskCheck` | `intervalMinutes: 60`, `minFreeBytes: 5 GiB` | Interval 5–1,440 minutes; minimum at least 256 MiB. A breach shows a banner and refuses retention growth or tier/archive enables; it never deletes history. |
@@ -463,9 +462,9 @@ Resource attributes include `service.name`, `service.version` (the agent version
 
 | Endpoint | Rust response |
 | --- | --- |
-| `GET /api/history` | Complete raw snapshots whose `snapshot_json` is still retained; `limit` is clamped to 1–10,000. |
+| `GET /api/history` | Assembleable raw snapshots reconstructed from typed v3 tables; `limit` is clamped to 1–10,000. History omits `cpu.times` and pressure detail, and may omit unsupported load thread/PID fields. |
 | `GET /api/history/points` | Chart points from `auto`, `raw`, `rollup` (1 minute), `5m`, `1h`, or `archive`, plus top-level `source`, `resolutionMs`, and `available`. `archive` returns hourly points with `available:true` when `retentionLadder.archive.queryable` is enabled; an explicit archive request while it is disabled is an empty `available:false` page. |
-| `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, JSON horizon, detail cadence, disk state (`freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, `lastCheckMs`), archive state, migration state, and Rust-daemon OTel status (`enabled`, `endpoint`, `intervalSec`, `lastSuccessMs`, `lastFailureMs`, `lastError`, `failures`). |
+| `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, detail cadence, disk state (`freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, `lastCheckMs`), archive state, migration state, and Rust-daemon OTel status (`enabled`, `endpoint`, `intervalSec`, `lastSuccessMs`, `lastFailureMs`, `lastError`, `failures`). |
 | `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |
 | `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit; the response names its `source` (`fast` for windows inside `processFastKeepHours`, else `minute`). |
 | `GET /api/history/markers` | Persisted daemon/settings/migration/disk-pressure/disk-recovery events and computed coverage gaps. |
@@ -476,7 +475,7 @@ The range parameters also retain their existing snake_case aliases for compatibi
 
 The dashboard does not render the whole database. On page load it requests the browser-selected timestamp window, defaulting to Live. Live, 15m, and 1h use paged raw snapshots. Every preset from 6h through All sends one `/api/history/points?source=auto&limit=10000` request so the Rust daemon chooses the finest enabled tier that holds the range start without exceeding 10,000 buckets. At the default ladder this yields 6h → 1 minute (360 points), 24h → 1 minute (1,440), 7d → 5 minutes (2,016), 30d → 5 minutes (8,640), 90d → 1 hour (2,160), and 1y → 1 hour (8,760). All uses the coarsest tier holding the oldest retained data; the newest 10,000 hourly buckets cover about 416 days, and the queryable archive holds the rest. A long preset is disabled only when no enabled tier holds its start and the archive is not queryable; if the selected preset becomes unavailable, the browser falls back to the nearest finer preset without changing the saved preference. The Bun runtime keeps raw presets through 1h, disables longer presets with a Rust-daemon tooltip, and does not expose the Rust-only ladder form. Browser rendering may downsample loaded points when needed. These query windows do not delete older SQLite rows.
 
-The current Rust SQLite implementation stores indexed metric columns with recent complete snapshot JSON, maintains the four-tier ladder, records typed filesystem/process detail and daemon timeline events, and exposes the additive history endpoints above.
+The current Rust SQLite implementation stores typed metric rows plus interned host identity, maintains the four-tier ladder, records filesystem changes/presence events and typed process detail, and exposes the additive history endpoints above. A migrated v1 file retains its old SQLite page slack until the operator runs `tinytop-agent db vacuum`; schema migration does not reclaim that slack automatically.
 
 ## Verification
 

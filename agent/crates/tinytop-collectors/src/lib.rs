@@ -14,33 +14,6 @@ use std::{fmt, time::Duration};
 
 use tinytop_types::SystemSnapshot;
 
-/// Process totals derived independently of the bounded process snapshot list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ProcessTotals {
-    /// Number of processes observed in the full process table.
-    pub count: u64,
-    /// Highest process identifier observed, or zero when the table is empty.
-    pub last_pid: u64,
-}
-
-/// Derives the sysinfo collectors' load totals from the full process table
-/// before the top-N process list is truncated.
-///
-/// Sysinfo exposes no thread totals on macOS or Windows, so
-/// [`tinytop_types::LoadSnapshot::total_threads`] is the process count there and
-/// [`tinytop_types::LoadSnapshot::last_pid`] is the highest PID. Linux instead
-/// reads the kernel's task total from `/proc/loadavg`. An honest `Option<u64>`
-/// waits for schema v3 (Task 14) because `metric_samples.total_threads` is a
-/// `NOT NULL` typed column today.
-pub fn process_totals(pids: impl IntoIterator<Item = u64>) -> ProcessTotals {
-    pids.into_iter()
-        .fold(ProcessTotals::default(), |mut totals, pid| {
-            totals.count += 1;
-            totals.last_pid = totals.last_pid.max(pid);
-            totals
-        })
-}
-
 pub type CollectorResult<T> = Result<T, CollectorError>;
 
 /// Runtime collector settings. These defaults mirror the store's
@@ -165,43 +138,5 @@ impl std::error::Error for CollectorError {
 impl From<procfs::ProcError> for CollectorError {
     fn from(error: procfs::ProcError) -> Self {
         Self::Procfs(error)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn process_totals_counts_every_pid_and_keeps_the_newest() {
-        assert_eq!(
-            process_totals([3, 1, 2]),
-            ProcessTotals {
-                count: 3,
-                last_pid: 3,
-            }
-        );
-    }
-
-    #[test]
-    fn process_totals_of_nothing_is_zero() {
-        assert_eq!(
-            process_totals(std::iter::empty()),
-            ProcessTotals {
-                count: 0,
-                last_pid: 0,
-            }
-        );
-    }
-
-    #[test]
-    fn process_totals_ignores_ordering_and_truncation_of_the_caller() {
-        let pids = (1..=50).collect::<Vec<u64>>();
-        let all = process_totals(pids.iter().copied());
-        let reversed = process_totals(pids.iter().copied().rev());
-        let truncated = process_totals(pids.iter().copied().take(8));
-
-        assert_eq!(all, reversed);
-        assert_ne!(all, truncated);
     }
 }

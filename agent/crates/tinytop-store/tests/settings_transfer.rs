@@ -97,7 +97,6 @@ fn shrinking_candidate() -> DashboardSettings {
     candidate.retention_ladder.l2.keep_days = 10;
     candidate.retention_ladder.l3.keep_days = 30;
     candidate.retention_ladder.l4.keep_days = 365;
-    candidate.retention_ladder.snapshot_json_keep_minutes = 60;
     candidate
 }
 
@@ -120,7 +119,7 @@ fn bucket(start_ms: i64, resolution_ms: i64) -> TierBucket {
     }
 }
 
-async fn seed_raw(pool: &SqlitePool, captured_at_ms: i64, has_json: bool) {
+async fn seed_raw(pool: &SqlitePool, captured_at_ms: i64) {
     sqlx::query(
         r#"
         INSERT INTO metric_samples (
@@ -128,22 +127,21 @@ async fn seed_raw(pool: &SqlitePool, captured_at_ms: i64, has_json: bool) {
           cpu_usage_percent, cpu_cores, memory_used_percent, memory_used_bytes,
           memory_total_bytes, swap_used_percent, swap_used_bytes, swap_total_bytes,
           load_one, load_five, load_fifteen, load_percent, runnable_threads,
-          total_threads, root_used_percent, snapshot_json
+          total_threads, root_used_percent
         ) VALUES (?, 'fixture', 'devbox', 'linux', 10, 4, 20, 20, 100,
-                  0, 0, 0, 1, 1, 1, 25, 1, 4, 30, ?)
+                  0, 0, 0, 1, 1, 1, 25, 1, 4, 30)
         "#,
     )
     .bind(captured_at_ms)
-    .bind(has_json.then_some("{}"))
     .execute(pool)
     .await
     .expect("raw fixture row should insert");
 }
 
 async fn seed_counts(store: &SqliteHistoryStore, pool: &SqlitePool, now_ms: i64) {
-    seed_raw(pool, now_ms - 4 * DAY_MS, true).await;
-    seed_raw(pool, now_ms - 2 * DAY_MS, true).await;
-    seed_raw(pool, now_ms - 30 * MINUTE_MS, true).await;
+    seed_raw(pool, now_ms - 4 * DAY_MS).await;
+    seed_raw(pool, now_ms - 2 * DAY_MS).await;
+    seed_raw(pool, now_ms - 30 * MINUTE_MS).await;
 
     for (tier, old, recent) in [
         (Tier::L2, now_ms - 11 * DAY_MS, now_ms - 9 * DAY_MS),
@@ -241,7 +239,6 @@ async fn dry_run_reports_changed_keys_and_would_delete() {
     let now_ms = 2_000 * DAY_MS;
     let mut current = DashboardSettings::default();
     current.retention_ladder.l1.keep_days = 5;
-    current.retention_ladder.snapshot_json_keep_minutes = 120;
     store
         .put_settings(&current)
         .await
@@ -259,7 +256,6 @@ async fn dry_run_reports_changed_keys_and_would_delete() {
     assert_eq!(plan.would_delete.l2_buckets, 1);
     assert_eq!(plan.would_delete.l3_buckets, 1);
     assert_eq!(plan.would_delete.l4_buckets, 1);
-    assert_eq!(plan.would_delete.snapshot_json_rows, 2);
     assert_eq!(store.get_settings().await.unwrap(), before);
     assert_eq!(event_count(&pool).await, 0);
 }
@@ -362,7 +358,7 @@ async fn import_plan_counts_fast_process_rows_for_a_shrinking_horizon() {
 
 #[tokio::test]
 async fn dry_run_honors_exact_prune_predicate_boundaries() {
-    // Break caught: count previews drift from `<` for raw/JSON or `<=` for rollup ends.
+    // Break caught: count previews drift from `<` for raw or `<=` for rollup ends.
     let fixture = TempDatabase::new("predicate-boundaries");
     let store = fixture.store().await;
     let pool = fixture.pool().await;
@@ -371,9 +367,7 @@ async fn dry_run_honors_exact_prune_predicate_boundaries() {
     let ladder = &candidate.retention_ladder;
 
     let l1_cutoff = now_ms - ladder.l1.keep_days * DAY_MS;
-    let snapshot_json_cutoff = now_ms - ladder.snapshot_json_keep_minutes * MINUTE_MS;
-    seed_raw(&pool, l1_cutoff, false).await;
-    seed_raw(&pool, snapshot_json_cutoff, true).await;
+    seed_raw(&pool, l1_cutoff).await;
 
     for (tier, keep_days) in [
         (Tier::L2, ladder.l2.keep_days),
@@ -397,10 +391,6 @@ async fn dry_run_honors_exact_prune_predicate_boundaries() {
     assert_eq!(
         plan.would_delete.l1_rows, 0,
         "L1 uses captured_at_ms < cutoff"
-    );
-    assert_eq!(
-        plan.would_delete.snapshot_json_rows, 0,
-        "snapshot JSON uses captured_at_ms < cutoff"
     );
     assert_eq!(
         plan.would_delete.l2_buckets, 1,
@@ -609,6 +599,7 @@ async fn unknown_keys_inside_settings_are_warnings_not_errors() {
     let mut input = document(&settings);
     input["settings"]["bogus"] = json!(true);
     input["settings"]["retentionLadder"]["l9"] = json!({"keepDays": 1});
+    input["settings"]["retentionLadder"]["snapshotJsonKeepMinutes"] = json!(59);
 
     let plan = plan_import(&store, &input, 0).await.unwrap();
 
@@ -619,7 +610,58 @@ async fn unknown_keys_inside_settings_are_warnings_not_errors() {
         [
             "settings.bogus: unknown key ignored",
             "settings.retentionLadder.l9: unknown key ignored",
+            "snapshotJsonKeepMinutes is no longer used and was ignored",
         ]
+    );
+}
+
+#[tokio::test]
+async fn removed_keep_minutes_is_ignored_while_the_document_applies() {
+    // Break caught: 0.5.2 documents are refused, retain the retired key, emit
+    // duplicate warnings, or discard supported settings beside the old key.
+    let fixture = TempDatabase::new("legacy-snapshot-json-setting");
+    let store = fixture.store().await;
+    let mut candidate = DashboardSettings::default();
+    candidate.retention_ladder.l1.keep_days = 4;
+    let mut input = document(&candidate);
+    input["settings"]["retentionLadder"]["snapshotJsonKeepMinutes"] = json!(60);
+
+    let plan = plan_import(&store, &input, 0)
+        .await
+        .expect("legacy document should plan");
+    assert!(plan.valid);
+    assert_eq!(
+        plan.warnings,
+        ["snapshotJsonKeepMinutes is no longer used and was ignored"]
+    );
+    assert_eq!(
+        plan.candidate
+            .as_ref()
+            .expect("valid plan should carry a candidate")
+            .retention_ladder
+            .l1
+            .keep_days,
+        4
+    );
+
+    let outcome = apply_import(&store, &input, 0)
+        .await
+        .expect("legacy document should apply");
+    assert_eq!(outcome.settings.retention_ladder.l1.keep_days, 4);
+    let stored = serde_json::to_value(store.get_settings().await.expect("stored settings"))
+        .expect("stored settings should serialize");
+    assert!(
+        stored["retentionLadder"]
+            .get("snapshotJsonKeepMinutes")
+            .is_none()
+    );
+
+    let exported = serde_json::to_value(export_document(&outcome.settings, 0, "test"))
+        .expect("export should serialize");
+    assert!(
+        exported["settings"]["retentionLadder"]
+            .get("snapshotJsonKeepMinutes")
+            .is_none()
     );
 }
 

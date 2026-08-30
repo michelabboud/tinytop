@@ -375,9 +375,9 @@ fn snapshot(captured_at_ms: i64) -> SystemSnapshot {
             one: 1.0,
             five: 2.0,
             fifteen: 3.0,
-            runnable: 1,
-            total_threads: 2,
-            last_pid: 3,
+            runnable: Some(1),
+            total_threads: Some(2),
+            last_pid: Some(3),
         },
         pressure: PressureGroup {
             cpu: PressureSnapshot::default(),

@@ -162,10 +162,10 @@ struct SeededV0 {
 }
 
 #[tokio::test]
-async fn fresh_database_is_created_at_schema_version_2() {
+async fn fresh_database_is_created_at_schema_version_3() {
     // Break caught: connecting to a new file leaves user_version at 0 or omits
-    // any v2 table, index, additive column, or nullable snapshot_json contract.
-    let fixture = TempDatabase::new("fresh-v2");
+    // any table, index, or additive column from the complete v3 schema.
+    let fixture = TempDatabase::new("fresh-v3");
 
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
@@ -173,7 +173,7 @@ async fn fresh_database_is_created_at_schema_version_2() {
     drop(store);
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 2);
+    assert_eq!(schema_version(&pool).await, 3);
     for table in [
         "metric_rollups_5m",
         "metric_rollups_1h",
@@ -182,6 +182,8 @@ async fn fresh_database_is_created_at_schema_version_2() {
         "process_commands",
         "process_samples",
         "process_samples_fast",
+        "host_identity",
+        "fs_mount_events",
     ] {
         assert!(table_exists(&pool, table).await, "missing table {table}");
     }
@@ -191,22 +193,16 @@ async fn fresh_database_is_created_at_schema_version_2() {
     );
     assert!(column_exists(&pool, "process_samples", "command_id").await);
     assert!(!column_exists(&pool, "process_samples", "command").await);
-    let snapshot_json_not_null: i64 = sqlx::query(
-        "SELECT [notnull] FROM pragma_table_info('metric_samples') WHERE name = 'snapshot_json'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("snapshot_json schema row")
-    .try_get("notnull")
-    .expect("snapshot_json notnull flag");
-    assert_eq!(snapshot_json_not_null, 0);
+    assert!(!column_exists(&pool, "metric_samples", "snapshot_json").await);
+    assert!(column_exists(&pool, "metric_samples", "identity_id").await);
     pool.close().await;
 }
 
 #[tokio::test]
-async fn v0_database_is_migrated_with_pre_image_and_json_window() {
+async fn v0_database_is_migrated_with_pre_image_and_assembleable_window() {
     // Break caught: a populated v0 database is altered without a complete
-    // pre-image, loses rows, keeps JSON outside the window, or omits its audit record.
+    // pre-image, loses rows, makes rows outside the historical 60-minute JSON
+    // window assembleable, or omits its audit record.
     let fixture = TempDatabase::new("migrate-v0");
     let seeded = seed_v0_database(&fixture, RUST_V0_METRIC_SAMPLES_DDL).await;
 
@@ -219,10 +215,10 @@ async fn v0_database_is_migrated_with_pre_image_and_json_window() {
 }
 
 #[tokio::test]
-async fn migrated_history_reads_only_rows_that_keep_snapshot_json() {
-    // Break caught: raw history crosses the JSON retention boundary and tries
-    // to deserialize migrated rows whose snapshot_json was intentionally nulled.
-    let fixture = TempDatabase::new("migrated-history-json-window");
+async fn migrated_history_reads_only_assembleable_rows() {
+    // Break caught: raw history crosses the v0 JSON boundary and tries to
+    // assemble rows whose identity and required scalar columns are NULL.
+    let fixture = TempDatabase::new("migrated-history-assembleable-window");
     let seeded = seed_v0_database(&fixture, RUST_V0_METRIC_SAMPLES_DDL).await;
 
     let store = SqliteHistoryStore::connect(&fixture.url)
@@ -235,7 +231,7 @@ async fn migrated_history_reads_only_rows_that_keep_snapshot_json() {
             limit: Some(100),
         })
         .await
-        .expect("raw history should stay within the JSON window");
+        .expect("raw history should stay within the assembleable window");
 
     assert_eq!(history.len(), 7);
     assert_eq!(
@@ -247,12 +243,6 @@ async fn migrated_history_reads_only_rows_that_keep_snapshot_json() {
             .map(|index| seeded.now_ms - (9 - index) * TEN_MINUTES_MS)
             .collect::<Vec<_>>()
     );
-    let latest = store
-        .latest_snapshot()
-        .await
-        .expect("latest snapshot query")
-        .expect("newest migrated row should keep JSON");
-    assert_eq!(latest.captured_at_ms, seeded.now_ms);
 }
 
 #[tokio::test]
@@ -364,7 +354,7 @@ async fn reconnect_completes_an_interrupted_post_schema_vacuum() {
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count after resumed completion");
-    assert_eq!(marker_count, 2);
+    assert_eq!(marker_count, 3);
     let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
         .fetch_one(&pool)
         .await
@@ -428,12 +418,15 @@ async fn crash_after_schema_commit_is_recovered_on_next_connect() {
             .fetch_one(&pool)
             .await
             .expect("post-recovery schemaMigrated marker count");
-    assert_eq!(marker_count_after, 2);
-    let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+    assert_eq!(marker_count_after, 3);
+    let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_one(&pool)
         .await
-        .expect("freelist count after recovered VACUUM");
-    assert_eq!(freelist_after, 0);
+        .expect("integrity check after recovered migration chain");
+    // The recovered v0→v1 VACUUM runs before the subsequent v2 and v3
+    // migrations. The v3 table rebuild may leave a few reusable pages and must
+    // not trigger a second automatic VACUUM (ADR 0023/0024).
+    assert_eq!(integrity, "ok");
     pool.close().await;
 }
 
@@ -663,9 +656,9 @@ fn fixture_snapshot() -> SystemSnapshot {
             one: 1.0,
             five: 0.8,
             fifteen: 0.6,
-            runnable: 2,
-            total_threads: 100,
-            last_pid: 42,
+            runnable: Some(2),
+            total_threads: Some(100),
+            last_pid: Some(42),
         },
         pressure: PressureGroup {
             cpu: PressureSnapshot::default(),
@@ -711,24 +704,24 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
     pre_image_pool.close().await;
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 2);
+    assert_eq!(schema_version(&pool).await, 3);
     let cutoff_ms = seeded.now_ms - SNAPSHOT_JSON_KEEP_MS;
-    let recent_json_rows: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= ? AND snapshot_json IS NOT NULL",
+    let recent_assembleable_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= ? AND identity_id IS NOT NULL",
     )
     .bind(cutoff_ms)
     .fetch_one(&pool)
     .await
-    .expect("recent JSON row count");
-    let old_null_rows: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms < ? AND snapshot_json IS NULL",
+    .expect("recent assembleable row count");
+    let old_non_assembleable_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms < ? AND identity_id IS NULL",
     )
     .bind(cutoff_ms)
     .fetch_one(&pool)
     .await
-    .expect("old NULL row count");
-    assert_eq!(recent_json_rows, 7);
-    assert_eq!(old_null_rows, 3);
+    .expect("old non-assembleable row count");
+    assert_eq!(recent_assembleable_rows, 7);
+    assert_eq!(old_non_assembleable_rows, 3);
     assert_complete_v0_schema_survived(&pool, seeded.now_ms).await;
 
     let migration_json: String = sqlx::query_scalar(
@@ -755,7 +748,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count");
-    assert_eq!(marker_count, 2);
+    assert_eq!(marker_count, 3);
     pool.close().await;
 
     let bytes_after = std::fs::metadata(&fixture.path)

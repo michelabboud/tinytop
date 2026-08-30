@@ -154,7 +154,7 @@ Existing populated v0 databases migrate to SQLite `user_version = 1` only after
 transaction; the pre-image remains until an operator explicitly removes it with
 the guarded CLI.
 
-The additive read surface keeps `/api/history` for JSON-bearing raw snapshots,
+The additive read surface keeps `/api/history` for typed, assembled raw snapshots,
 uses `/api/history/points?source=auto` to choose the finest enabled tier that
 retains and fits the requested range, reports the ladder through
 `/api/history/coverage`, and exposes typed filesystem/process detail endpoints.
@@ -186,7 +186,7 @@ PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 ```
 
-Core table excerpt (see [Tiered History Ladder](#tiered-history-ladder) and the SQLite architecture document for the complete schema-v1 tier/detail tables):
+Core schema-v3 table excerpt (see [Tiered History Ladder](#tiered-history-ladder) and the SQLite architecture document for the complete tier/detail tables):
 
 ```sql
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -207,10 +207,20 @@ CREATE TABLE IF NOT EXISTS metric_samples (
   load_five REAL NOT NULL,
   load_fifteen REAL NOT NULL,
   load_percent REAL NOT NULL,
-  runnable_threads INTEGER NOT NULL,
-  total_threads INTEGER NOT NULL,
+  runnable_threads INTEGER,
+  total_threads INTEGER,
   root_used_percent REAL,
-  snapshot_json TEXT
+  identity_id INTEGER REFERENCES host_identity(identity_id),
+  uptime_seconds INTEGER,
+  memory_available_bytes INTEGER,
+  swap_free_bytes INTEGER,
+  last_pid INTEGER,
+  filesystems_captured_at_ms INTEGER,
+  CHECK (identity_id IS NULL OR (
+    uptime_seconds IS NOT NULL
+    AND memory_available_bytes IS NOT NULL
+    AND swap_free_bytes IS NOT NULL
+  ))
 );
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
@@ -262,7 +272,7 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 ```
 
-The current implementation stores indexed graph/query columns for every raw sample but keeps full `SystemSnapshot` JSON only for `retentionLadder.snapshotJsonKeepMinutes`. It also stores daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed filesystem/process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
+The current v3 implementation stores typed graph/query columns, per-row assembly scalars, interned host identity, and on-change filesystem/presence rows for every raw history sample. `host_identity` is unique over the eight stable identity strings; `fs_mount_events` preserves mount appearance and disappearance independently of value changes. The store also keeps daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
 
 Rust retention is the four-tier ladder described in [Tiered History Ladder](#tiered-history-ladder): each sample refreshes L2, completed buckets promote to enabled coarser tiers before finer rows are pruned, and `retentionHours` / `rollupRetentionDays` are derived compatibility mirrors of L1/L2. The legacy Bun split path still keeps raw rows until manual archive/reset.
 

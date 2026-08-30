@@ -8,18 +8,28 @@ pub mod retention_ladder;
 pub mod settings_transfer;
 
 use std::{
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     str::FromStr,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value as JsonValue;
 use sqlx::{
-    AssertSqlSafe, Row, SqliteConnection, SqlitePool,
+    AssertSqlSafe, Row, Sqlite, SqliteConnection, SqlitePool, Transaction,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 pub use tinytop_types::SystemSnapshot;
+use tinytop_types::{
+    CpuSnapshot, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot, PressureGroup,
+    PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection, RuntimeKind,
+    SwapSnapshot,
+};
 
 pub use crate::disk::{
     DiskCheckReport, DiskTransition, FreeBytesProvider, SysinfoFreeBytes, apply_disk_measurement,
@@ -337,9 +347,6 @@ pub struct HistoryCoverage {
     pub rollup_oldest_captured_at_ms: Option<i64>,
     pub rollup_newest_captured_at_ms: Option<i64>,
     pub tiers: Vec<HistoryTierCoverage>,
-    pub snapshot_json_oldest_ms: Option<i64>,
-    #[serde(default, skip_serializing)]
-    pub snapshot_json_sample_count: i64,
     pub detail_interval_sec: i64,
     pub disk: HistoryDiskCoverage,
     pub archive: HistoryArchiveCoverage,
@@ -614,6 +621,249 @@ pub struct HistoryMarker {
 pub struct SqliteHistoryStore {
     pool: SqlitePool,
     database_path: PathBuf,
+    writer_gate: Arc<WriterGate>,
+    current_identity: Arc<Mutex<Option<CurrentIdentity>>>,
+    filesystem_state: Arc<Mutex<FilesystemState>>,
+    filesystem_warning_last_ms: Arc<Mutex<Option<i64>>>,
+    process_warning_last_ms: Arc<Mutex<Option<i64>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CurrentIdentity {
+    identity_id: i64,
+    strings: [String; 8],
+}
+
+#[derive(Debug, Default)]
+struct WriterGate {
+    state: Mutex<WriterGateState>,
+}
+
+#[derive(Debug, Default)]
+struct WriterGateState {
+    locked: bool,
+    next_ticket: u64,
+    waiters: VecDeque<WriterWaiter>,
+}
+
+#[derive(Debug)]
+struct WriterWaiter {
+    ticket: u64,
+    waker: Waker,
+}
+
+impl WriterGate {
+    async fn lock(&self) -> WriterGateGuard<'_> {
+        WriterGateLock {
+            gate: self,
+            ticket: None,
+        }
+        .await
+    }
+}
+
+struct WriterGateLock<'a> {
+    gate: &'a WriterGate,
+    ticket: Option<u64>,
+}
+
+impl<'a> Future for WriterGateLock<'a> {
+    type Output = WriterGateGuard<'a>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.ticket.is_none() {
+            if !state.locked && state.waiters.is_empty() {
+                state.locked = true;
+                return Poll::Ready(WriterGateGuard { gate: self.gate });
+            }
+            let ticket = state.next_ticket;
+            state.next_ticket = state.next_ticket.wrapping_add(1);
+            state.waiters.push_back(WriterWaiter {
+                ticket,
+                waker: context.waker().clone(),
+            });
+            drop(state);
+            self.ticket = Some(ticket);
+            return Poll::Pending;
+        }
+
+        let ticket = self.ticket.expect("a queued writer has a ticket");
+        let is_front = state
+            .waiters
+            .front()
+            .is_some_and(|waiter| waiter.ticket == ticket);
+        if !state.locked && is_front {
+            state.waiters.pop_front();
+            state.locked = true;
+            drop(state);
+            self.ticket = None;
+            return Poll::Ready(WriterGateGuard { gate: self.gate });
+        }
+        if let Some(waiter) = state
+            .waiters
+            .iter_mut()
+            .find(|waiter| waiter.ticket == ticket)
+            && !waiter.waker.will_wake(context.waker())
+        {
+            waiter.waker = context.waker().clone();
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for WriterGateLock<'_> {
+    fn drop(&mut self) {
+        let Some(ticket) = self.ticket else {
+            return;
+        };
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let was_front = state
+            .waiters
+            .front()
+            .is_some_and(|waiter| waiter.ticket == ticket);
+        state.waiters.retain(|waiter| waiter.ticket != ticket);
+        let next = (!state.locked && was_front)
+            .then(|| state.waiters.front().map(|waiter| waiter.waker.clone()))
+            .flatten();
+        drop(state);
+        if let Some(waker) = next {
+            waker.wake();
+        }
+    }
+}
+
+struct WriterGateGuard<'a> {
+    gate: &'a WriterGate,
+}
+
+impl Drop for WriterGateGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .gate
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.locked = false;
+        let next = state.waiters.front().map(|waiter| waiter.waker.clone());
+        drop(state);
+        if let Some(waiter) = next {
+            waiter.wake();
+        }
+    }
+}
+
+#[cfg(test)]
+mod writer_gate_tests {
+    use super::*;
+
+    #[test]
+    fn writer_gate_hands_off_to_three_queued_writers_in_fifo_order() {
+        let gate = WriterGate::default();
+        let mut context = Context::from_waker(Waker::noop());
+
+        let mut first = Box::pin(gate.lock());
+        let Poll::Ready(first_guard) = first.as_mut().poll(&mut context) else {
+            panic!("an uncontended writer should acquire immediately");
+        };
+        let mut queued_one = Box::pin(gate.lock());
+        let mut queued_two = Box::pin(gate.lock());
+        let mut queued_three = Box::pin(gate.lock());
+        assert!(queued_one.as_mut().poll(&mut context).is_pending());
+        assert!(queued_two.as_mut().poll(&mut context).is_pending());
+        assert!(queued_three.as_mut().poll(&mut context).is_pending());
+
+        drop(first_guard);
+        assert!(queued_three.as_mut().poll(&mut context).is_pending());
+        assert!(queued_two.as_mut().poll(&mut context).is_pending());
+        let Poll::Ready(one_guard) = queued_one.as_mut().poll(&mut context) else {
+            panic!("the first queued writer should acquire first");
+        };
+        drop(one_guard);
+        assert!(queued_three.as_mut().poll(&mut context).is_pending());
+        let Poll::Ready(two_guard) = queued_two.as_mut().poll(&mut context) else {
+            panic!("the second queued writer should acquire second");
+        };
+        drop(two_guard);
+        let Poll::Ready(three_guard) = queued_three.as_mut().poll(&mut context) else {
+            panic!("the third queued writer should acquire third");
+        };
+        drop(three_guard);
+    }
+
+    #[test]
+    fn writer_gate_front_waiter_cancellation_hands_off_to_the_next_writer() {
+        let gate = WriterGate::default();
+        let mut context = Context::from_waker(Waker::noop());
+
+        let mut first = Box::pin(gate.lock());
+        let Poll::Ready(first_guard) = first.as_mut().poll(&mut context) else {
+            panic!("an uncontended writer should acquire immediately");
+        };
+        let mut cancelled_front = Box::pin(gate.lock());
+        let mut queued_next = Box::pin(gate.lock());
+        assert!(cancelled_front.as_mut().poll(&mut context).is_pending());
+        assert!(queued_next.as_mut().poll(&mut context).is_pending());
+
+        drop(first_guard);
+        drop(cancelled_front);
+        let Poll::Ready(next_guard) = queued_next.as_mut().poll(&mut context) else {
+            panic!("cancelling the unlocked front waiter should hand off to the next writer");
+        };
+        drop(next_guard);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FsRow {
+    filesystem: String,
+    fs_type: String,
+    size_bytes: u64,
+    used_bytes: u64,
+    available_bytes: u64,
+    inode_used: Option<u64>,
+    inode_total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct FilesystemState {
+    last_key_ms: Option<i64>,
+    last_rows: HashMap<String, FsRow>,
+    present: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct IdentityStrings {
+    hostname: String,
+    platform: String,
+    arch: String,
+    distro: String,
+    kernel: String,
+    runtime_kind: String,
+    runtime_confidence: String,
+    runtime_reason: String,
+}
+
+impl From<&FilesystemSnapshot> for FsRow {
+    fn from(filesystem: &FilesystemSnapshot) -> Self {
+        Self {
+            filesystem: filesystem.filesystem.clone(),
+            fs_type: filesystem.fs_type.clone(),
+            size_bytes: filesystem.size_bytes,
+            used_bytes: filesystem.used_bytes,
+            available_bytes: filesystem.available_bytes,
+            inode_used: filesystem.inode_used,
+            inode_total: filesystem.inode_total,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -793,6 +1043,88 @@ async fn intern_command(
     )
 }
 
+fn identity_strings(snapshot: &SystemSnapshot) -> [String; 8] {
+    [
+        snapshot.identity.hostname.clone(),
+        snapshot.identity.platform.clone(),
+        snapshot.identity.arch.clone(),
+        snapshot.identity.distro.clone(),
+        snapshot.identity.kernel.clone(),
+        snapshot.identity.runtime.kind.as_str().to_string(),
+        snapshot.identity.runtime.confidence.as_str().to_string(),
+        snapshot.identity.runtime.reason.clone(),
+    ]
+}
+
+async fn upsert_mount_event(
+    transaction: &mut Transaction<'_, Sqlite>,
+    captured_at_ms: i64,
+    mount: &str,
+    present: bool,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        r#"
+        INSERT INTO fs_mount_events (captured_at_ms, mount, present)
+        VALUES (?, ?, ?)
+        ON CONFLICT(mount, captured_at_ms) DO UPDATE SET present = excluded.present
+        "#,
+    )
+    .bind(captured_at_ms)
+    .bind(mount)
+    .bind(i64::from(present))
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn upsert_filesystem_row(
+    transaction: &mut Transaction<'_, Sqlite>,
+    captured_at_ms: i64,
+    filesystem: &FilesystemSnapshot,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        r#"
+        INSERT INTO fs_samples (
+          captured_at_ms, mount, filesystem, fs_type, size_bytes, used_bytes,
+          available_bytes, used_percent, inode_used_percent, inode_used, inode_total
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(captured_at_ms, mount) DO UPDATE SET
+          filesystem = excluded.filesystem, fs_type = excluded.fs_type,
+          size_bytes = excluded.size_bytes, used_bytes = excluded.used_bytes,
+          available_bytes = excluded.available_bytes, used_percent = excluded.used_percent,
+          inode_used_percent = excluded.inode_used_percent,
+          inode_used = excluded.inode_used, inode_total = excluded.inode_total
+        "#,
+    )
+    .bind(captured_at_ms)
+    .bind(&filesystem.mount)
+    .bind(&filesystem.filesystem)
+    .bind(&filesystem.fs_type)
+    .bind(to_i64(filesystem.size_bytes, "filesystem size bytes")?)
+    .bind(to_i64(filesystem.used_bytes, "filesystem used bytes")?)
+    .bind(to_i64(
+        filesystem.available_bytes,
+        "filesystem available bytes",
+    )?)
+    .bind(filesystem.used_percent)
+    .bind(filesystem.inode_used_percent)
+    .bind(
+        filesystem
+            .inode_used
+            .map(|value| to_i64(value, "filesystem inode used"))
+            .transpose()?,
+    )
+    .bind(
+        filesystem
+            .inode_total
+            .map(|value| to_i64(value, "filesystem inode total"))
+            .transpose()?,
+    )
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
 impl SqliteHistoryStore {
     pub async fn connect(database_url: &str) -> Result<Self, StoreError> {
         let options = SqliteConnectOptions::from_str(database_url)?.create_if_missing(true);
@@ -804,16 +1136,16 @@ impl SqliteHistoryStore {
         let store = Self {
             pool,
             database_path: db_path.clone(),
+            writer_gate: Arc::new(WriterGate::default()),
+            current_identity: Arc::new(Mutex::new(None)),
+            filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
+            filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
+            process_warning_last_ms: Arc::new(Mutex::new(None)),
         };
         store.apply_pragmas().await?;
-        let _migration_report = migration::ensure_schema(
-            &store.pool,
-            &db_path,
-            now_ms(),
-            migration::DEFAULT_SNAPSHOT_JSON_KEEP_MS,
-        )
-        .await?;
+        let _migration_report = migration::ensure_schema(&store.pool, &db_path, now_ms()).await?;
         store.migrate_runtime_kind_to_canonical().await?;
+        store.prime_writer_state().await?;
         Ok(store)
     }
 
@@ -845,11 +1177,112 @@ impl SqliteHistoryStore {
         Ok(Self {
             pool,
             database_path,
+            writer_gate: Arc::new(WriterGate::default()),
+            current_identity: Arc::new(Mutex::new(None)),
+            filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
+            filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
+            process_warning_last_ms: Arc::new(Mutex::new(None)),
         })
     }
 
     pub fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    async fn prime_writer_state(&self) -> Result<(), StoreError> {
+        let identity = sqlx::query(
+            r#"
+            SELECT h.identity_id, h.hostname, h.platform, h.arch, h.distro, h.kernel,
+                   h.runtime_kind, h.runtime_confidence, h.runtime_reason
+            FROM metric_samples m
+            JOIN host_identity h ON h.identity_id = m.identity_id
+            ORDER BY m.captured_at_ms DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .map(|row| {
+            Ok::<CurrentIdentity, StoreError>(CurrentIdentity {
+                identity_id: row.try_get("identity_id")?,
+                strings: [
+                    row.try_get("hostname")?,
+                    row.try_get("platform")?,
+                    row.try_get("arch")?,
+                    row.try_get("distro")?,
+                    row.try_get("kernel")?,
+                    row.try_get("runtime_kind")?,
+                    row.try_get("runtime_confidence")?,
+                    row.try_get("runtime_reason")?,
+                ],
+            })
+        })
+        .transpose()?;
+        *self.current_identity.lock().map_err(|_| {
+            StoreError::Validation("identity cache mutex is poisoned".to_string())
+        })? = identity;
+
+        let mut state = FilesystemState {
+            last_key_ms: sqlx::query_scalar(
+                "SELECT COALESCE(filesystems_captured_at_ms, captured_at_ms) FROM metric_samples ORDER BY captured_at_ms DESC LIMIT 1",
+            )
+            .fetch_optional(&self.pool)
+            .await?,
+            ..FilesystemState::default()
+        };
+        for row in sqlx::query(
+            r#"
+            SELECT f.mount, f.filesystem, f.fs_type, f.size_bytes, f.used_bytes,
+                   f.available_bytes, f.inode_used, f.inode_total
+            FROM fs_samples f
+            WHERE f.captured_at_ms = (
+              SELECT MAX(newest.captured_at_ms) FROM fs_samples newest WHERE newest.mount = f.mount
+            )
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?
+        {
+            state.last_rows.insert(
+                row.try_get("mount")?,
+                FsRow {
+                    filesystem: row.try_get("filesystem")?,
+                    fs_type: row.try_get("fs_type")?,
+                    size_bytes: from_i64(row.try_get("size_bytes")?, "filesystem size bytes")?,
+                    used_bytes: from_i64(row.try_get("used_bytes")?, "filesystem used bytes")?,
+                    available_bytes: from_i64(
+                        row.try_get("available_bytes")?,
+                        "filesystem available bytes",
+                    )?,
+                    inode_used: row
+                        .try_get::<Option<i64>, _>("inode_used")?
+                        .map(|value| from_i64(value, "filesystem inode used"))
+                        .transpose()?,
+                    inode_total: row
+                        .try_get::<Option<i64>, _>("inode_total")?
+                        .map(|value| from_i64(value, "filesystem inode total"))
+                        .transpose()?,
+                },
+            );
+        }
+        for mount in sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT e.mount
+            FROM fs_mount_events e
+            WHERE e.captured_at_ms = (
+              SELECT MAX(newest.captured_at_ms) FROM fs_mount_events newest WHERE newest.mount = e.mount
+            ) AND e.present = 1
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?
+        {
+            state.present.insert(mount);
+        }
+        *self.filesystem_state.lock().map_err(|_| {
+            StoreError::Validation("filesystem cache mutex is poisoned".to_string())
+        })? = state;
+        Ok(())
     }
 
     pub async fn close(self) -> Result<(), StoreError> {
@@ -954,7 +1387,9 @@ impl SqliteHistoryStore {
         captured_at_ms: i64,
         snapshot: &SystemSnapshot,
     ) -> Result<HistorySample, StoreError> {
-        let snapshot_json = serde_json::to_string(snapshot)?;
+        // The scheduled loop and the manual collection route may overlap. Keep
+        // the cache read, typed write, and cache publication one state change.
+        let _writer_state_guard = self.writer_gate.lock().await;
         let root_used_percent = snapshot
             .filesystems
             .iter()
@@ -974,6 +1409,72 @@ impl SqliteHistoryStore {
         .bind(captured_at_ms)
         .fetch_one(&self.pool)
         .await?;
+        let settings = self.get_settings().await?;
+        let detail_interval_ms = settings
+            .retention_ladder
+            .detail_interval_sec
+            .saturating_mul(1_000);
+        let identity_strings = identity_strings(snapshot);
+        let cached_identity = self
+            .current_identity
+            .lock()
+            .map_err(|_| StoreError::Validation("identity cache mutex is poisoned".to_string()))?
+            .clone();
+        let previous_fs_state = self
+            .filesystem_state
+            .lock()
+            .map_err(|_| StoreError::Validation("filesystem cache mutex is poisoned".to_string()))?
+            .clone();
+        let fs_key_ms = snapshot
+            .filesystems_captured_at_ms
+            .unwrap_or(captured_at_ms);
+        let mut transaction = self.pool.begin().await?;
+        let identity_id = if cached_identity
+            .as_ref()
+            .is_some_and(|cached| cached.strings == identity_strings)
+        {
+            cached_identity
+                .as_ref()
+                .expect("identity cache was checked above")
+                .identity_id
+        } else {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO host_identity (
+                  first_seen_ms, hostname, platform, arch, distro, kernel,
+                  runtime_kind, runtime_confidence, runtime_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(captured_at_ms)
+            .bind(&identity_strings[0])
+            .bind(&identity_strings[1])
+            .bind(&identity_strings[2])
+            .bind(&identity_strings[3])
+            .bind(&identity_strings[4])
+            .bind(&identity_strings[5])
+            .bind(&identity_strings[6])
+            .bind(&identity_strings[7])
+            .execute(&mut *transaction)
+            .await?;
+            sqlx::query_scalar(
+                r#"
+                SELECT identity_id FROM host_identity
+                WHERE hostname = ? AND platform = ? AND arch = ? AND distro = ? AND kernel = ?
+                  AND runtime_kind = ? AND runtime_confidence = ? AND runtime_reason = ?
+                "#,
+            )
+            .bind(&identity_strings[0])
+            .bind(&identity_strings[1])
+            .bind(&identity_strings[2])
+            .bind(&identity_strings[3])
+            .bind(&identity_strings[4])
+            .bind(&identity_strings[5])
+            .bind(&identity_strings[6])
+            .bind(&identity_strings[7])
+            .fetch_one(&mut *transaction)
+            .await?
+        };
 
         sqlx::query(
             r#"
@@ -997,8 +1498,13 @@ impl SqliteHistoryStore {
               runnable_threads,
               total_threads,
               root_used_percent,
-              snapshot_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              identity_id,
+              uptime_seconds,
+              memory_available_bytes,
+              swap_free_bytes,
+              last_pid,
+              filesystems_captured_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(captured_at_ms) DO UPDATE SET
               snapshot_timestamp = excluded.snapshot_timestamp,
               hostname = excluded.hostname,
@@ -1018,7 +1524,12 @@ impl SqliteHistoryStore {
               runnable_threads = excluded.runnable_threads,
               total_threads = excluded.total_threads,
               root_used_percent = excluded.root_used_percent,
-              snapshot_json = excluded.snapshot_json
+              identity_id = excluded.identity_id,
+              uptime_seconds = excluded.uptime_seconds,
+              memory_available_bytes = excluded.memory_available_bytes,
+              swap_free_bytes = excluded.swap_free_bytes,
+              last_pid = excluded.last_pid,
+              filesystems_captured_at_ms = excluded.filesystems_captured_at_ms
             "#,
         )
         .bind(captured_at_ms)
@@ -1037,22 +1548,134 @@ impl SqliteHistoryStore {
         .bind(snapshot.load.five)
         .bind(snapshot.load.fifteen)
         .bind(load_percent(snapshot))
-        .bind(to_i64(snapshot.load.runnable, "runnable threads")?)
-        .bind(to_i64(snapshot.load.total_threads, "total threads")?)
+        .bind(
+            snapshot
+                .load
+                .runnable
+                .map(|value| to_i64(value, "runnable threads"))
+                .transpose()?,
+        )
+        .bind(
+            snapshot
+                .load
+                .total_threads
+                .map(|value| to_i64(value, "total threads"))
+                .transpose()?,
+        )
         .bind(root_used_percent)
-        .bind(&snapshot_json)
-        .execute(&self.pool)
+        .bind(identity_id)
+        .bind(to_i64(snapshot.identity.uptime_seconds, "uptime seconds")?)
+        .bind(to_i64(
+            snapshot.memory.available_bytes,
+            "memory available bytes",
+        )?)
+        .bind(to_i64(snapshot.swap.free_bytes, "swap free bytes")?)
+        .bind(
+            snapshot
+                .load
+                .last_pid
+                .map(|value| to_i64(value, "last pid"))
+                .transpose()?,
+        )
+        .bind(snapshot.filesystems_captured_at_ms)
+        .execute(&mut *transaction)
         .await?;
 
-        self.write_process_fast_rows(captured_at_ms, &snapshot.processes)
-            .await?;
-        let settings = self.get_settings().await?;
-        let detail_interval_ms = settings
-            .retention_ladder
-            .detail_interval_sec
-            .saturating_mul(1_000);
-        self.write_detail_rows_if_due(captured_at_ms, snapshot, detail_interval_ms)
-            .await?;
+        let mut next_fs_state = previous_fs_state.clone();
+        let mut filesystem_rows_written = 0_i64;
+        let filesystem_stamp_regressed = previous_fs_state
+            .last_key_ms
+            .is_some_and(|last_key_ms| fs_key_ms < last_key_ms);
+        // A late snapshot must not rewrite the current presence state: an event
+        // inserted behind the cached key cannot retroactively add its matching
+        // disappearance at the already-processed successor key.
+        if previous_fs_state
+            .last_key_ms
+            .is_none_or(|last_key_ms| fs_key_ms > last_key_ms)
+        {
+            let current_mounts = snapshot
+                .filesystems
+                .iter()
+                .map(|filesystem| filesystem.mount.clone())
+                .collect::<HashSet<_>>();
+            for filesystem in &snapshot.filesystems {
+                let row = FsRow::from(filesystem);
+                let appeared = !previous_fs_state.present.contains(&filesystem.mount);
+                if appeared {
+                    upsert_mount_event(&mut transaction, fs_key_ms, &filesystem.mount, true)
+                        .await?;
+                }
+                if appeared || previous_fs_state.last_rows.get(&filesystem.mount) != Some(&row) {
+                    upsert_filesystem_row(&mut transaction, fs_key_ms, filesystem).await?;
+                    filesystem_rows_written = filesystem_rows_written.saturating_add(1);
+                    next_fs_state
+                        .last_rows
+                        .insert(filesystem.mount.clone(), row);
+                }
+            }
+            for mount in previous_fs_state.present.difference(&current_mounts) {
+                upsert_mount_event(&mut transaction, fs_key_ms, mount, false).await?;
+            }
+            next_fs_state.last_key_ms = Some(fs_key_ms);
+            next_fs_state.present = current_mounts;
+        }
+        transaction.commit().await?;
+        *self.current_identity.lock().map_err(|_| {
+            StoreError::Validation("identity cache mutex is poisoned".to_string())
+        })? = Some(CurrentIdentity {
+            identity_id,
+            strings: identity_strings,
+        });
+        *self.filesystem_state.lock().map_err(|_| {
+            StoreError::Validation("filesystem cache mutex is poisoned".to_string())
+        })? = next_fs_state;
+
+        if filesystem_stamp_regressed && let Some(last_key_ms) = previous_fs_state.last_key_ms {
+            let mut last_warning = self.filesystem_warning_last_ms.lock().map_err(|_| {
+                StoreError::Validation("filesystem warning mutex is poisoned".to_string())
+            })?;
+            if last_warning.is_none_or(|last| captured_at_ms.saturating_sub(last) >= 60_000) {
+                eprintln!(
+                    "history writer warning: filesystem enumeration stamp {fs_key_ms} is older than the last processed stamp {last_key_ms}; the sample's filesystems were not stored (metric row kept)"
+                );
+                *last_warning = Some(captured_at_ms);
+            }
+        }
+
+        let mut detail_rows = filesystem_rows_written;
+        let mut process_error = None;
+        if let Err(error) = self
+            .write_process_fast_rows(captured_at_ms, &snapshot.processes)
+            .await
+        {
+            process_error = Some(format!("fast process rows failed: {error}"));
+        }
+        match self
+            .write_detail_rows_if_due(captured_at_ms, snapshot, detail_interval_ms)
+            .await
+        {
+            Ok(rows) => detail_rows = detail_rows.saturating_add(rows),
+            Err(error) => {
+                process_error.get_or_insert_with(|| format!("minute process rows failed: {error}"));
+            }
+        }
+        let tolerate_process_read_errors = process_error.is_some();
+        if let Some(error) = process_error {
+            let mut last_warning = self.process_warning_last_ms.lock().map_err(|_| {
+                StoreError::Validation("process warning mutex is poisoned".to_string())
+            })?;
+            if last_warning.is_none_or(|last| captured_at_ms.saturating_sub(last) >= 60_000) {
+                eprintln!("history writer warning: {error}");
+                *last_warning = Some(captured_at_ms);
+            }
+        }
+        if detail_rows > 0
+            && let Err(error) = self
+                .record_pending_detail_rows(detail_rows, captured_at_ms)
+                .await
+        {
+            eprintln!("history writer warning: detail row accounting failed: {error}");
+        }
         let minute_start_ms = bucket_start_ms(captured_at_ms);
         let minute_end_ms = minute_start_ms.saturating_add(Tier::L2.resolution_ms());
         let existing_bucket = self
@@ -1107,9 +1730,21 @@ impl SqliteHistoryStore {
             .await?;
         }
 
-        Ok(HistorySample {
-            captured_at_ms,
-            snapshot: snapshot.clone(),
+        self.read_history_internal(
+            HistoryQuery {
+                since_ms: Some(captured_at_ms),
+                until_ms: Some(captured_at_ms),
+                limit: Some(1),
+            },
+            tolerate_process_read_errors,
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            StoreError::Validation(format!(
+                "freshly written metric_samples row {captured_at_ms} was not assembleable"
+            ))
         })
     }
 
@@ -1279,65 +1914,13 @@ impl SqliteHistoryStore {
         }) {
             return Ok(0);
         }
-        let detail_rows = to_i64(
-            snapshot
-                .filesystems
-                .len()
-                .saturating_add(snapshot.processes.len()),
-            "detail row count",
-        )?;
+        let detail_rows = to_i64(snapshot.processes.len(), "detail row count")?;
 
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("DELETE FROM fs_samples WHERE captured_at_ms = ?")
-            .bind(captured_at_ms)
-            .execute(&mut *transaction)
-            .await?;
         sqlx::query("DELETE FROM process_samples WHERE captured_at_ms = ?")
             .bind(captured_at_ms)
             .execute(&mut *transaction)
             .await?;
-        for filesystem in &snapshot.filesystems {
-            sqlx::query(
-                r#"
-                INSERT INTO fs_samples (
-                  captured_at_ms, mount, filesystem, fs_type, size_bytes, used_bytes,
-                  available_bytes, used_percent, inode_used_percent, inode_used, inode_total
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(captured_at_ms, mount) DO UPDATE SET
-                  filesystem = excluded.filesystem, fs_type = excluded.fs_type,
-                  size_bytes = excluded.size_bytes, used_bytes = excluded.used_bytes,
-                  available_bytes = excluded.available_bytes, used_percent = excluded.used_percent,
-                  inode_used_percent = excluded.inode_used_percent,
-                  inode_used = excluded.inode_used, inode_total = excluded.inode_total
-                "#,
-            )
-            .bind(captured_at_ms)
-            .bind(&filesystem.mount)
-            .bind(&filesystem.filesystem)
-            .bind(&filesystem.fs_type)
-            .bind(to_i64(filesystem.size_bytes, "filesystem size bytes")?)
-            .bind(to_i64(filesystem.used_bytes, "filesystem used bytes")?)
-            .bind(to_i64(
-                filesystem.available_bytes,
-                "filesystem available bytes",
-            )?)
-            .bind(filesystem.used_percent)
-            .bind(filesystem.inode_used_percent)
-            .bind(
-                filesystem
-                    .inode_used
-                    .map(|value| to_i64(value, "filesystem inode used"))
-                    .transpose()?,
-            )
-            .bind(
-                filesystem
-                    .inode_total
-                    .map(|value| to_i64(value, "filesystem inode total"))
-                    .transpose()?,
-            )
-            .execute(&mut *transaction)
-            .await?;
-        }
         for (rank, process) in snapshot.processes.iter().enumerate() {
             // Keep the transaction-to-connection boundary explicit: command
             // interning must never acquire a second connection.
@@ -1386,21 +1969,25 @@ impl SqliteHistoryStore {
         .bind(captured_at_ms)
         .execute(&mut *transaction)
         .await?;
-        let detail_rows_json = serde_json::to_string(&detail_rows)?;
-        sqlx::query(
-            r#"
-            INSERT INTO history_state (state_key, value_json, updated_at_ms)
-            VALUES ('pendingDetailRows', ?, ?)
-            ON CONFLICT(state_key) DO UPDATE SET
-              value_json = excluded.value_json, updated_at_ms = excluded.updated_at_ms
-            "#,
-        )
-        .bind(detail_rows_json)
-        .bind(captured_at_ms)
-        .execute(&mut *transaction)
-        .await?;
         transaction.commit().await?;
         Ok(detail_rows)
+    }
+
+    async fn record_pending_detail_rows(
+        &self,
+        detail_rows: i64,
+        captured_at_ms: i64,
+    ) -> Result<(), StoreError> {
+        let previous = self
+            .history_state_get::<i64>("pendingDetailRows")
+            .await?
+            .unwrap_or(0);
+        self.history_state_set(
+            "pendingDetailRows",
+            &previous.saturating_add(detail_rows),
+            captured_at_ms,
+        )
+        .await
     }
 
     async fn write_process_fast_rows(
@@ -1447,32 +2034,30 @@ impl SqliteHistoryStore {
         to_i64(processes.len(), "fast process row count")
     }
 
-    pub async fn latest_snapshot(&self) -> Result<Option<HistorySample>, StoreError> {
-        let row = sqlx::query(
-            r#"
-            SELECT captured_at_ms, snapshot_json
-            FROM metric_samples
-            WHERE snapshot_json IS NOT NULL
-            ORDER BY captured_at_ms DESC
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        row.map(row_to_sample).transpose()
-    }
-
     pub async fn read_history(
         &self,
         query: HistoryQuery,
     ) -> Result<Vec<HistorySample>, StoreError> {
+        self.read_history_internal(query, false).await
+    }
+
+    async fn read_history_internal(
+        &self,
+        query: HistoryQuery,
+        tolerate_process_read_errors: bool,
+    ) -> Result<Vec<HistorySample>, StoreError> {
         let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
         let rows = sqlx::query(
             r#"
-            SELECT captured_at_ms, snapshot_json
+            SELECT sample_id, captured_at_ms, snapshot_timestamp, identity_id,
+                   cpu_usage_percent, cpu_cores,
+                   memory_used_percent, memory_used_bytes, memory_total_bytes,
+                   memory_available_bytes, swap_used_percent, swap_used_bytes,
+                   swap_total_bytes, swap_free_bytes, load_one, load_five,
+                   load_fifteen, runnable_threads, total_threads, last_pid,
+                   uptime_seconds, filesystems_captured_at_ms
             FROM metric_samples
-            WHERE snapshot_json IS NOT NULL
+            WHERE identity_id IS NOT NULL
               AND (?1 IS NULL OR captured_at_ms >= ?1)
               AND (?2 IS NULL OR captured_at_ms <= ?2)
             ORDER BY captured_at_ms DESC
@@ -1485,12 +2070,332 @@ impl SqliteHistoryStore {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut samples = rows
-            .into_iter()
-            .map(row_to_sample)
+        self.assemble_history_snapshots(rows, tolerate_process_read_errors)
+            .await
+    }
+
+    async fn assemble_history_snapshots(
+        &self,
+        mut rows: Vec<sqlx::sqlite::SqliteRow>,
+        tolerate_process_read_errors: bool,
+    ) -> Result<Vec<HistorySample>, StoreError> {
+        rows.reverse();
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut identities = HashMap::<i64, IdentityStrings>::new();
+        for row in sqlx::query(
+            r#"
+            SELECT identity_id, hostname, platform, arch, distro, kernel,
+                   runtime_kind, runtime_confidence, runtime_reason
+            FROM host_identity
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?
+        {
+            identities.insert(
+                row.try_get("identity_id")?,
+                IdentityStrings {
+                    hostname: row.try_get("hostname")?,
+                    platform: row.try_get("platform")?,
+                    arch: row.try_get("arch")?,
+                    distro: row.try_get("distro")?,
+                    kernel: row.try_get("kernel")?,
+                    runtime_kind: row.try_get("runtime_kind")?,
+                    runtime_confidence: row.try_get("runtime_confidence")?,
+                    runtime_reason: row.try_get("runtime_reason")?,
+                },
+            );
+        }
+
+        let first_ms: i64 = rows
+            .first()
+            .expect("non-empty rows were checked above")
+            .try_get("captured_at_ms")?;
+        let last_ms: i64 = rows
+            .last()
+            .expect("non-empty rows were checked above")
+            .try_get("captured_at_ms")?;
+        let detail_interval_ms = self
+            .get_settings()
+            .await?
+            .retention_ladder
+            .detail_interval_sec
+            .saturating_mul(1_000);
+        let fallback_ms = detail_interval_ms.saturating_mul(2);
+        let mut fast_processes = HashMap::<i64, Vec<ProcessSnapshot>>::new();
+        let fast_rows = sqlx::query(
+            r#"
+            SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
+                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at
+            FROM process_samples_fast p
+            JOIN process_commands c ON c.command_id = p.command_id
+            WHERE p.captured_at_ms >= ? AND p.captured_at_ms <= ?
+            ORDER BY p.captured_at_ms, p.rank
+            "#,
+        )
+        .bind(first_ms)
+        .bind(last_ms)
+        .fetch_all(&self.pool)
+        .await;
+        let fast_rows = match fast_rows {
+            Ok(rows) => rows,
+            Err(_) if tolerate_process_read_errors => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        for row in fast_rows {
+            fast_processes
+                .entry(row.try_get("captured_at_ms")?)
+                .or_default()
+                .push(process_snapshot_from_row(&row)?);
+        }
+        let mut minute_processes = BTreeMap::<i64, Vec<ProcessSnapshot>>::new();
+        let minute_rows = sqlx::query(
+            r#"
+            SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
+                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at
+            FROM process_samples p
+            JOIN process_commands c ON c.command_id = p.command_id
+            WHERE p.captured_at_ms >= ? AND p.captured_at_ms <= ?
+            ORDER BY p.captured_at_ms, p.rank
+            "#,
+        )
+        .bind(first_ms.saturating_sub(fallback_ms))
+        .bind(last_ms)
+        .fetch_all(&self.pool)
+        .await;
+        let minute_rows = match minute_rows {
+            Ok(rows) => rows,
+            Err(_) if tolerate_process_read_errors => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        for row in minute_rows {
+            minute_processes
+                .entry(row.try_get("captured_at_ms")?)
+                .or_default()
+                .push(process_snapshot_from_row(&row)?);
+        }
+
+        let mut filesystems_by_key = HashMap::<i64, Vec<FilesystemSnapshot>>::new();
+        let mut keys = rows
+            .iter()
+            .map(|row| {
+                let captured_at_ms = row.try_get::<i64, _>("captured_at_ms")?;
+                Ok::<i64, StoreError>(
+                    row.try_get::<Option<i64>, _>("filesystems_captured_at_ms")?
+                        .unwrap_or(captured_at_ms),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        samples.reverse();
-        Ok(samples)
+        keys.sort_unstable();
+        keys.dedup();
+        let first_key = *keys.first().expect("history rows produce at least one key");
+        let last_key = *keys.last().expect("history rows produce at least one key");
+        let filesystem_rows = sqlx::query(
+            r#"
+            WITH floor AS (
+              SELECT f.captured_at_ms, f.mount, f.filesystem, f.fs_type,
+                     f.size_bytes, f.used_bytes, f.available_bytes, f.used_percent,
+                     f.inode_used_percent, f.inode_used, f.inode_total
+              FROM fs_samples f
+              WHERE f.captured_at_ms = (
+                SELECT MAX(older.captured_at_ms)
+                FROM fs_samples older
+                WHERE older.mount = f.mount AND older.captured_at_ms <= ?1
+              )
+            ), window_rows AS (
+              SELECT captured_at_ms, mount, filesystem, fs_type, size_bytes,
+                     used_bytes, available_bytes, used_percent,
+                     inode_used_percent, inode_used, inode_total
+              FROM fs_samples
+              WHERE captured_at_ms > ?1 AND captured_at_ms <= ?2
+            )
+            SELECT * FROM floor
+            UNION ALL
+            SELECT * FROM window_rows
+            ORDER BY captured_at_ms, mount
+            "#,
+        )
+        .bind(first_key)
+        .bind(last_key)
+        .fetch_all(&self.pool)
+        .await?;
+        let filesystem_events = sqlx::query(
+            r#"
+            WITH floor AS (
+              SELECT e.captured_at_ms, e.mount, e.present
+              FROM fs_mount_events e
+              WHERE e.captured_at_ms = (
+                SELECT MAX(older.captured_at_ms)
+                FROM fs_mount_events older
+                WHERE older.mount = e.mount AND older.captured_at_ms <= ?1
+              )
+            ), window_events AS (
+              SELECT captured_at_ms, mount, present
+              FROM fs_mount_events
+              WHERE captured_at_ms > ?1 AND captured_at_ms <= ?2
+            )
+            SELECT * FROM floor
+            UNION ALL
+            SELECT * FROM window_events
+            ORDER BY captured_at_ms, mount
+            "#,
+        )
+        .bind(first_key)
+        .bind(last_key)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut row_index = 0_usize;
+        let mut event_index = 0_usize;
+        let mut filesystem_values = HashMap::<String, FilesystemSnapshot>::new();
+        let mut present_mounts = HashSet::<String>::new();
+        for key in keys {
+            while row_index < filesystem_rows.len()
+                && filesystem_rows[row_index].try_get::<i64, _>("captured_at_ms")? <= key
+            {
+                let filesystem = filesystem_snapshot_from_row(&filesystem_rows[row_index])?;
+                filesystem_values.insert(filesystem.mount.clone(), filesystem);
+                row_index = row_index.saturating_add(1);
+            }
+            while event_index < filesystem_events.len()
+                && filesystem_events[event_index].try_get::<i64, _>("captured_at_ms")? <= key
+            {
+                let mount: String = filesystem_events[event_index].try_get("mount")?;
+                match filesystem_events[event_index].try_get::<i64, _>("present")? {
+                    0 => {
+                        present_mounts.remove(&mount);
+                    }
+                    1 => {
+                        present_mounts.insert(mount);
+                    }
+                    present => {
+                        return Err(StoreError::Validation(format!(
+                            "fs_mount_events row for {mount} has invalid present value {present}"
+                        )));
+                    }
+                }
+                event_index = event_index.saturating_add(1);
+            }
+            let mut assembled = present_mounts
+                .iter()
+                .filter_map(|mount| filesystem_values.get(mount).cloned())
+                .collect::<Vec<_>>();
+            assembled.sort_unstable_by(|left, right| left.mount.cmp(&right.mount));
+            filesystems_by_key.insert(key, assembled);
+        }
+
+        rows.into_iter()
+            .map(|row| {
+                let sample_id: i64 = row.try_get("sample_id")?;
+                let captured_at_ms: i64 = row.try_get("captured_at_ms")?;
+                let identity_id: i64 =
+                    row.try_get::<Option<i64>, _>("identity_id")?
+                        .ok_or_else(|| {
+                            StoreError::Validation(format!(
+                                "metric_samples row {sample_id} has no identity_id"
+                            ))
+                        })?;
+                let identity = identities.get(&identity_id).ok_or_else(|| {
+                    StoreError::Validation(format!(
+                        "metric_samples row {sample_id} references missing identity {identity_id}"
+                    ))
+                })?;
+                let uptime_seconds = required_u64(&row, "uptime_seconds", sample_id)?;
+                let fs_stamp: Option<i64> = row.try_get("filesystems_captured_at_ms")?;
+                let fs_key = fs_stamp.unwrap_or(captured_at_ms);
+                let processes = fast_processes
+                    .get(&captured_at_ms)
+                    .cloned()
+                    .or_else(|| {
+                        minute_processes
+                            .range(..=captured_at_ms)
+                            .next_back()
+                            .filter(|(at, _)| captured_at_ms.saturating_sub(**at) <= fallback_ms)
+                            .map(|(_, processes)| processes.clone())
+                    })
+                    .unwrap_or_default();
+                let runtime_kind: RuntimeKind =
+                    serde_json::from_value(JsonValue::String(identity.runtime_kind.clone()))?;
+                let runtime_confidence: RuntimeConfidence =
+                    serde_json::from_value(JsonValue::String(identity.runtime_confidence.clone()))?;
+                Ok(HistorySample {
+                    captured_at_ms,
+                    snapshot: SystemSnapshot {
+                        timestamp: row.try_get("snapshot_timestamp")?,
+                        filesystems_captured_at_ms: fs_stamp,
+                        identity: IdentitySnapshot {
+                            hostname: identity.hostname.clone(),
+                            platform: identity.platform.clone(),
+                            arch: identity.arch.clone(),
+                            distro: identity.distro.clone(),
+                            kernel: identity.kernel.clone(),
+                            runtime: RuntimeDetection {
+                                kind: runtime_kind,
+                                confidence: runtime_confidence,
+                                reason: identity.runtime_reason.clone(),
+                            },
+                            uptime_seconds,
+                        },
+                        cpu: CpuSnapshot {
+                            usage_percent: row.try_get("cpu_usage_percent")?,
+                            cores: usize::try_from(row.try_get::<i64, _>("cpu_cores")?).map_err(
+                                |_| {
+                                    StoreError::Validation(format!(
+                                        "metric_samples row {sample_id} has invalid cpu_cores"
+                                    ))
+                                },
+                            )?,
+                            times: None,
+                        },
+                        memory: MemorySnapshot {
+                            total_bytes: from_i64(
+                                row.try_get("memory_total_bytes")?,
+                                "memory total bytes",
+                            )?,
+                            available_bytes: required_u64(
+                                &row,
+                                "memory_available_bytes",
+                                sample_id,
+                            )?,
+                            used_bytes: from_i64(
+                                row.try_get("memory_used_bytes")?,
+                                "memory used bytes",
+                            )?,
+                            used_percent: row.try_get("memory_used_percent")?,
+                        },
+                        swap: SwapSnapshot {
+                            total_bytes: from_i64(
+                                row.try_get("swap_total_bytes")?,
+                                "swap total bytes",
+                            )?,
+                            free_bytes: required_u64(&row, "swap_free_bytes", sample_id)?,
+                            used_bytes: from_i64(
+                                row.try_get("swap_used_bytes")?,
+                                "swap used bytes",
+                            )?,
+                            used_percent: row.try_get("swap_used_percent")?,
+                        },
+                        load: LoadSnapshot {
+                            one: row.try_get("load_one")?,
+                            five: row.try_get("load_five")?,
+                            fifteen: row.try_get("load_fifteen")?,
+                            runnable: optional_u64(&row, "runnable_threads")?,
+                            total_threads: optional_u64(&row, "total_threads")?,
+                            last_pid: optional_u64(&row, "last_pid")?,
+                        },
+                        pressure: PressureGroup {
+                            cpu: PressureSnapshot::default(),
+                            memory: PressureSnapshot::default(),
+                            io: PressureSnapshot::default(),
+                        },
+                        filesystems: filesystems_by_key.get(&fs_key).cloned().unwrap_or_default(),
+                        processes,
+                    },
+                })
+            })
+            .collect()
     }
 
     pub async fn read_history_points(
@@ -1773,13 +2678,6 @@ impl SqliteHistoryStore {
         )
         .fetch_one(&self.pool)
         .await?;
-        let snapshot_json_row = sqlx::query(
-            "SELECT COUNT(*) AS sample_count, MIN(captured_at_ms) AS oldest_ms FROM metric_samples WHERE snapshot_json IS NOT NULL",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        let snapshot_json_sample_count = snapshot_json_row.try_get("sample_count")?;
-        let snapshot_json_oldest_ms = snapshot_json_row.try_get("oldest_ms")?;
         let l3_enabled = self
             .history_state_get::<bool>("l3Enabled")
             .await?
@@ -1868,8 +2766,6 @@ impl SqliteHistoryStore {
             rollup_newest_captured_at_ms: row
                 .try_get::<Option<i64>, _>("rollup_newest_captured_at_ms")?,
             tiers,
-            snapshot_json_oldest_ms,
-            snapshot_json_sample_count,
             detail_interval_sec: settings.retention_ladder.detail_interval_sec,
             disk: HistoryDiskCoverage {
                 free_bytes: disk_pressure.as_ref().map(|state| state.free_bytes),
@@ -1941,15 +2837,6 @@ impl SqliteHistoryStore {
             .await?)
     }
 
-    pub async fn count_snapshot_json_older_than(&self, cutoff_ms: i64) -> Result<i64, StoreError> {
-        Ok(sqlx::query_scalar(
-            "SELECT COUNT(*) FROM metric_samples WHERE snapshot_json IS NOT NULL AND captured_at_ms < ?",
-        )
-        .bind(cutoff_ms)
-        .fetch_one(&self.pool)
-        .await?)
-    }
-
     pub async fn count_process_fast_rows_older_than(
         &self,
         cutoff_ms: i64,
@@ -1982,44 +2869,79 @@ impl SqliteHistoryStore {
         Ok(result.rows_affected())
     }
 
-    pub(crate) async fn strip_snapshot_json(
-        &self,
-        cutoff_ms: i64,
-        limit: i64,
-    ) -> Result<u64, StoreError> {
-        let result = sqlx::query(
+    pub(crate) async fn prune_detail_history(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+        let mut transaction = self.pool.begin().await?;
+        let mut deleted = sqlx::query(
             r#"
-            UPDATE metric_samples
-            SET snapshot_json = NULL
-            WHERE rowid IN (
-              SELECT rowid FROM metric_samples
-              WHERE captured_at_ms < ? AND snapshot_json IS NOT NULL
-              ORDER BY captured_at_ms
-              LIMIT ?
-            )
+            DELETE FROM fs_samples
+            WHERE captured_at_ms < ?
+              AND captured_at_ms < (
+                SELECT MAX(newest.captured_at_ms)
+                FROM fs_samples newest
+                WHERE newest.mount = fs_samples.mount
+              )
             "#,
         )
         .bind(cutoff_ms)
-        .bind(limit)
-        .execute(&self.pool)
-        .await?;
-        Ok(result.rows_affected())
-    }
-
-    pub(crate) async fn prune_detail_history(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
-        let mut transaction = self.pool.begin().await?;
-        let fs = sqlx::query("DELETE FROM fs_samples WHERE captured_at_ms < ?")
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected();
+        deleted = deleted.saturating_add(
+            sqlx::query(
+                r#"
+                DELETE FROM fs_mount_events
+                WHERE captured_at_ms < ?
+                  AND captured_at_ms < (
+                    SELECT MAX(newest.captured_at_ms)
+                    FROM fs_mount_events newest
+                    WHERE newest.mount = fs_mount_events.mount
+                  )
+                "#,
+            )
             .bind(cutoff_ms)
             .execute(&mut *transaction)
             .await?
-            .rows_affected();
+            .rows_affected(),
+        );
+        let gone_mounts = sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT e.mount
+            FROM fs_mount_events e
+            WHERE e.captured_at_ms < ?
+              AND e.present = 0
+              AND e.captured_at_ms = (
+                SELECT MAX(newest.captured_at_ms)
+                FROM fs_mount_events newest
+                WHERE newest.mount = e.mount
+              )
+            "#,
+        )
+        .bind(cutoff_ms)
+        .fetch_all(&mut *transaction)
+        .await?;
+        for mount in gone_mounts {
+            deleted = deleted.saturating_add(
+                sqlx::query("DELETE FROM fs_samples WHERE mount = ?")
+                    .bind(&mount)
+                    .execute(&mut *transaction)
+                    .await?
+                    .rows_affected(),
+            );
+            deleted = deleted.saturating_add(
+                sqlx::query("DELETE FROM fs_mount_events WHERE mount = ?")
+                    .bind(&mount)
+                    .execute(&mut *transaction)
+                    .await?
+                    .rows_affected(),
+            );
+        }
         let processes = sqlx::query("DELETE FROM process_samples WHERE captured_at_ms < ?")
             .bind(cutoff_ms)
             .execute(&mut *transaction)
             .await?
             .rows_affected();
         transaction.commit().await?;
-        Ok(fs.saturating_add(processes))
+        Ok(deleted.saturating_add(processes))
     }
 
     pub(crate) async fn prune_process_fast_history(
@@ -2621,19 +3543,75 @@ impl From<serde_json::Error> for StoreError {
     }
 }
 
-fn row_to_sample(row: sqlx::sqlite::SqliteRow) -> Result<HistorySample, StoreError> {
-    let captured_at_ms = row.try_get::<i64, _>("captured_at_ms")?;
-    let snapshot_json = row
-        .try_get::<Option<String>, _>("snapshot_json")?
-        .ok_or_else(|| {
-            StoreError::Validation(format!(
-                "metric_samples row at {captured_at_ms} has no snapshot_json"
-            ))
-        })?;
-    let snapshot = serde_json::from_str(&snapshot_json)?;
-    Ok(HistorySample {
-        captured_at_ms,
-        snapshot,
+fn from_i64(value: i64, field: &'static str) -> Result<u64, StoreError> {
+    u64::try_from(value).map_err(|_| StoreError::Validation(format!("{field} is negative")))
+}
+
+fn required_u64(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &'static str,
+    sample_id: i64,
+) -> Result<u64, StoreError> {
+    let value = row.try_get::<Option<i64>, _>(column)?.ok_or_else(|| {
+        StoreError::Validation(format!(
+            "metric_samples row {sample_id} has NULL {column} on an assembleable row"
+        ))
+    })?;
+    from_i64(value, column)
+}
+
+fn optional_u64(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &'static str,
+) -> Result<Option<u64>, StoreError> {
+    row.try_get::<Option<i64>, _>(column)?
+        .map(|value| from_i64(value, column))
+        .transpose()
+}
+
+fn process_snapshot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ProcessSnapshot, StoreError> {
+    Ok(ProcessSnapshot {
+        pid: u32::try_from(row.try_get::<i64, _>("pid")?)
+            .map_err(|_| StoreError::Validation("process pid is outside u32".to_string()))?,
+        command: row.try_get("command")?,
+        cpu_percent: row.try_get("cpu_percent")?,
+        memory_percent: row.try_get("memory_percent")?,
+        rss_bytes: from_i64(row.try_get("rss_bytes")?, "process rss bytes")?,
+        parent_pid: row
+            .try_get::<Option<i64>, _>("parent_pid")?
+            .map(|value| {
+                u32::try_from(value).map_err(|_| {
+                    StoreError::Validation("process parent pid is outside u32".to_string())
+                })
+            })
+            .transpose()?,
+        started_at: row.try_get("started_at")?,
+    })
+}
+
+fn filesystem_snapshot_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<FilesystemSnapshot, StoreError> {
+    Ok(FilesystemSnapshot {
+        filesystem: row.try_get("filesystem")?,
+        fs_type: row.try_get("fs_type")?,
+        size_bytes: from_i64(row.try_get("size_bytes")?, "filesystem size bytes")?,
+        used_bytes: from_i64(row.try_get("used_bytes")?, "filesystem used bytes")?,
+        available_bytes: from_i64(
+            row.try_get("available_bytes")?,
+            "filesystem available bytes",
+        )?,
+        used_percent: row.try_get("used_percent")?,
+        mount: row.try_get("mount")?,
+        inode_used_percent: row.try_get("inode_used_percent")?,
+        inode_used: row
+            .try_get::<Option<i64>, _>("inode_used")?
+            .map(|value| from_i64(value, "filesystem inode used"))
+            .transpose()?,
+        inode_total: row
+            .try_get::<Option<i64>, _>("inode_total")?
+            .map(|value| from_i64(value, "filesystem inode total"))
+            .transpose()?,
     })
 }
 

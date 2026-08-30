@@ -22,7 +22,6 @@ fn valid_ladder() -> Value {
         "l2": { "keepDays": 30 },
         "l3": { "enabled": true, "keepDays": 90 },
         "l4": { "enabled": true, "keepDays": 730 },
-        "snapshotJsonKeepMinutes": 60,
         "detailIntervalSec": 60,
         "processFastKeepHours": 24,
         "archive": {
@@ -112,16 +111,6 @@ fn invalid_cases() -> Vec<InvalidCase> {
                 ladder
             },
             expected: "retentionLadder.l4.keepDays must be between 0 and 36500; observed 36501",
-        },
-        InvalidCase {
-            name: "snapshot JSON below minimum",
-            ladder: with_field(&["snapshotJsonKeepMinutes"], json!(59)),
-            expected: "retentionLadder.snapshotJsonKeepMinutes must be between 60 and 1440; observed 59",
-        },
-        InvalidCase {
-            name: "snapshot JSON above maximum",
-            ladder: with_field(&["snapshotJsonKeepMinutes"], json!(1441)),
-            expected: "retentionLadder.snapshotJsonKeepMinutes must be between 60 and 1440; observed 1441",
         },
         InvalidCase {
             name: "detail interval below minimum",
@@ -226,7 +215,6 @@ fn retention_ladder_accepts_boundaries_and_forever() {
     ladder.l2.keep_days = 7;
     ladder.l3.keep_days = 7;
     ladder.l4.keep_days = 0;
-    ladder.snapshot_json_keep_minutes = 60;
     ladder.detail_interval_sec = 15;
     ladder.process_fast_keep_hours = 1;
     ladder.archive.cold_after_months = 1;
@@ -329,11 +317,6 @@ fn disk_pressure_rule_table() {
         PressureCase {
             name: "l4 finite +1",
             configure: |_, candidate| candidate.l4.keep_days += 1,
-            refused: true,
-        },
-        PressureCase {
-            name: "snapshotJsonKeepMinutes +1",
-            configure: |_, candidate| candidate.snapshot_json_keep_minutes += 1,
             refused: true,
         },
         PressureCase {
@@ -559,7 +542,6 @@ fn retention_ladder_maps_every_maintenance_setting() {
     ladder.l2.keep_days = 31;
     ladder.l3.enabled = false;
     ladder.l4.keep_days = 0;
-    ladder.snapshot_json_keep_minutes = 75;
     ladder.detail_interval_sec = 45;
 
     let config = ladder.to_ladder_config(2_000);
@@ -567,7 +549,6 @@ fn retention_ladder_maps_every_maintenance_setting() {
     assert_eq!(config.l2_keep_ms, 31 * 86_400_000);
     assert_eq!(config.l3, None);
     assert_eq!(config.l4, Some(0));
-    assert_eq!(config.snapshot_json_keep_ms, 75 * 60_000);
     assert_eq!(config.detail_interval_ms, 45_000);
     assert_eq!(config.poll_interval_ms, 2_000);
 }
@@ -689,7 +670,6 @@ async fn legacy_alias_edit_preserves_non_legacy_ladder_settings() {
     let mut baseline = DashboardSettings::default();
     baseline.retention_ladder.l3.enabled = false;
     baseline.retention_ladder.l4.keep_days = 0;
-    baseline.retention_ladder.snapshot_json_keep_minutes = 120;
     baseline.retention_ladder.detail_interval_sec = 30;
     baseline.retention_ladder.archive.queryable = true;
     baseline.retention_ladder.disk_check.interval_minutes = 15;
@@ -710,10 +690,6 @@ async fn legacy_alias_edit_preserves_non_legacy_ladder_settings() {
     assert_eq!(saved.retention_ladder.l1.keep_days, 4);
     assert_eq!(saved.retention_ladder.l3, baseline.retention_ladder.l3);
     assert_eq!(saved.retention_ladder.l4, baseline.retention_ladder.l4);
-    assert_eq!(
-        saved.retention_ladder.snapshot_json_keep_minutes,
-        baseline.retention_ladder.snapshot_json_keep_minutes
-    );
     assert_eq!(
         saved.retention_ladder.detail_interval_sec,
         baseline.retention_ladder.detail_interval_sec
@@ -1124,7 +1100,10 @@ async fn saved_detail_interval_controls_detail_row_cadence() {
         .await
         .expect("second maintenance should report pending rows");
 
-    assert_eq!(report.detail_rows, 2);
+    assert_eq!(
+        report.detail_rows, 1,
+        "only the newly due minute process row is written"
+    );
 }
 
 async fn set_disk_pressure(store: &SqliteHistoryStore) {
@@ -1192,9 +1171,9 @@ fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
             one: 1.0,
             five: 2.0,
             fifteen: 3.0,
-            runnable: 1,
-            total_threads: 2,
-            last_pid: 3,
+            runnable: Some(1),
+            total_threads: Some(2),
+            last_pid: Some(3),
         },
         pressure: PressureGroup {
             cpu: PressureSnapshot::default(),

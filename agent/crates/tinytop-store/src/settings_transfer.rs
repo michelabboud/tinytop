@@ -55,7 +55,6 @@ pub struct WouldDelete {
     pub l2_buckets: i64,
     pub l3_buckets: i64,
     pub l4_buckets: i64,
-    pub snapshot_json_rows: i64,
     pub process_fast_rows: i64,
 }
 
@@ -241,6 +240,8 @@ fn collect_unknown_settings_keys(
     for (key, input_value) in input {
         let key_path = format!("{path}.{key}");
         match expected.get(key) {
+            None if key_path == "settings.retentionLadder.snapshotJsonKeepMinutes" => warnings
+                .push("snapshotJsonKeepMinutes is no longer used and was ignored".to_string()),
             None => warnings.push(format!("{key_path}: unknown key ignored")),
             Some(expected_value) => {
                 collect_unknown_settings_keys(input_value, expected_value, &key_path, warnings);
@@ -279,9 +280,6 @@ async fn would_delete(
         }
         None => 0,
     };
-    let snapshot_json_rows = store
-        .count_snapshot_json_older_than(now_ms.saturating_sub(config.snapshot_json_keep_ms))
-        .await?;
     let process_fast_rows = store
         .count_process_fast_rows_older_than(now_ms.saturating_sub(config.process_fast_keep_ms))
         .await?;
@@ -290,7 +288,6 @@ async fn would_delete(
         l2_buckets,
         l3_buckets,
         l4_buckets,
-        snapshot_json_rows,
         process_fast_rows,
     })
 }

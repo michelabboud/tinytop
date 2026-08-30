@@ -65,7 +65,6 @@ fn config() -> LadderConfig {
         l2_keep_ms: 365 * DAY_MS,
         l3: Some(365 * DAY_MS),
         l4: Some(730 * DAY_MS),
-        snapshot_json_keep_ms: 365 * DAY_MS,
         detail_interval_ms: MINUTE_MS,
         process_fast_keep_ms: DAY_MS,
         poll_interval_ms: 1_500,
@@ -834,37 +833,6 @@ async fn late_write_into_the_boundary_minute_merges_instead_of_rebuilding() {
 }
 
 #[tokio::test]
-async fn json_is_stripped_outside_the_keep_window() {
-    // Break caught: typed L1 rows outside the JSON window retain their large
-    // snapshot payload, or recent raw API rows lose JSON at the inclusive boundary.
-    let fixture = TempDatabase::new("json-strip");
-    let store = fixture.store().await;
-    for index in 0..200_i64 {
-        let captured_at_ms = index * 30_000;
-        store
-            .insert_snapshot(captured_at_ms, &snapshot(captured_at_ms, 10.0))
-            .await
-            .expect("fixture sample should insert");
-    }
-    let mut settings = config();
-    settings.snapshot_json_keep_ms = 60 * MINUTE_MS;
-    let now_ms = 100 * MINUTE_MS;
-
-    let report = maintain_with_config(&store, &settings, now_ms)
-        .await
-        .expect("maintenance should strip JSON");
-    assert_eq!(report.json_stripped, 80);
-    let pool = fixture.pool().await;
-    let json_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM metric_samples WHERE snapshot_json IS NOT NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("JSON-bearing row count");
-    assert_eq!(json_rows, 120);
-    pool.close().await;
-}
-
-#[tokio::test]
 async fn l4_forever_never_prunes_l4() {
     // Break caught: keepDays=0 is interpreted as an immediate cutoff instead
     // of the explicit forever sentinel.
@@ -952,8 +920,8 @@ async fn disabled_tier_is_neither_written_nor_pruned() {
 
 #[tokio::test]
 async fn detail_rows_written_at_detail_interval() {
-    // Break caught: filesystem/process detail is written every poll or not
-    // written again once the configured cadence elapses.
+    // Break caught: process detail ignores its cadence, or filesystem rows are
+    // recounted despite a same-stamp cache replacement writing no filesystem row.
     let fixture = TempDatabase::new("detail-cadence");
     let store = fixture.store().await;
     for captured_at_ms in [0, 1_500, 61_000] {
@@ -972,7 +940,7 @@ async fn detail_rows_written_at_detail_interval() {
     let report = maintain_with_config(&store, &config(), 62_000)
         .await
         .expect("maintenance should report the latest detail write");
-    assert_eq!(report.detail_rows, 2);
+    assert_eq!(report.detail_rows, 4);
 
     let pool = fixture.pool().await;
     let fs_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM fs_samples")
@@ -983,19 +951,21 @@ async fn detail_rows_written_at_detail_interval() {
         .fetch_one(&pool)
         .await
         .expect("process detail count");
-    assert_eq!(fs_rows, 2);
+    assert_eq!(
+        fs_rows, 1,
+        "unchanged enumerations and same-stamp replacements write no filesystem row"
+    );
     assert_eq!(process_rows, 2);
-    let newest_fs_percent: f64 =
-        sqlx::query_scalar("SELECT used_percent FROM fs_samples WHERE captured_at_ms = 61000")
-            .fetch_one(&pool)
-            .await
-            .expect("replacement filesystem detail value");
+    let cached_fs_percent: f64 = sqlx::query_scalar("SELECT used_percent FROM fs_samples")
+        .fetch_one(&pool)
+        .await
+        .expect("cached filesystem detail value");
     let newest_process_cpu: f64 =
         sqlx::query_scalar("SELECT cpu_percent FROM process_samples WHERE captured_at_ms = 61000")
             .fetch_one(&pool)
             .await
             .expect("replacement process detail value");
-    assert_eq!(newest_fs_percent, 77.0);
+    assert_eq!(cached_fs_percent, 50.0);
     assert_eq!(newest_process_cpu, 88.0);
     pool.close().await;
 }
@@ -1034,7 +1004,10 @@ async fn maintenance_reports_fast_and_detail_prunes() {
         .expect("maintenance should report process prunes");
 
     assert_eq!(report.detail_rows, 2);
-    assert_eq!(report.detail_rows_pruned, 2);
+    assert_eq!(
+        report.detail_rows_pruned, 1,
+        "the newest filesystem row is the carry-forward floor"
+    );
     assert_eq!(report.process_fast_rows, 1);
     assert_eq!(report.orphan_commands, 1_005);
     let pool = fixture.pool().await;
@@ -1049,7 +1022,7 @@ async fn maintenance_reports_fast_and_detail_prunes() {
 }
 
 #[tokio::test]
-async fn same_timestamp_detail_replacement_removes_omitted_members() {
+async fn same_timestamp_process_replacement_keeps_same_stamp_filesystems() {
     let fixture = TempDatabase::new("detail-replacement-members");
     let store = fixture.store().await;
     let captured_at_ms = 61_000;
@@ -1096,7 +1069,11 @@ async fn same_timestamp_detail_replacement_removes_omitted_members() {
         .await
         .expect("replacement process detail should read");
 
-    assert_eq!(filesystems.len(), 1);
+    assert_eq!(
+        filesystems.len(),
+        2,
+        "the same enumeration stamp must not rewrite filesystem membership"
+    );
     assert_eq!(filesystems[0].mount, "/");
     assert_eq!(processes.captures.len(), 1);
     assert_eq!(processes.captures[0].processes.len(), 1);
@@ -1140,9 +1117,8 @@ async fn legacy_l2_null_minima_fall_back_to_averages() {
 }
 
 #[tokio::test]
-async fn history_coverage_reports_every_tier_and_json_horizon() {
-    // Break caught: the storage coverage response reports only legacy L1/L2
-    // totals or omits the oldest raw row that still has a complete snapshot.
+async fn history_coverage_reports_every_tier() {
+    // Break caught: the storage coverage response reports only legacy L1/L2 totals.
     let fixture = TempDatabase::new("ladder-coverage");
     let store = fixture.store().await;
     store
@@ -1162,7 +1138,6 @@ async fn history_coverage_reports_every_tier_and_json_horizon() {
         .history_coverage(&DashboardSettings::default())
         .await
         .expect("ladder coverage should read");
-    assert_eq!(coverage.snapshot_json_oldest_ms, Some(1_000));
     assert_eq!(
         coverage
             .tiers
@@ -1215,9 +1190,9 @@ fn snapshot(captured_at_ms: i64, cpu: f64) -> SystemSnapshot {
             one: 1.0,
             five: 2.0,
             fifteen: 3.0,
-            runnable: 1,
-            total_threads: 2,
-            last_pid: 3,
+            runnable: Some(1),
+            total_threads: Some(2),
+            last_pid: Some(3),
         },
         pressure: PressureGroup {
             cpu: PressureSnapshot::default(),

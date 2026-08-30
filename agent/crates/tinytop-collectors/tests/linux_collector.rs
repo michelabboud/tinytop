@@ -98,7 +98,9 @@ fn parser_helpers_match_the_bun_collector_math() {
     assert_eq!(mem.swap_used_percent, 75.0);
 
     let load = parse_loadavg("1.23 2.34 3.45 7/890 12345").expect("loadavg");
-    assert_eq!(load.runnable, 7);
+    assert_eq!(load.runnable, Some(7));
+    assert_eq!(load.total_threads, Some(890));
+    assert_eq!(load.last_pid, Some(12_345));
 
     let previous = parse_proc_stat("cpu  100 0 100 800 0 0 0 0 0 0").expect("previous cpu");
     let current = parse_proc_stat("cpu  150 0 150 900 0 0 0 0 0 0").expect("current cpu");

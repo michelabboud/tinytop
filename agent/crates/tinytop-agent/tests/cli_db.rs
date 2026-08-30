@@ -189,7 +189,8 @@ fn db_stats_json_reports_the_ladder() {
     assert!(value["sampleCount"].is_i64());
     assert!(value.contains_key("oldestCapturedAtMs"));
     assert!(value.contains_key("newestCapturedAtMs"));
-    assert!(value["snapshotJsonSampleCount"].is_i64());
+    assert_eq!(value["userVersion"], 3);
+    assert!(!value.contains_key("snapshotJsonSampleCount"));
 
     let tiers = value["tiers"]
         .as_array()
@@ -252,10 +253,10 @@ fn db_stats_json_reports_the_ladder() {
 }
 
 #[tokio::test]
-async fn db_stats_json_reports_user_version_2() {
+async fn db_stats_json_reports_user_version_3() {
     // Break caught: schema migration succeeds but operators cannot observe the
     // active SQLite schema version through the JSON stats contract.
-    let fixture = TempDatabase::new("stats-user-version-v2");
+    let fixture = TempDatabase::new("stats-user-version-v3");
     SqliteHistoryStore::connect(&fixture.database_url)
         .await
         .expect("fresh database should initialize")
@@ -267,7 +268,7 @@ async fn db_stats_json_reports_user_version_2() {
 
     assert_success(&output);
     let json = stdout_json(&output);
-    assert_eq!(json["value"]["userVersion"], 2);
+    assert_eq!(json["value"]["userVersion"], 3);
 }
 
 #[tokio::test]
@@ -737,7 +738,7 @@ fn db_stats_refuses_a_v0_database() {
 }
 
 #[test]
-fn pre_image_status_reports_absence_on_an_existing_v2_database() {
+fn pre_image_status_reports_absence_after_v2_migrates_to_v3() {
     let fixture = TempDatabase::new("status-absent");
     fixture.initialize_v2();
 
@@ -753,7 +754,7 @@ fn pre_image_status_reports_absence_on_an_existing_v2_database() {
     assert_eq!(json["value"]["exists"], false);
     assert!(json["value"]["bytes"].is_null());
     assert_eq!(json["value"]["databaseExists"], true);
-    assert_eq!(json["value"]["userVersion"], 2);
+    assert_eq!(json["value"]["userVersion"], 3);
     assert_eq!(json["value"]["integrityCheck"], "ok");
 }
 

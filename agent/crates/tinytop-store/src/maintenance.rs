@@ -6,7 +6,6 @@ use crate::{
 };
 
 const MAX_PROMOTIONS_PER_TICK: i64 = 50;
-const JSON_STRIP_BATCH: i64 = 500;
 const ORPHAN_COMMAND_PRUNE_BATCH: i64 = 1_000;
 const DAY_MS: i64 = 86_400_000;
 
@@ -16,7 +15,6 @@ pub struct LadderConfig {
     pub l2_keep_ms: i64,
     pub l3: Option<i64>,
     pub l4: Option<i64>,
-    pub snapshot_json_keep_ms: i64,
     pub detail_interval_ms: i64,
     pub process_fast_keep_ms: i64,
     pub poll_interval_ms: i64,
@@ -26,7 +24,6 @@ pub struct LadderConfig {
 pub struct MaintenanceReport {
     pub promoted_l3: i64,
     pub promoted_l4: i64,
-    pub json_stripped: i64,
     pub pruned: [i64; 4],
     pub detail_rows: i64,
     pub detail_rows_pruned: u64,
@@ -189,17 +186,6 @@ async fn maintain_with_archive(
             Ok(count) => report.promoted_l4 = count,
             Err(error) => record_step_error(&mut first_error, "promote L4", error),
         }
-    }
-
-    match store
-        .strip_snapshot_json(
-            now_ms.saturating_sub(config.snapshot_json_keep_ms),
-            JSON_STRIP_BATCH,
-        )
-        .await
-    {
-        Ok(count) => report.json_stripped = to_i64_count(count),
-        Err(error) => record_step_error(&mut first_error, "strip snapshot JSON", error),
     }
 
     match store

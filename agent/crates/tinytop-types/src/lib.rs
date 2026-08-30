@@ -39,6 +39,17 @@ pub enum RuntimeConfidence {
     Low,
 }
 
+impl RuntimeConfidence {
+    /// Canonical string form matching this type's serde representation.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeDetection {
@@ -109,12 +120,13 @@ pub struct LoadSnapshot {
     pub one: f64,
     pub five: f64,
     pub fifteen: f64,
-    pub runnable: u64,
-    /// Kernel task total on Linux (`/proc/loadavg`); process count on the
-    /// sysinfo-based macOS/Windows collectors, where no thread total exists.
-    /// Schema v3 makes this optional.
-    pub total_threads: u64,
-    pub last_pid: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runnable: Option<u64>,
+    /// Kernel task total from Linux `/proc/loadavg`, when that source exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_threads: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pid: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,7 +203,7 @@ pub struct SystemSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::{RuntimeKind, SystemSnapshot};
+    use super::{LoadSnapshot, RuntimeKind, SystemSnapshot};
     use serde_json::json;
 
     /// Every `RuntimeKind` variant's canonical `as_str()` must equal its serde
@@ -213,6 +225,37 @@ mod tests {
                 "as_str() must match serde serialization for {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn load_source_fields_are_optional_absent_and_round_trip_when_present() {
+        let without_source_fields = json!({
+            "one": 0.1,
+            "five": 0.2,
+            "fifteen": 0.3
+        });
+        let load: LoadSnapshot = serde_json::from_value(without_source_fields.clone())
+            .expect("load source fields may be absent");
+        let serialized = serde_json::to_value(load).expect("serialize load without sources");
+        assert!(serialized.get("runnable").is_none());
+        assert!(serialized.get("totalThreads").is_none());
+        assert!(serialized.get("lastPid").is_none());
+        assert_eq!(serialized, without_source_fields);
+
+        let with_source_fields = json!({
+            "one": 0.1,
+            "five": 0.2,
+            "fifteen": 0.3,
+            "runnable": 7,
+            "totalThreads": 890,
+            "lastPid": 12_345
+        });
+        let load: LoadSnapshot = serde_json::from_value(with_source_fields.clone())
+            .expect("load source fields may be present");
+        assert_eq!(
+            serde_json::to_value(load).expect("serialize load with sources"),
+            with_source_fields
+        );
     }
 
     #[test]

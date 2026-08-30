@@ -11,8 +11,8 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current schema version: v2, with nullable recent-window `snapshot_json`, one-minute/five-minute/hourly rollup tables, typed filesystem/process detail tables, a per-tick process table and command dictionary, migration/disk/fold state, and daemon timeline events
-- Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, snapshot JSON retention, detail cadence, and per-tick process history; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
+- Current schema version: v3, with typed metric rows, interned host identity, on-change filesystem rows and mount-presence events, one-minute/five-minute/hourly rollup tables, typed process detail tables, a per-tick process table and command dictionary, migration/disk/fold state, and daemon timeline events
+- Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, filesystem check cadence, and per-tick process history; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
 
 ## Process Boundary
 
@@ -43,7 +43,11 @@ The legacy Bun development runtime uses two local processes:
    - Writes samples.
    - Answers current and historical reads.
 
-Both runtimes avoid accidental multi-process writes and keep WAL behavior, migrations, pragmas, and future retention policy in one process.
+Both runtimes avoid accidental multi-process writes. From schema v3, they must
+also use different database paths: the Bun store reads and writes the legacy
+JSON payload column that the Rust v3 schema removes. The Rust daemon does not
+refuse a Bun writer on its behalf, so operators must keep the database paths
+separate.
 
 ## Legacy Collector API
 
@@ -80,12 +84,10 @@ PRAGMA foreign_keys = ON;
 
 ## Current Schema
 
-Fresh databases are created directly at schema v2. The DDL below is also the
+Fresh databases are created directly at schema v3. The DDL below is also the
 post-migration shape; the six minimum/root-maximum columns appear at the end of
 `metric_rollups_1m` because SQLite appends them when upgrading a populated v0
-database. Schema v2 keeps recent snapshot JSON for compatibility; the later
-typed-history migration will remove that payload after history assembly is
-available.
+database.
 
 ```sql
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -106,10 +108,20 @@ CREATE TABLE IF NOT EXISTS metric_samples (
   load_five REAL NOT NULL,
   load_fifteen REAL NOT NULL,
   load_percent REAL NOT NULL,
-  runnable_threads INTEGER NOT NULL,
-  total_threads INTEGER NOT NULL,
+  runnable_threads INTEGER,
+  total_threads INTEGER,
   root_used_percent REAL,
-  snapshot_json TEXT
+  identity_id INTEGER REFERENCES host_identity(identity_id),
+  uptime_seconds INTEGER,
+  memory_available_bytes INTEGER,
+  swap_free_bytes INTEGER,
+  last_pid INTEGER,
+  filesystems_captured_at_ms INTEGER,
+  CHECK (identity_id IS NULL OR (
+    uptime_seconds IS NOT NULL
+    AND memory_available_bytes IS NOT NULL
+    AND swap_free_bytes IS NOT NULL
+  ))
 );
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
@@ -117,6 +129,23 @@ CREATE INDEX IF NOT EXISTS idx_metric_samples_captured_at
 
 CREATE INDEX IF NOT EXISTS idx_metric_samples_runtime_captured_at
   ON metric_samples (runtime_kind, captured_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS host_identity (
+  identity_id INTEGER PRIMARY KEY,
+  first_seen_ms INTEGER NOT NULL,
+  hostname TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  arch TEXT NOT NULL,
+  distro TEXT NOT NULL,
+  kernel TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  runtime_confidence TEXT NOT NULL,
+  runtime_reason TEXT NOT NULL,
+  UNIQUE (
+    hostname, platform, arch, distro, kernel,
+    runtime_kind, runtime_confidence, runtime_reason
+  )
+);
 
 CREATE TABLE IF NOT EXISTS app_settings (
   setting_key TEXT PRIMARY KEY,
@@ -223,6 +252,13 @@ CREATE TABLE IF NOT EXISTS fs_samples (
 CREATE INDEX IF NOT EXISTS idx_fs_samples_mount_time
   ON fs_samples (mount, captured_at_ms DESC);
 
+CREATE TABLE IF NOT EXISTS fs_mount_events (
+  captured_at_ms INTEGER NOT NULL,
+  mount TEXT NOT NULL,
+  present INTEGER NOT NULL CHECK (present IN (0, 1)),
+  PRIMARY KEY (mount, captured_at_ms)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS process_samples (
   captured_at_ms INTEGER NOT NULL,
   rank INTEGER NOT NULL,
@@ -275,20 +311,23 @@ CREATE TABLE IF NOT EXISTS app_events (
 CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 ```
+
+The value written into `fs_samples.captured_at_ms` is the enumeration key
+`fs_key_ms`: the snapshot's `filesystemsCapturedAtMs`, or the sample's
+`captured_at_ms` when the snapshot has no filesystem stamp.
 
 `process_samples_fast` is the per-tick process history table. Its `command_id`
 references the dictionary, so repeated command text is stored once. The fast
-table's `started_at` intentionally remains `TEXT` in v2; identity interning is
-reserved for the later schema-v3 work. Both process tables index `command_id`
-because orphan-command pruning probes each table by that key.
+table's `started_at` intentionally remains `TEXT` in v3. Both process tables
+index `command_id` because orphan-command pruning probes each table by that key.
 
 ## Schema Versions And Migration
 
 `SqliteHistoryStore::connect` applies the SQLite pragmas, reads
-`PRAGMA user_version`, and ensures schema v2 before it runs the older runtime
-name canonicalization. A new or empty database is built directly at v2. A v2
+`PRAGMA user_version`, and ensures schema v3 before it runs the older runtime
+name canonicalization. A new or empty database is built directly at v3. A v3
 database only receives idempotent `CREATE ... IF NOT EXISTS` checks.
 
 A v1 database migrates to v2 in one transaction. Before any write, the store
@@ -315,10 +354,10 @@ A populated v0 database is migrated fail-closed:
    `database_bytes + database_bytes / 5`.
 2. It refuses if `<database>.pre-v0.sqlite` already exists. Otherwise
    `VACUUM INTO` creates that complete pre-image before any row is changed.
-3. One SQLite transaction rebuilds `metric_samples` with nullable
-   `snapshot_json`, retains JSON only for rows within the last 60 minutes,
-   preserves every typed row and `sample_id`, adds the v1 rollup columns and
-   tables, sets `user_version = 1`, and writes
+3. One SQLite transaction rebuilds `metric_samples` with a nullable legacy
+   payload column, retains only its recent payload rows, preserves every typed
+   row and `sample_id`, adds the v1 rollup columns and tables, sets
+   `user_version = 1`, and writes
    `history_state.schemaMigration` with the pre-image path, row counts,
    `bytesBefore`, and `startedAtMs`. Its `vacuumedAtMs`, `bytesAfter`, and
    `durationMs` fields remain `null` in this transaction. A failed transaction
@@ -330,19 +369,75 @@ A populated v0 database is migrated fail-closed:
    again. This makes a crash after the schema commit recoverable and keeps the
    completion idempotent.
 
+Schema v3 rebuilds `metric_samples` in one transaction: it creates the v3
+table, copies the typed v2 columns while preserving `sample_id`, decodes each
+row's own legacy payload to intern identity and backfill its per-row uptime,
+required memory/swap scalars, optional last PID, and filesystem enumeration
+stamp, then replaces the old table and recreates its indexes. A row whose
+legacy payload was already absent remains non-assembleable; no value is copied
+from a neighbouring row. The transaction also creates `host_identity` and
+`fs_mount_events`, backfills mount presence events from existing detail rows,
+writes exactly one `schemaMigrated` marker, and sets `user_version = 3`.
+
+Before strict snapshot decoding, the v3 migration normalises only negative
+`inodeUsed` and `inodeTotal` fields to absent values. The legacy Bun writer could
+produce those impossible counts through an unclamped `inodeTotal - inodeFree`
+subtraction on filesystems where `f_ffree > f_files`; the backfill stores neither
+inode field, so this loses and invents no typed history. The audit records
+`legacyInodeRowsNormalised`, and the `history migration info` line reports the
+same affected-row count. The decode guard remains fail-closed for every other
+unknown field shape or value, leaving the database untouched for operator
+recovery.
+
+The v2→v3 table creation and backfill run in one transaction. A second writer is
+serialised by SQLite's write lock, and any failure or crash rolls the transaction
+back. The explicit guard is the post-backfill identity-count check: the migration
+refuses to commit unless the number of assembleable rows equals the number of
+decoded JSON rows.
 The v0 path still performs its existing pre-image/VACUUM migration first and
-then chains into v1→v2. Unsupported schema versions are refused with
+then chains into v1→v2→v3. Unsupported schema versions are refused with
 `unsupported SQLite schema version <version> at <path> (supported version is
-2)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
+3)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
 `tinytop-agent db pre-image status` inspects its canonical path and main-database
 state; `tinytop-agent db pre-image remove --yes` removes only that exact file and
 refuses unless the main database has completed schema v1 and passes integrity checking.
 
-## Why Store Snapshot JSON
+### Filesystems on change
 
-The UI does not only need graph values. Timeline browsing needs the full selected sample so gauges, filesystem cards, pressure panels, and process rows can render the selected point in time. Storing recent `snapshot_json` lets refresh hydration restore the same UI state without re-collecting fake or partial data. Schema v1 made the column nullable so older raw rows can retain their compact typed metrics without retaining the dominant JSON payload indefinitely; schema v2 retains that shape while adding typed fast process history.
+The filesystem key is `fs_key_ms`: the snapshot's
+`filesystemsCapturedAtMs`, or the sample capture time when a collector does not
+provide a stamp. A row is written only for a new enumeration and only when a
+mount is new or its filesystem/type, size, used, available, or inode values
+changed. Enumeration stamps are monotonic: a stamp older than the last processed
+stamp keeps the metric row, stores no filesystem rows or events, and warns at
+most once per minute of `captured_at_ms`; a stamp equal to the last one is the
+steady state and writes or warns nothing. `fs_mount_events` records each
+appearance and disappearance. Reads use
+the selected sample's stored stamp, include a mount only when its latest event
+at or before that stamp says present, and take its latest values at or before
+that stamp. Retention keeps each mount's newest row and newest event as a
+carry-forward floor; a mount that has been absent past the horizon can be fully
+pruned.
 
-Typed columns are still stored for graph values and future rollups, so history is not trapped inside JSON.
+### Identity interning
+
+`host_identity` interns the eight stable identity strings. The writer primes
+its current identity from the newest sample and inserts a new row only when one
+of those strings changes. Uptime is deliberately per sample, not identity data,
+so it round-trips exactly across reboots.
+
+### Assembling a history snapshot
+
+`/api/history` is built from typed tables. A row is assembleable iff
+`identity_id IS NOT NULL`; the database constraint requires its non-optional
+uptime, memory-available, and swap-free scalars as well. The assembler: (1)
+reads the metric row and identity; (2) restores its typed CPU, memory, swap, and
+load fields; (3) resolves filesystems by stamp, change rows, and presence
+events; (4) selects fast process rows or the eligible minute capture; and (5)
+returns the original snapshot envelope oldest first. `cpu.times` and all
+`pressure.*.some`/`pressure.*.full` lines are absent because v3 does not store
+them; `load.runnable`, `load.totalThreads`, and `load.lastPid` are absent where
+the collector has no source.
 
 ## Write Path
 
@@ -354,8 +449,7 @@ Typed columns are still stored for graph values and future rollups, so history i
 
 ## Read Path
 
-Latest sample and history windows are assembled from typed tables by the later
-schema-v3 migration. In v2, process history is read from the process table
+History windows are assembled from typed tables. Process history uses the table
 selected by its retention window:
 
 ```sql
@@ -432,7 +526,7 @@ The Rust daemon returns persisted `daemonStart`, `settingsChange`, and one-time 
 
 ## Rollups And Coverage
 
-The Rust daemon maintains a fixed-resolution ladder: L1 raw samples, L2 one-minute rollups, L3 five-minute rollups, and L4 hourly rollups. Rollups are additive to the raw history table; `/api/history` still returns recent complete raw snapshots.
+The Rust daemon maintains a fixed-resolution ladder: L1 raw samples, L2 one-minute rollups, L3 five-minute rollups, and L4 hourly rollups. Rollups are additive to the raw history table; `/api/history` returns recent snapshots assembled from the typed tables (no `cpu.times`, no pressure lines; `load.runnable`/`totalThreads`/`lastPid` are absent when the collector has no source).
 
 Every rung uses the same `fold` rule. `sample_count` is the sum of the finer rows' counts, averages are weighted by those counts, minima are the minimum of minima, and maxima are the maximum of maxima. Root-filesystem utilization ignores finer buckets that have no root value and becomes `NULL` only when none of them reported one. This preserves all represented measurements instead of selecting one sample or averaging already-aggregated averages. Legacy L2 rows whose v1 minimum/root-maximum columns are `NULL` read their corresponding average as the missing bound, so they remain promotable without claiming reconstructed detail.
 
@@ -451,11 +545,10 @@ Each insert compares the affected L2 minute's existing `sample_count` with the n
 - database budget percentage
 - oldest/newest rollup timestamps
 - a `tiers` entry for each of L1 through L4 with enabled state, retention days, resolution, count, and oldest/newest bucket timestamps
-- the oldest raw timestamp that still carries `snapshot_json`
 - configured detail sampling interval
 - last persisted disk state as `freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, and `lastCheckMs`
 - queryable archive configuration plus real bucket count/range, and cold archive configuration/state
-- the persisted schema-migration document, or `null` on a fresh v2 database
+- the persisted schema-migration document, or `null` on a fresh v3 database
 
 ## Retention
 
@@ -465,14 +558,13 @@ Rust maintenance runs after each insert in this order:
 - The insert refreshes its L2 minute and repairs already-promoted ancestors for a late write.
 - Maintenance promotes at most 50 complete L3 buckets, then at most 50 complete L4 buckets. A bucket is complete only when its end plus `max(3 seconds, 2 × poll interval)` has passed. L4 folds from L2 when L3 is disabled.
 - Each successful promotion advances `history_state.l3FoldedUntilMs` or `l4FoldedUntilMs` to the promoted bucket's end. Pruning uses the watermarks visible at the start of the tick, so a newly promoted range becomes deletion authority on the next tick.
-- At most 500 rows per tick have `snapshot_json` stripped when they are outside the recent JSON window; typed L1 metrics remain until the L1 horizon.
 - L1 rows are deleted after their horizon without rebuilding any L2 bucket.
-- Filesystem and minute-tier process detail rows are written on the configured cadence (60 seconds by default) and deleted after the L2 horizon.
+- Filesystems are checked on the configured cadence (60 seconds by default), recorded only on change, and pruned with their presence-event floor; minute-tier process detail is retained through the L2 horizon.
 - Per-tick process rows are retained for `retentionLadder.processFastKeepHours` (1–72 hours, default 24); older process windows fall back to the minute tier. Fast rows are deleted in LIMIT-bounded batches using a row-value `IN` query because `process_samples_fast` is `WITHOUT ROWID`.
 - Orphan dictionary commands are pruned in a bounded batch only after process rows were deleted in that maintenance pass. The indexed `command_id` probes cover both process tables.
 - An L2 bucket can be deleted only when its end is older than the L2 horizon and no later than the nearest enabled coarser watermark. L3 uses the same rule against L4. L4 expires by its own horizon; `0` means forever.
 - A disabled L3 or L4 table is neither written nor pruned. It is removed from the dependency chain, while its existing rows remain untouched until the tier is re-enabled.
-- `/api/history` and `/history` select bounded windows for callers and return only rows whose `snapshot_json` is present in both runtimes. Their raw-snapshot horizon is the JSON keep window; reads do not delete rows, but Rust daemon maintenance prunes according to settings.
+- `/api/history` selects bounded Rust-daemon windows and returns only assembleable typed rows; reads do not delete rows, but Rust daemon maintenance prunes according to settings. The legacy Bun split path remains a separate, legacy database format.
 - The dashboard hydrates the browser-selected timestamp window. Live, 15m, and 1h use paged `/api/history`; every preset from 6h through All makes one `/api/history/points?source=auto&limit=10000` request. The response reports `source` (`raw`, `rollup`, `5m`, `1h`, or `archive`) and `resolutionMs`; non-raw points retain their `sampleCount`. At the default ladder the server returns 6h → 1 minute (360 points), 24h → 1 minute (1,440), 7d → 5 minutes (2,016), 30d → 5 minutes (8,640), 90d → 1 hour (2,160), and 1y → 1 hour (8,760). All starts at the oldest retained data and uses the coarsest tier that holds it; the newest 10,000 hourly buckets cover about 416 days, while the queryable archive holds the rest. A long preset is disabled only when no enabled tier holds its start and the archive is not queryable; a missing tier record does not count as coverage. If the active preset becomes unavailable, the browser refetches the nearest finer preset without persisting the fallback. On Bun, missing coverage disables 6h and longer with a Rust-daemon tooltip while raw presets remain available. Raw windows and browser rendering may still be paged/downsampled; those are transport/rendering limits, not storage limits.
 - `Clear` in the dashboard clears only the current browser tab's loaded samples and leaves SQLite untouched.
 - Legacy Bun split mode keeps the earlier manual archive/reset behavior.
@@ -481,7 +573,7 @@ Rust maintenance runs after each insert in this order:
 
 - L1 defaults to 3 days (range 3–3,650) and L2 to 30 days (range 7–3,650); both are always enabled.
 - L3 defaults to enabled for 90 days and must be at least L2 when enabled. L4 defaults to enabled for 730 days; `0` means forever, otherwise it must be at least L3, or L2 when L3 is disabled.
-- Snapshot JSON defaults to 60 minutes (range 60–1,440). Typed filesystem/process rows default to a 60-second cadence (range 15–3,600 seconds), and per-tick process rows default to 24 hours (range 1–72).
+- Filesystems default to a 60-second check cadence (range 15–3,600 seconds), and per-tick process rows default to 24 hours (range 1–72).
 - Cold archive configuration requires queryable archive configuration, cold-after is 1–120 months, and an archive directory is empty or absolute.
 - Disk-check configuration defaults to every 60 minutes and 5 GiB minimum free space; the interval is 5–1,440 minutes and the threshold cannot be below 256 MiB.
 
@@ -499,7 +591,7 @@ The `otel` block is part of the settings document, while `headersEnvVar` is only
 
 Import is split into a read-only plan and an authoritative apply. Planning rejects unknown envelope keys and unsupported versions, decodes through `DashboardSettings::from_document`, normalizes the legacy L1/L2 mirrors, validates the candidate against the persisted ladder and disk-pressure state, and reports ignored unknown keys inside `settings` as warnings. It returns changed keys and `wouldDelete` without writing. Applying repeats that plan and then calls `put_settings`, whose `BEGIN IMMEDIATE` validation is authoritative if pressure changes between preview and write.
 
-`wouldDelete` uses the same predicates as maintenance: L1 counts `captured_at_ms < cutoff`; rollups count `bucket_start_ms + resolution <= cutoff`; snapshot JSON counts non-null blobs with `captured_at_ms < cutoff`; and `processFastRows` counts per-tick process rows older than the candidate `processFastKeepHours` horizon. The candidate ladder is converted through the maintenance configuration builder, so disabled tiers count zero and forever L4 counts zero. Queryable-archive L4 counts are the rows that leave `main` and move to the archive. Counts mean “older than the candidate horizon”: they can include rows already past the current horizon but not yet pruned because L2/L3 deletion is watermark-gated and each tick is bounded. The counts describe rows matching those predicates at preview time; maintenance may take several ticks to reach that number, and rows that cross the candidate cutoff between the preview and a maintenance tick are pruned as well—the ladder working as configured, not a preview error.
+`wouldDelete` uses the same predicates as maintenance: L1 counts `captured_at_ms < cutoff`; rollups count `bucket_start_ms + resolution <= cutoff`; and `processFastRows` counts per-tick process rows older than the candidate `processFastKeepHours` horizon. The candidate ladder is converted through the maintenance configuration builder, so disabled tiers count zero and forever L4 counts zero. Queryable-archive L4 counts are the rows that leave `main` and move to the archive. Counts mean “older than the candidate horizon”: they can include rows already past the current horizon but not yet pruned because L2/L3 deletion is watermark-gated and each tick is bounded. The counts describe rows matching those predicates at preview time; maintenance may take several ticks to reach that number, and rows that cross the candidate cutoff between the preview and a maintenance tick are pruned as well—the ladder working as configured, not a preview error.
 
 HTTP import runs maintenance after the settings write and then records a `settingsChange` marker labelled `Settings imported` with `{"source":"import","changed":[…]}`. CLI import records the same marker but never runs maintenance: a running daemon re-reads settings on every collection tick and at startup, while running pruning from a second process beside the daemon would violate the maintenance ownership boundary.
 
@@ -639,10 +731,8 @@ Potential future normalized tables:
 
 - `pressure_samples`
 
-Task 14's schema-v3 migration will add the normalized identity and on-change
-filesystem tables needed to assemble typed history snapshots, then remove the
-remaining per-sample JSON payload. Pressure detail remains outside the typed
-history model until a consumer requires it. See [docs/adr/0002-initial-snapshot-json-history.md](adr/0002-initial-snapshot-json-history.md).
+Pressure detail remains outside the typed-history model until a consumer
+requires it. See [ADR 0024](adr/0024-schema-v3-typed-history-identity-interning-filesystems-on-change.md).
 
 ## Operational Notes
 

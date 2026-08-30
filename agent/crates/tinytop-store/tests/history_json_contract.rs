@@ -57,9 +57,9 @@ fn minimal_snapshot() -> SystemSnapshot {
             one: 0.1,
             five: 0.2,
             fifteen: 0.3,
-            runnable: 1,
-            total_threads: 2,
-            last_pid: 3,
+            runnable: Some(1),
+            total_threads: Some(2),
+            last_pid: Some(3),
         },
         pressure: PressureGroup {
             cpu: PressureSnapshot::default(),

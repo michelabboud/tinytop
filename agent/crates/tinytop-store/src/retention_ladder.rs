@@ -19,12 +19,12 @@ pub struct RetentionLadder {
     pub l3: ToggledTierKeep,
     #[serde(default = "default_l4", deserialize_with = "deserialize_l4")]
     pub l4: ToggledTierKeep,
-    pub snapshot_json_keep_minutes: i64,
     /// Filesystem check interval in seconds: the collector's slow cadence class
     /// re-enumerates mounts (one `statvfs` per mount) and re-stamps
     /// `filesystemsCapturedAtMs` once per interval, serving the cached list
-    /// between checks. Until the typed-history tasks land, this is also the
-    /// cadence of typed filesystem/process detail rows. Valid range: 15..=3600.
+    /// between checks. Schema v3 stores filesystem rows only when that
+    /// enumeration changes; minute-tier process captures use this cadence.
+    /// Valid range: 15..=3600.
     pub detail_interval_sec: i64,
     /// Hours of per-tick process rows (`process_samples_fast`) kept; older
     /// windows fall back to minute rows (`process_samples`) through the L2 horizon.
@@ -78,7 +78,6 @@ impl Default for RetentionLadder {
             l2: default_l2(),
             l3: default_l3(),
             l4: default_l4(),
-            snapshot_json_keep_minutes: 60,
             detail_interval_sec: 60,
             process_fast_keep_hours: 24,
             archive: ArchiveSettings::default(),
@@ -220,12 +219,6 @@ impl RetentionLadder {
         validate_range("retentionLadder.l3.keepDays", self.l3.keep_days, 0, 3_650)?;
         validate_range("retentionLadder.l4.keepDays", self.l4.keep_days, 0, 36_500)?;
         validate_range(
-            "retentionLadder.snapshotJsonKeepMinutes",
-            self.snapshot_json_keep_minutes,
-            60,
-            1_440,
-        )?;
-        validate_range(
             "retentionLadder.detailIntervalSec",
             self.detail_interval_sec,
             15,
@@ -332,7 +325,6 @@ impl RetentionLadder {
                 .l4
                 .enabled
                 .then(|| self.l4.keep_days.saturating_mul(DAY_MS)),
-            snapshot_json_keep_ms: self.snapshot_json_keep_minutes.saturating_mul(MINUTE_MS),
             detail_interval_ms: self.detail_interval_sec.saturating_mul(1_000),
             process_fast_keep_ms: self.process_fast_keep_hours.saturating_mul(3_600_000),
             poll_interval_ms,
@@ -356,7 +348,6 @@ impl RetentionLadder {
                 previous.l4.keep_days,
                 true,
             )
-            || self.snapshot_json_keep_minutes > previous.snapshot_json_keep_minutes
             || self.process_fast_keep_hours > previous.process_fast_keep_hours
             || (self.archive.queryable && !previous.archive.queryable)
             || (self.archive.cold && !previous.archive.cold)

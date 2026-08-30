@@ -8,11 +8,17 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sqlx::{Sqlite, SqlitePool, Transaction};
+use tinytop_types::SystemSnapshot;
 
 use crate::{StoreError, disk};
 
-pub const SCHEMA_VERSION: i64 = 2;
-pub(crate) const DEFAULT_SNAPSHOT_JSON_KEEP_MS: i64 = 60 * 60 * 1_000;
+pub const SCHEMA_VERSION: i64 = 3;
+
+/// Historical v0→v1 JSON retention window.
+///
+/// Schema v3 removes the configurable JSON tier, but v0 files must still pass
+/// through the loss-bounded v1 shape before the atomic v2→v3 typed backfill.
+const V0_JSON_KEEP_MS: i64 = 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -402,13 +408,213 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
 PRAGMA user_version = 2;
 "#;
 
-const CREATE_SCHEMA_V2_SQL: [&str; 5] = [
+#[doc(hidden)]
+pub const CREATE_SCHEMA_V2_SQL: [&str; 5] = [
     CREATE_SCHEMA_V2_HEAD_SQL,
     CREATE_PROCESS_COMMANDS_V2_SQL,
     CREATE_PROCESS_SAMPLES_FAST_V2_SQL,
     CREATE_PROCESS_SAMPLES_V2_SQL,
     CREATE_SCHEMA_V2_TAIL_SQL,
 ];
+
+const CREATE_SCHEMA_V3_HEAD_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS host_identity (
+  identity_id INTEGER PRIMARY KEY,
+  first_seen_ms INTEGER NOT NULL,
+  hostname TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  arch TEXT NOT NULL,
+  distro TEXT NOT NULL,
+  kernel TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  runtime_confidence TEXT NOT NULL,
+  runtime_reason TEXT NOT NULL,
+  UNIQUE (
+    hostname, platform, arch, distro, kernel,
+    runtime_kind, runtime_confidence, runtime_reason
+  )
+);
+
+CREATE TABLE IF NOT EXISTS fs_mount_events (
+  captured_at_ms INTEGER NOT NULL,
+  mount TEXT NOT NULL,
+  present INTEGER NOT NULL CHECK (present IN (0, 1)),
+  PRIMARY KEY (mount, captured_at_ms)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS metric_samples (
+  sample_id INTEGER PRIMARY KEY,
+  captured_at_ms INTEGER NOT NULL UNIQUE,
+  snapshot_timestamp TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  cpu_usage_percent REAL NOT NULL,
+  cpu_cores INTEGER NOT NULL,
+  memory_used_percent REAL NOT NULL,
+  memory_used_bytes INTEGER NOT NULL,
+  memory_total_bytes INTEGER NOT NULL,
+  swap_used_percent REAL NOT NULL,
+  swap_used_bytes INTEGER NOT NULL,
+  swap_total_bytes INTEGER NOT NULL,
+  load_one REAL NOT NULL,
+  load_five REAL NOT NULL,
+  load_fifteen REAL NOT NULL,
+  load_percent REAL NOT NULL,
+  runnable_threads INTEGER,
+  total_threads INTEGER,
+  root_used_percent REAL,
+  identity_id INTEGER REFERENCES host_identity(identity_id),
+  uptime_seconds INTEGER,
+  memory_available_bytes INTEGER,
+  swap_free_bytes INTEGER,
+  last_pid INTEGER,
+  filesystems_captured_at_ms INTEGER,
+  CHECK (
+    identity_id IS NULL OR (
+      uptime_seconds IS NOT NULL
+      AND memory_available_bytes IS NOT NULL
+      AND swap_free_bytes IS NOT NULL
+    )
+  )
+);
+"#;
+
+const CREATE_SCHEMA_V3_TAIL_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS app_events (
+  event_id INTEGER PRIMARY KEY,
+  occurred_at_ms INTEGER NOT NULL,
+  marker_type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
+  ON app_events (occurred_at_ms DESC, marker_type);
+
+PRAGMA user_version = 3;
+"#;
+
+const CREATE_SCHEMA_V3_SQL: [&str; 6] = [
+    CREATE_SCHEMA_V3_HEAD_SQL,
+    CREATE_SCHEMA_V2_HEAD_SQL,
+    CREATE_PROCESS_COMMANDS_V2_SQL,
+    CREATE_PROCESS_SAMPLES_FAST_V2_SQL,
+    CREATE_PROCESS_SAMPLES_V2_SQL,
+    CREATE_SCHEMA_V3_TAIL_SQL,
+];
+
+const CREATE_HOST_IDENTITY_V3_SQL: &str = r#"
+CREATE TABLE host_identity (
+  identity_id INTEGER PRIMARY KEY,
+  first_seen_ms INTEGER NOT NULL,
+  hostname TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  arch TEXT NOT NULL,
+  distro TEXT NOT NULL,
+  kernel TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  runtime_confidence TEXT NOT NULL,
+  runtime_reason TEXT NOT NULL,
+  UNIQUE (
+    hostname, platform, arch, distro, kernel,
+    runtime_kind, runtime_confidence, runtime_reason
+  )
+)
+"#;
+
+const CREATE_FS_MOUNT_EVENTS_V3_SQL: &str = r#"
+CREATE TABLE fs_mount_events (
+  captured_at_ms INTEGER NOT NULL,
+  mount TEXT NOT NULL,
+  present INTEGER NOT NULL CHECK (present IN (0, 1)),
+  PRIMARY KEY (mount, captured_at_ms)
+) WITHOUT ROWID
+"#;
+
+const CREATE_METRIC_SAMPLES_V3_TEMP_SQL: &str = r#"
+CREATE TABLE metric_samples_v3 (
+  sample_id INTEGER PRIMARY KEY,
+  captured_at_ms INTEGER NOT NULL UNIQUE,
+  snapshot_timestamp TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  cpu_usage_percent REAL NOT NULL,
+  cpu_cores INTEGER NOT NULL,
+  memory_used_percent REAL NOT NULL,
+  memory_used_bytes INTEGER NOT NULL,
+  memory_total_bytes INTEGER NOT NULL,
+  swap_used_percent REAL NOT NULL,
+  swap_used_bytes INTEGER NOT NULL,
+  swap_total_bytes INTEGER NOT NULL,
+  load_one REAL NOT NULL,
+  load_five REAL NOT NULL,
+  load_fifteen REAL NOT NULL,
+  load_percent REAL NOT NULL,
+  runnable_threads INTEGER,
+  total_threads INTEGER,
+  root_used_percent REAL,
+  identity_id INTEGER REFERENCES host_identity(identity_id),
+  uptime_seconds INTEGER,
+  memory_available_bytes INTEGER,
+  swap_free_bytes INTEGER,
+  last_pid INTEGER,
+  filesystems_captured_at_ms INTEGER,
+  CHECK (
+    identity_id IS NULL OR (
+      uptime_seconds IS NOT NULL
+      AND memory_available_bytes IS NOT NULL
+      AND swap_free_bytes IS NOT NULL
+    )
+  )
+)
+"#;
+
+const COPY_METRIC_SAMPLES_TO_V3_SQL: &str = r#"
+INSERT INTO metric_samples_v3 (
+  sample_id,
+  captured_at_ms,
+  snapshot_timestamp,
+  hostname,
+  runtime_kind,
+  cpu_usage_percent,
+  cpu_cores,
+  memory_used_percent,
+  memory_used_bytes,
+  memory_total_bytes,
+  swap_used_percent,
+  swap_used_bytes,
+  swap_total_bytes,
+  load_one,
+  load_five,
+  load_fifteen,
+  load_percent,
+  runnable_threads,
+  total_threads,
+  root_used_percent
+)
+SELECT
+  sample_id,
+  captured_at_ms,
+  snapshot_timestamp,
+  hostname,
+  runtime_kind,
+  cpu_usage_percent,
+  cpu_cores,
+  memory_used_percent,
+  memory_used_bytes,
+  memory_total_bytes,
+  swap_used_percent,
+  swap_used_bytes,
+  swap_total_bytes,
+  load_one,
+  load_five,
+  load_fifteen,
+  load_percent,
+  runnable_threads,
+  total_threads,
+  root_used_percent
+FROM metric_samples
+"#;
 
 const CREATE_METRIC_SAMPLES_V1_TEMP_SQL: &str = r#"
 CREATE TABLE metric_samples_v1 (
@@ -516,7 +722,6 @@ pub(crate) async fn ensure_schema(
     pool: &SqlitePool,
     db_path: &Path,
     now_ms: i64,
-    snapshot_json_keep_ms: i64,
 ) -> Result<Option<MigrationReport>, StoreError> {
     let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
         .fetch_one(pool)
@@ -524,18 +729,23 @@ pub(crate) async fn ensure_schema(
 
     match user_version {
         SCHEMA_VERSION => {
-            apply_schema_v2(pool).await?;
+            apply_schema_v3(pool).await?;
+            complete_pending_migration(pool, db_path).await
+        }
+        2 => {
+            migrate_v2_to_v3(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         1 => {
             let report = complete_pending_migration(pool, db_path).await?;
             migrate_v1_to_v2(pool, db_path, now_ms).await?;
+            migrate_v2_to_v3(pool, now_ms).await?;
             Ok(report)
         }
         0 => {
             let metric_samples_exists = table_exists(pool, "metric_samples").await?;
             if !metric_samples_exists {
-                apply_schema_v2(pool).await?;
+                apply_schema_v3(pool).await?;
                 return Ok(None);
             }
 
@@ -543,15 +753,16 @@ pub(crate) async fn ensure_schema(
                 .fetch_one(pool)
                 .await?;
             if sample_count == 0 {
-                rebuild_v0_schema(pool, now_ms, snapshot_json_keep_ms, None).await?;
+                rebuild_v0_schema(pool, now_ms, V0_JSON_KEEP_MS, None).await?;
                 migrate_v1_to_v2(pool, db_path, now_ms).await?;
+                migrate_v2_to_v3(pool, now_ms).await?;
                 return Ok(None);
             }
 
             let report =
-                migrate_populated_v0(pool, db_path, now_ms, snapshot_json_keep_ms, sample_count)
-                    .await?;
+                migrate_populated_v0(pool, db_path, now_ms, V0_JSON_KEEP_MS, sample_count).await?;
             migrate_v1_to_v2(pool, db_path, now_ms).await?;
+            migrate_v2_to_v3(pool, now_ms).await?;
             Ok(Some(report))
         }
         other => Err(StoreError::Migration {
@@ -566,8 +777,8 @@ pub(crate) async fn ensure_schema(
     }
 }
 
-async fn apply_schema_v2(pool: &SqlitePool) -> Result<(), StoreError> {
-    apply_schema_groups(pool, &CREATE_SCHEMA_V2_SQL).await
+async fn apply_schema_v3(pool: &SqlitePool) -> Result<(), StoreError> {
+    apply_schema_groups(pool, &CREATE_SCHEMA_V3_SQL).await
 }
 
 async fn apply_schema_groups(
@@ -683,6 +894,288 @@ async fn migrate_v1_to_v2(
     Ok(())
 }
 
+async fn migrate_v2_to_v3(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {
+    let started = Instant::now();
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query(CREATE_HOST_IDENTITY_V3_SQL)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(CREATE_FS_MOUNT_EVENTS_V3_SQL)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(CREATE_METRIC_SAMPLES_V3_TEMP_SQL)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(COPY_METRIC_SAMPLES_TO_V3_SQL)
+        .execute(&mut *transaction)
+        .await?;
+
+    let json_rows = sqlx::query_as::<_, (i64, i64, String)>(
+        r#"
+        SELECT sample_id, captured_at_ms, snapshot_json
+        FROM metric_samples
+        WHERE snapshot_json IS NOT NULL
+        ORDER BY sample_id
+        "#,
+    )
+    .fetch_all(&mut *transaction)
+    .await?;
+    let json_rows_decoded = i64::try_from(json_rows.len()).map_err(|_| StoreError::Migration {
+        reason: "schema v3 JSON row count exceeds SQLite INTEGER capacity".to_string(),
+        remedy: "inspect the database with `db check`; the database was not modified".to_string(),
+    })?;
+    let mut legacy_inode_rows_normalised = 0_i64;
+
+    for (sample_id, captured_at_ms, snapshot_json) in json_rows {
+        let mut value = serde_json::from_str::<serde_json::Value>(&snapshot_json).map_err(
+            |error| StoreError::Migration {
+                reason: format!(
+                    "metric_samples row {sample_id} holds snapshot JSON that does not decode: {error}"
+                ),
+                remedy: "a row this version cannot decode — back up the database, then clear that row's payload (UPDATE metric_samples SET snapshot_json = NULL WHERE sample_id = <n>; see INSTALL.md, Upgrade) and start again; the database was not modified".to_string(),
+            },
+        )?;
+        if normalise_legacy_snapshot(&mut value) > 0 {
+            legacy_inode_rows_normalised += 1;
+        }
+        let snapshot = serde_json::from_value::<SystemSnapshot>(value).map_err(|error| {
+            StoreError::Migration {
+                reason: format!(
+                    "metric_samples row {sample_id} holds snapshot JSON that does not decode: {error}"
+                ),
+                remedy: "a row this version cannot decode — back up the database, then clear that row's payload (UPDATE metric_samples SET snapshot_json = NULL WHERE sample_id = <n>; see INSTALL.md, Upgrade) and start again; the database was not modified".to_string(),
+            }
+        })?;
+        let identity = &snapshot.identity;
+        let runtime = &identity.runtime;
+        sqlx::query(
+            r#"
+            INSERT OR IGNORE INTO host_identity (
+              first_seen_ms, hostname, platform, arch, distro, kernel,
+              runtime_kind, runtime_confidence, runtime_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(captured_at_ms)
+        .bind(&identity.hostname)
+        .bind(&identity.platform)
+        .bind(&identity.arch)
+        .bind(&identity.distro)
+        .bind(&identity.kernel)
+        .bind(runtime.kind.as_str())
+        .bind(runtime.confidence.as_str())
+        .bind(&runtime.reason)
+        .execute(&mut *transaction)
+        .await?;
+
+        let identity_id: i64 = sqlx::query_scalar(
+            r#"
+            SELECT identity_id
+            FROM host_identity
+            WHERE hostname = ?
+              AND platform = ?
+              AND arch = ?
+              AND distro = ?
+              AND kernel = ?
+              AND runtime_kind = ?
+              AND runtime_confidence = ?
+              AND runtime_reason = ?
+            "#,
+        )
+        .bind(&identity.hostname)
+        .bind(&identity.platform)
+        .bind(&identity.arch)
+        .bind(&identity.distro)
+        .bind(&identity.kernel)
+        .bind(runtime.kind.as_str())
+        .bind(runtime.confidence.as_str())
+        .bind(&runtime.reason)
+        .fetch_one(&mut *transaction)
+        .await?;
+
+        let uptime_seconds =
+            migration_u64_to_i64(identity.uptime_seconds, sample_id, "identity.uptimeSeconds")?;
+        let memory_available_bytes = migration_u64_to_i64(
+            snapshot.memory.available_bytes,
+            sample_id,
+            "memory.availableBytes",
+        )?;
+        let swap_free_bytes =
+            migration_u64_to_i64(snapshot.swap.free_bytes, sample_id, "swap.freeBytes")?;
+        let last_pid = snapshot
+            .load
+            .last_pid
+            .map(|value| migration_u64_to_i64(value, sample_id, "load.lastPid"))
+            .transpose()?;
+
+        sqlx::query(
+            r#"
+            UPDATE metric_samples_v3
+            SET identity_id = ?,
+                uptime_seconds = ?,
+                memory_available_bytes = ?,
+                swap_free_bytes = ?,
+                last_pid = ?,
+                filesystems_captured_at_ms = ?
+            WHERE sample_id = ?
+            "#,
+        )
+        .bind(identity_id)
+        .bind(uptime_seconds)
+        .bind(memory_available_bytes)
+        .bind(swap_free_bytes)
+        .bind(last_pid)
+        .bind(snapshot.filesystems_captured_at_ms)
+        .bind(sample_id)
+        .execute(&mut *transaction)
+        .await?;
+    }
+
+    let assembleable_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM metric_samples_v3 WHERE identity_id IS NOT NULL")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if assembleable_rows != json_rows_decoded {
+        return Err(StoreError::Migration {
+            reason: format!(
+                "schema v3 backfill decoded {json_rows_decoded} JSON rows but made {assembleable_rows} metric_samples rows assembleable"
+            ),
+            remedy: "inspect the database with `db check`; the database was not modified"
+                .to_string(),
+        });
+    }
+
+    let sample_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metric_samples_v3")
+        .fetch_one(&mut *transaction)
+        .await?;
+    let identities_interned: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM host_identity")
+        .fetch_one(&mut *transaction)
+        .await?;
+
+    sqlx::query("DROP TABLE metric_samples")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("ALTER TABLE metric_samples_v3 RENAME TO metric_samples")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_metric_samples_captured_at ON metric_samples (captured_at_ms DESC)",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX idx_metric_samples_runtime_captured_at ON metric_samples (runtime_kind, captured_at_ms DESC)",
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    let appear_events = sqlx::query(
+        r#"
+        INSERT INTO fs_mount_events (captured_at_ms, mount, present)
+        SELECT MIN(captured_at_ms), mount, 1
+        FROM fs_samples
+        GROUP BY mount
+        "#,
+    )
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    let disappear_events = sqlx::query(
+        r#"
+        INSERT INTO fs_mount_events (captured_at_ms, mount, present)
+        SELECT MAX(captured_at_ms) + 1, mount, 0
+        FROM fs_samples
+        GROUP BY mount
+        HAVING MAX(captured_at_ms) < (SELECT MAX(captured_at_ms) FROM fs_samples)
+        "#,
+    )
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    let events_written =
+        i64::try_from(appear_events.saturating_add(disappear_events)).map_err(|_| {
+            StoreError::Migration {
+                reason: "schema v3 filesystem event count exceeds SQLite INTEGER capacity"
+                    .to_string(),
+                remedy: "inspect the database with `db check`; the database was not modified"
+                    .to_string(),
+            }
+        })?;
+
+    let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    let details_json = serde_json::to_string(&serde_json::json!({
+        "fromVersion": 2,
+        "toVersion": 3,
+        "sampleRows": sample_rows,
+        "jsonRowsDecoded": json_rows_decoded,
+        "legacyInodeRowsNormalised": legacy_inode_rows_normalised,
+        "identitiesInterned": identities_interned,
+        "eventsWritten": events_written,
+        "durationMs": duration_ms,
+    }))?;
+    sqlx::query(
+        r#"
+        INSERT INTO app_events (occurred_at_ms, marker_type, label, details_json)
+        VALUES (?, 'schemaMigrated', 'SQLite schema migrated from v2 to v3', ?)
+        "#,
+    )
+    .bind(now_ms)
+    .bind(details_json)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("PRAGMA user_version = 3")
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+
+    eprintln!(
+        "history migration info: schema v2 → v3 in {duration_ms} ms ({json_rows_decoded} JSON rows decoded, {identities_interned} identities interned, {events_written} filesystem events written over {sample_rows} metric rows, {legacy_inode_rows_normalised} rows with legacy negative inode counts normalised)"
+    );
+    Ok(())
+}
+
+/// Normalises negative inode counts emitted by the legacy Bun collector when
+/// its unclamped `inodeTotal - inodeFree` subtraction observed more free inodes
+/// than total inodes. The return value counts fields changed, not rows.
+fn normalise_legacy_snapshot(value: &mut serde_json::Value) -> u32 {
+    let Some(filesystems) = value
+        .get_mut("filesystems")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return 0;
+    };
+    let mut fields_changed = 0_u32;
+    for filesystem in filesystems {
+        let Some(filesystem) = filesystem.as_object_mut() else {
+            continue;
+        };
+        for field in ["inodeUsed", "inodeTotal"] {
+            let Some(field_value) = filesystem.get_mut(field) else {
+                continue;
+            };
+            if field_value.as_i64().is_some_and(|value| value < 0) {
+                *field_value = serde_json::Value::Null;
+                fields_changed += 1;
+            }
+        }
+    }
+    fields_changed
+}
+
+fn migration_u64_to_i64(
+    value: u64,
+    sample_id: i64,
+    field: &'static str,
+) -> Result<i64, StoreError> {
+    i64::try_from(value).map_err(|_| StoreError::Migration {
+        reason: format!(
+            "metric_samples row {sample_id} holds {field} value {value} that does not fit SQLite INTEGER"
+        ),
+        remedy: "a row this version cannot decode — back up the database, then clear that row's payload (UPDATE metric_samples SET snapshot_json = NULL WHERE sample_id = <n>; see INSTALL.md, Upgrade) and start again; the database was not modified".to_string(),
+    })
+}
+
 #[doc(hidden)]
 pub fn require_sqlite_at_least(version: &str, minimum: (u64, u64, u64)) -> Result<(), StoreError> {
     let parsed = version
@@ -717,14 +1210,14 @@ async fn migrate_populated_v0(
     pool: &SqlitePool,
     db_path: &Path,
     now_ms: i64,
-    snapshot_json_keep_ms: i64,
+    v0_json_keep_ms: i64,
     sample_count: i64,
 ) -> Result<MigrationReport, StoreError> {
     let (canonical_db_path, audit) = migrate_populated_v0_schema_phase_inner(
         pool,
         db_path,
         now_ms,
-        snapshot_json_keep_ms,
+        v0_json_keep_ms,
         sample_count,
     )
     .await?;
@@ -742,7 +1235,7 @@ pub async fn migrate_populated_v0_schema_phase(
     pool: &SqlitePool,
     db_path: &Path,
     now_ms: i64,
-    snapshot_json_keep_ms: i64,
+    v0_json_keep_ms: i64,
 ) -> Result<MigrationReport, StoreError> {
     let sample_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM metric_samples")
         .fetch_one(pool)
@@ -751,7 +1244,7 @@ pub async fn migrate_populated_v0_schema_phase(
         pool,
         db_path,
         now_ms,
-        snapshot_json_keep_ms,
+        v0_json_keep_ms,
         sample_count,
     )
     .await?;
@@ -762,7 +1255,7 @@ async fn migrate_populated_v0_schema_phase_inner(
     pool: &SqlitePool,
     db_path: &Path,
     now_ms: i64,
-    snapshot_json_keep_ms: i64,
+    v0_json_keep_ms: i64,
     sample_count: i64,
 ) -> Result<(PathBuf, MigrationAudit), StoreError> {
     let canonical_db_path = canonical_database_path(db_path)?;
@@ -808,7 +1301,7 @@ async fn migrate_populated_v0_schema_phase_inner(
 
     create_pre_image(pool, &pre_image_path).await?;
 
-    let cutoff_ms = now_ms.saturating_sub(snapshot_json_keep_ms);
+    let cutoff_ms = now_ms.saturating_sub(v0_json_keep_ms);
     let json_rows_kept: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= ? AND snapshot_json IS NOT NULL",
     )
@@ -829,7 +1322,7 @@ async fn migrate_populated_v0_schema_phase_inner(
         },
         started_at_ms: now_ms,
     };
-    rebuild_v0_schema(pool, now_ms, snapshot_json_keep_ms, Some(&audit)).await?;
+    rebuild_v0_schema(pool, now_ms, v0_json_keep_ms, Some(&audit)).await?;
     Ok((canonical_db_path, audit))
 }
 
@@ -848,10 +1341,10 @@ fn undeterminable_free_space_reason(
 async fn rebuild_v0_schema(
     pool: &SqlitePool,
     now_ms: i64,
-    snapshot_json_keep_ms: i64,
+    v0_json_keep_ms: i64,
     migration_audit: Option<&MigrationAudit>,
 ) -> Result<(), StoreError> {
-    let cutoff_ms = now_ms.saturating_sub(snapshot_json_keep_ms);
+    let cutoff_ms = now_ms.saturating_sub(v0_json_keep_ms);
     let mut transaction = pool.begin().await?;
     sqlx::query(CREATE_METRIC_SAMPLES_V1_TEMP_SQL)
         .execute(&mut *transaction)
@@ -1121,6 +1614,79 @@ fn database_bytes_with_wal(canonical_db_path: &Path) -> Result<u64, StoreError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalise_legacy_snapshot_nulls_negative_inode_fields_and_counts_fields() {
+        let mut only_inode_used = serde_json::json!({
+            "filesystems": [{ "inodeUsed": -999001, "inodeTotal": 999 }],
+        });
+        assert_eq!(normalise_legacy_snapshot(&mut only_inode_used), 1);
+        assert_eq!(
+            only_inode_used["filesystems"][0]["inodeUsed"],
+            JsonValue::Null
+        );
+        assert_eq!(only_inode_used["filesystems"][0]["inodeTotal"], 999);
+
+        let mut both = serde_json::json!({
+            "filesystems": [{ "inodeUsed": -1, "inodeTotal": -2 }],
+        });
+        assert_eq!(normalise_legacy_snapshot(&mut both), 2);
+        assert_eq!(both["filesystems"][0]["inodeUsed"], JsonValue::Null);
+        assert_eq!(both["filesystems"][0]["inodeTotal"], JsonValue::Null);
+    }
+
+    #[test]
+    fn normalise_legacy_snapshot_leaves_other_inode_values_byte_identical() {
+        let mut value = serde_json::json!({
+            "filesystems": [
+                { "inodeUsed": 0, "inodeTotal": 1 },
+                { "inodeUsed": null, "inodeTotal": null },
+                { "inodeUsed": -1.5, "inodeTotal": -2.5 },
+                { "inodeUsed": "x", "inodeTotal": "x" },
+                { "inodeUsed": true, "inodeTotal": true },
+                { "inodeTotal": 999 },
+                { "inodeUsed": 999 }
+            ],
+        });
+        let before = serde_json::to_vec(&value).expect("fixture JSON should serialize");
+
+        assert_eq!(normalise_legacy_snapshot(&mut value), 0);
+        assert_eq!(
+            serde_json::to_vec(&value).expect("normalised JSON should serialize"),
+            before
+        );
+    }
+
+    #[test]
+    fn normalise_legacy_snapshot_leaves_other_filesystem_shapes_byte_identical() {
+        for mut value in [
+            serde_json::json!({ "identity": {} }),
+            serde_json::json!({ "filesystems": null }),
+            serde_json::json!({ "filesystems": { "inodeUsed": -1 } }),
+            serde_json::json!({ "filesystems": [null, 1, "x", true, []] }),
+        ] {
+            let before = serde_json::to_vec(&value).expect("fixture JSON should serialize");
+            assert_eq!(normalise_legacy_snapshot(&mut value), 0);
+            assert_eq!(
+                serde_json::to_vec(&value).expect("normalised JSON should serialize"),
+                before
+            );
+        }
+    }
+
+    #[test]
+    fn normalise_legacy_snapshot_counts_fields_across_filesystems() {
+        let mut value = serde_json::json!({
+            "filesystems": [
+                { "mount": "/a", "inodeUsed": -1, "inodeTotal": 10 },
+                { "mount": "/b", "inodeUsed": 10, "inodeTotal": -1 }
+            ],
+        });
+
+        assert_eq!(normalise_legacy_snapshot(&mut value), 2);
+        assert_eq!(value["filesystems"][0]["inodeUsed"], JsonValue::Null);
+        assert_eq!(value["filesystems"][1]["inodeTotal"], JsonValue::Null);
+    }
 
     #[tokio::test]
     async fn schema_group_failure_rolls_back_fresh_schema() {

@@ -17,7 +17,7 @@ use tinytop_types::{
     SwapSnapshot, SystemSnapshot,
 };
 
-use crate::{CollectorConfig, CollectorError, CollectorResult, process_totals};
+use crate::{CollectorConfig, CollectorError, CollectorResult};
 
 struct SysinfoSlowCache {
     taken_at: Instant,
@@ -84,12 +84,6 @@ impl SysinfoCollector {
             .slow_cache
             .as_ref()
             .expect("the first collection always populates the slow cache");
-        let totals = process_totals(
-            self.system
-                .processes()
-                .keys()
-                .map(|pid| pid.as_u32() as u64),
-        );
         let processes = native_processes(&self.system, self.config.top_process_count);
         let load = System::load_average();
         let total_memory = self.system.total_memory();
@@ -135,10 +129,9 @@ impl SysinfoCollector {
                 one: load.one,
                 five: load.five,
                 fifteen: load.fifteen,
-                runnable: 0,
-                // See `process_totals` for the sysinfo/Linux semantic difference.
-                total_threads: totals.count,
-                last_pid: totals.last_pid,
+                runnable: None,
+                total_threads: None,
+                last_pid: None,
             },
             pressure: PressureGroup {
                 cpu: PressureSnapshot::default(),

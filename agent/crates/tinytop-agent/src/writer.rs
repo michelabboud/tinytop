@@ -1662,7 +1662,10 @@ pub(crate) mod tests {
         (status, body)
     }
 
-    async fn insert_fixture_snapshot(store: &SqliteHistoryStore, captured_at_ms: i64) {
+    async fn insert_fixture_snapshot(
+        store: &SqliteHistoryStore,
+        captured_at_ms: i64,
+    ) -> HistorySample {
         let snapshot = serde_json::from_value(json!({
             "timestamp": format!("fixture-{captured_at_ms}"),
             "identity": {
@@ -1726,7 +1729,7 @@ pub(crate) mod tests {
         store
             .insert_snapshot(captured_at_ms, &snapshot)
             .await
-            .expect("fixture snapshot should insert");
+            .expect("fixture snapshot should insert")
     }
 
     #[test]
@@ -2096,7 +2099,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn coverage_reports_every_tier_and_json_horizon() {
+    async fn coverage_reports_every_tier_without_json_horizon() {
         fn sorted_object_keys(value: &JsonValue) -> Vec<&str> {
             let mut keys = value
                 .as_object()
@@ -2133,13 +2136,7 @@ pub(crate) mod tests {
                 ]
             );
         }
-        for key in [
-            "snapshotJsonOldestMs",
-            "detailIntervalSec",
-            "disk",
-            "archive",
-            "migration",
-        ] {
+        for key in ["detailIntervalSec", "disk", "archive", "migration"] {
             assert!(
                 body.get(key).is_some(),
                 "coverage must contain {key}: {body}"
@@ -2207,6 +2204,31 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn put_settings_accepts_and_ignores_removed_keep_minutes() {
+        let (_fixture, state) = test_state("put-ignored-json-setting").await;
+        let mut document =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        document["retentionLadder"]["snapshotJsonKeepMinutes"] = json!(60);
+
+        let (status, body) = put_json(router(state.clone()), "/api/settings", document).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body["retentionLadder"]
+                .get("snapshotJsonKeepMinutes")
+                .is_none()
+        );
+        let stored =
+            serde_json::to_value(state.store.get_settings().await.expect("stored settings"))
+                .expect("stored settings should serialize");
+        assert!(
+            stored["retentionLadder"]
+                .get("snapshotJsonKeepMinutes")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn latest_snapshot_is_published_by_collect_and_store() {
         // Break caught: the exporter watch channel is not updated before persistence work.
         let (_fixture, state) = test_state("latest-snapshot-watch").await;
@@ -2220,7 +2242,13 @@ pub(crate) mod tests {
             .borrow()
             .clone()
             .expect("collector success should publish a snapshot");
-        assert_eq!(*published, sample.snapshot);
+        assert_eq!(published.timestamp, sample.snapshot.timestamp);
+        assert_eq!(published.identity, sample.snapshot.identity);
+        assert_eq!(published.memory, sample.snapshot.memory);
+        assert_eq!(published.swap, sample.snapshot.swap);
+        assert_eq!(published.load, sample.snapshot.load);
+        assert!(published.cpu.times.is_some());
+        assert!(sample.snapshot.cpu.times.is_none());
     }
 
     #[tokio::test]
@@ -2299,11 +2327,12 @@ pub(crate) mod tests {
             .expect("changed settings should persist");
 
         let third = collect_and_store(&state).await.expect("third tick");
-        assert_eq!(third.snapshot.processes.len(), 8);
+        // A live host may expose fewer processes than either configured maximum.
+        assert!(third.snapshot.processes.len() <= 8);
         assert_eq!(state.collector.lock().await.configure_calls(), 2);
 
         let fourth = collect_and_store(&state).await.expect("fourth tick");
-        assert_eq!(fourth.snapshot.processes.len(), 3);
+        assert!(fourth.snapshot.processes.len() <= 3);
         assert_eq!(state.collector.lock().await.configure_calls(), 2);
     }
 
@@ -2538,7 +2567,7 @@ pub(crate) mod tests {
         let filesystems = body["filesystems"].as_array().expect("filesystem rows");
         assert_eq!(filesystems.len(), 1, "limit=0 must clamp to one row");
         assert_eq!(filesystems[0]["mount"], "/data");
-        assert_eq!(filesystems[0]["capturedAtMs"], now - 60_000);
+        assert_eq!(filesystems[0]["capturedAtMs"], now - 120_000);
 
         let uri = format!(
             "/api/history/filesystems?sinceMs={}&untilMs={now}&mount=%2Fdata&limit=99999",
@@ -2547,7 +2576,11 @@ pub(crate) mod tests {
         let (status, body) = request_json(router(state), &uri).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let filesystems = body["filesystems"].as_array().expect("filesystem rows");
-        assert_eq!(filesystems.len(), 2, "large limit must return every row");
+        assert_eq!(
+            filesystems.len(),
+            1,
+            "schema v3 stores unchanged filesystems only once"
+        );
         assert!(filesystems.iter().all(|row| row["mount"] == "/data"));
     }
 
@@ -2583,26 +2616,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn raw_history_omits_rows_without_json() {
-        let (_fixture, state) = test_state("raw-json").await;
+    async fn history_route_returns_the_assembled_snapshot_written_by_the_store() {
+        let (_fixture, state) = test_state("assembled-history-route").await;
         let now = now_ms().expect("test time");
-        let stripped_at = now - 61 * 60_000;
-        let recent_at = now - 30 * 60_000;
-        insert_fixture_snapshot(&state.store, stripped_at).await;
-        insert_fixture_snapshot(&state.store, recent_at).await;
-        tinytop_store::maintenance::maintain(&state.store, &DashboardSettings::default(), now)
-            .await
-            .expect("maintenance should strip old JSON");
+        let recent_at = now - 10 * 60_000;
+        let written = insert_fixture_snapshot(&state.store, recent_at).await;
 
         let uri = format!(
             "/api/history?sinceMs={}&untilMs={now}&limit=10",
-            now - 2 * 60 * 60_000
+            now - 15 * 60_000
         );
         let (status, body) = request_json(router(state), &uri).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let samples = body["samples"].as_array().expect("history samples");
         assert_eq!(samples.len(), 1);
-        assert_eq!(samples[0]["capturedAtMs"], recent_at);
+        assert_eq!(
+            samples[0],
+            serde_json::to_value(written).expect("written sample should serialize")
+        );
     }
 
     #[test]

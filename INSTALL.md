@@ -254,7 +254,8 @@ History retention:
 
 - The Rust daemon promotes and prunes history through `retentionLadder`: L1 raw, L2 one-minute, optional L3 five-minute, and optional L4 hourly horizons.
 - `retentionHours` and `rollupRetentionDays` remain in `/api/settings` only as derived compatibility mirrors of L1 and L2.
-- Full snapshot JSON follows `retentionLadder.snapshotJsonKeepMinutes`; older L1 rows retain compact typed metrics, and typed filesystem/process detail follows `detailIntervalSec` through the L2 horizon.
+- Schema v3 assembles raw history snapshots from typed rows; filesystem detail is stored on change after each `detailIntervalSec` check, and typed process detail follows its configured horizon.
+- From schema v3, the Rust daemon and legacy Bun runtime must not share a database path: Bun expects the legacy payload column that v3 removes, and the Rust daemon does not refuse on Bun's behalf.
 - The Rust daemon stores `targetDatabaseBytes` in `/api/settings` and reports current database budget usage through `/api/history/coverage`.
 - The dashboard's recent history window limits what it reads and renders; the retention settings control database pruning.
 - Legacy Bun split mode keeps raw samples until you manually archive or reset the database.
@@ -336,6 +337,16 @@ If the main database is missing, `db pre-image status` reports `databaseExists: 
 If the first start fails after the pre-image was written but before the schema transaction committed, the main database is still v0 and the pre-image is protected. `db pre-image remove --yes` refuses while `user_version < 1` by design: that pre-image is your data at that moment. Verify it, move it aside by hand, and then retry the migration.
 
 A crash after the post-migration `VACUUM` but before the audit transaction commits leaves schema v1 with an incomplete audit. The next start runs `VACUUM` once more; this is safe but can cost several minutes on a large database.
+
+**Refused schema migration.** `holds snapshot JSON that does not decode` means
+that a retained history payload cannot be decoded by this version. The database
+is untouched and the daemon exits with status 1. Payloads written by the legacy
+Bun collector with negative inode counts are normalised automatically since
+0.5.3; affected-row counts appear in the `history migration info` line and the
+migration audit. For any payload that remains undecodable, back up the database,
+then clear that row's payload (`UPDATE metric_samples SET snapshot_json = NULL
+WHERE sample_id = <n>;`) and start again; that row keeps its scalar history and
+becomes non-assembleable.
 
 ```bash
 tinytop-agent db pre-image status
