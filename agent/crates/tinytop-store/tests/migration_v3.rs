@@ -146,7 +146,7 @@ async fn v2_fixture_with_json_rows_migrates_to_v4() {
         .expect("migrated store should close");
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 4);
+    assert_eq!(user_version(&pool).await, 5);
 
     let columns = sqlx::query("PRAGMA table_info(metric_samples)")
         .fetch_all(&pool)
@@ -343,7 +343,7 @@ async fn fresh_database_is_created_at_v4() {
         .expect("fresh store should close");
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 4);
+    assert_eq!(user_version(&pool).await, 5);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM app_events WHERE marker_type = 'schemaMigrated'",
@@ -536,7 +536,7 @@ async fn v2_fixture_with_legacy_negative_inode_counts_migrates_and_counts() {
         .expect("migrated store should close");
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 4);
+    assert_eq!(user_version(&pool).await, 5);
     let identities = sqlx::query(
         "SELECT sample_id, identity_id FROM metric_samples WHERE sample_id IN (41, 42) ORDER BY sample_id",
     )
@@ -654,7 +654,7 @@ async fn real_v1_file_copy_migrates_to_v4() {
     let total_elapsed_ms = started.elapsed().as_millis();
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 4);
+    assert_eq!(user_version(&pool).await, 5);
     assert_eq!(
         sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
             .fetch_one(&pool)

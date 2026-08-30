@@ -208,7 +208,7 @@ pre-image management:
 
 | Command | Purpose |
 | --- | --- |
-| `tinytop-agent db stats --json` | Report the unchanged raw-sample stats, `gpuAdapterCount` / `gpuSampleCount`, all four ladder tiers, archive and disk state (`freeBytes`, minimum, pressure, breach start, and last check), and OTel status including the headers environment-variable name and whether it is set (never its value) |
+| `tinytop-agent db stats --json` | Report the unchanged raw-sample stats, GPU and sensor dimension/sample counts, all four ladder tiers, archive and disk state (`freeBytes`, minimum, pressure, breach start, and last check), and OTel status including the headers environment-variable name and whether it is set (never its value) |
 | `tinytop-agent db pre-image status` | Show the canonical `<database>.pre-v0.sqlite` path, existence/size, schema version, and main-database integrity result |
 | `tinytop-agent db pre-image remove --yes` | Remove only that exact pre-image after confirmation when the main database exists, uses schema v1, and passes SQLite integrity check; otherwise refuse |
 | `tinytop-agent config export [--out FILE]` | Export the daemon settings as a versioned, secret-free JSON document; stdout is the default. File publishing uses atomic no-clobber hard links when supported; otherwise it re-checks the destination and renames, leaving a few-microsecond window in which a file created by another process could be replaced. |
@@ -264,6 +264,23 @@ For persistent background collection, install user-space systemd services:
 - Native Windows command center for the Rust daemon, including foreground lifecycle, Windows service commands, process-scoped execution-policy guidance, and a `.\tinytop.cmd` wrapper
 - Runtime-origin notice when a browser is connected to the Windows daemon instead of the WSL/Linux daemon, or vice versa
 
+## Thermals
+
+CPU thermals are opt-in and **disabled by default**. Enable them in the Settings
+page, or include `"thermal": { "enabled": true, "extraChips": [] }` in a
+`config import` document. When enabled on Linux, TinyTop records the CPU package
+and per-core temperatures exposed by `coretemp` or `k10temp`; the kernel chip
+name is kept verbatim. `thermal.extraChips` can opt another CPU thermal driver
+into the same reader.
+
+This first slice does not collect fans, PWM, power, or disk temperatures; those
+remain later sensor slices. GPU temperature already appears as
+`gpus[].temperatureC` and is deliberately not duplicated. `max` and `crit`
+thresholds are shown only when the kernel reports values in the sane
+`0 < t <= 200 C` range. WSL2 and other sensorless hosts simply show no thermal
+readings. Nothing needs to be installed and no root access is required: hwmon
+is read directly and is normally world-readable, with no `sensors` subprocess.
+
 ## Common Commands
 
 ```bash
@@ -313,7 +330,7 @@ Implementation notes:
 - The Rust Linux collector uses `procfs` and `sysinfo`; it does not shell out to `df`, `ps`, or `uname`.
 - The live collector keeps a reusable `sysinfo::System` so repeated samples avoid rebuilding all collector state from scratch.
 - Collection has three cadence classes: fast CPU, memory, swap, load, pressure, processes, and uptime refresh on every `pollIntervalMs` tick; slow filesystems refresh every `retentionLadder.detailIntervalSec`, are served from cache between checks, and carry `filesystemsCapturedAtMs`; static hostname, kernel, and distro identity is re-read on the slow tick.
-- Schema v4 stores per-tick and minute-tier process history with millisecond start times and optional GPU usage, interns commands in `process_commands`, and records per-adapter fast-tick samples in `gpu_samples`; `tinytop-agent db stats --json` reports `userVersion` and both GPU row counts.
+- Schema v5 retains the v4 process/GPU layout and adds interned `sensor_dim` identities plus raw `sensor_samples`; `tinytop-agent db stats --json` reports `userVersion`, GPU counts, and sensor counts.
 - `/api/snapshot` is answered from the daemon's latest in-memory snapshot. It returns `503 {"error":"no snapshot yet"}` only before the first collection, and the daemon collects once before binding its listener.
 - `topProcessCount` is effective from the next collection tick (default `8`); the previous hard-coded `10` is gone, and `tinytop-agent collect --json` uses the default.
 - Linux is the default supported collector feature. Native macOS and Windows collectors are present as opt-in Rust feature-gated modules for identity, CPU, memory, load equivalent, disks, and processes; Linux remains the reference implementation until those hosts receive full live-machine verification.
@@ -391,7 +408,7 @@ The project claims these loopback ports in `~/.config/fleet/ports/tinytop.toml`:
 
 ## Persistence
 
-Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API. From schema v3, the Rust daemon and Bun runtime **must not share a database path**: Bun reads and writes the legacy `metric_samples` payload column that v3 removes, and the Rust daemon does not refuse on Bun's behalf. Current schema v4 additionally stores interned GPU adapters and one `gpu_samples` row per detected adapter per fast tick; boxes without a detected GPU write neither adapter nor sample rows.
+Recent history is stored in SQLite by the Rust daemon in the default runtime. In legacy Bun split mode, the collector process owns SQLite and the dashboard process reads through the collector API. From schema v3, the Rust daemon and Bun runtime **must not share a database path**: Bun reads and writes the legacy `metric_samples` payload column that v3 removes, and the Rust daemon does not refuse on Bun's behalf. Schema v5 retains v4's interned GPU history and adds `sensor_dim` plus L1-pruned `sensor_samples`; disabled or sensorless hosts write neither sensor dimensions nor samples.
 
 In the Rust daemon, `retentionLadder` in `/api/settings` controls every ladder horizon, filesystem check cadence, and typed process sampling cadence. `retentionHours` and `rollupRetentionDays` remain in every saved document as derived compatibility mirrors for the Bun runtime, so a typed save that edits only those mirrors is overwritten from authoritative L1/L2. Legacy settings documents may still carry `snapshotJsonKeepMinutes`; Rust accepts and ignores it on both write paths, and imports warn `snapshotJsonKeepMinutes is no longer used and was ignored`. Legacy Bun split mode keeps the older manual archive/reset behavior.
 

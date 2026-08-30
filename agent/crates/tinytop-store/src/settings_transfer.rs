@@ -57,6 +57,7 @@ pub struct WouldDelete {
     pub l4_buckets: i64,
     pub process_fast_rows: i64,
     pub gpu_sample_rows: i64,
+    pub sensor_sample_rows: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -287,6 +288,9 @@ async fn would_delete(
     let gpu_sample_rows = store
         .count_gpu_rows_older_than(now_ms.saturating_sub(config.l1_keep_ms))
         .await?;
+    let sensor_sample_rows = store
+        .count_sensor_rows_older_than(now_ms.saturating_sub(config.l1_keep_ms))
+        .await?;
     Ok(WouldDelete {
         l1_rows,
         l2_buckets,
@@ -294,5 +298,6 @@ async fn would_delete(
         l4_buckets,
         process_fast_rows,
         gpu_sample_rows,
+        sensor_sample_rows,
     })
 }

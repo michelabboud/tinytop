@@ -1203,5 +1203,6 @@ fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
             gpu_percent: None,
         }],
         gpus: Vec::new(),
+        sensors: Vec::new(),
     }
 }

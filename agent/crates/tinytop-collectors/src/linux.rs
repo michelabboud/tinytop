@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     env,
     ffi::OsStr,
-    path::Path,
+    path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
@@ -24,6 +24,7 @@ use tinytop_types::{
 use crate::{
     Collector, CollectorConfig, CollectorError, CollectorResult,
     gpu::{GpuAdapter, GpuBackend, GpuScanStats, attach_gpu, detect_backend},
+    thermal::{self, ThermalSensor},
 };
 
 #[derive(Debug, Clone)]
@@ -104,6 +105,7 @@ pub struct ParsedMeminfo {
 }
 
 type GpuDetector = Box<dyn FnMut() -> Option<Box<dyn GpuBackend>> + Send>;
+const DEFAULT_THERMAL_ROOT: &str = "/sys/class/hwmon";
 
 pub struct LinuxCollector {
     previous_proc_stat_text: Option<String>,
@@ -116,6 +118,12 @@ pub struct LinuxCollector {
     gpu: Option<Box<dyn GpuBackend>>,
     gpu_adapters: Vec<GpuAdapter>,
     gpu_detector: Option<GpuDetector>,
+    thermal_sensors: Vec<ThermalSensor>,
+    thermal_root: PathBuf,
+    thermal_enabled: bool,
+    thermal_extra_chips: Vec<String>,
+    #[cfg(test)]
+    thermal_scan_calls: u64,
 }
 
 impl Default for LinuxCollector {
@@ -131,6 +139,12 @@ impl Default for LinuxCollector {
             gpu: detect_backend(),
             gpu_adapters: Vec::new(),
             gpu_detector: Some(Box::new(detect_backend)),
+            thermal_sensors: Vec::new(),
+            thermal_root: PathBuf::from(DEFAULT_THERMAL_ROOT),
+            thermal_enabled: false,
+            thermal_extra_chips: Vec::new(),
+            #[cfg(test)]
+            thermal_scan_calls: 0,
         }
     }
 }
@@ -148,6 +162,12 @@ impl LinuxCollector {
             gpu: None,
             gpu_adapters: Vec::new(),
             gpu_detector: None,
+            thermal_sensors: Vec::new(),
+            thermal_root: PathBuf::from(DEFAULT_THERMAL_ROOT),
+            thermal_enabled: false,
+            thermal_extra_chips: Vec::new(),
+            #[cfg(test)]
+            thermal_scan_calls: 0,
         }
     }
 
@@ -206,6 +226,16 @@ impl LinuxCollector {
                     self.gpu_adapters = gpu.detect();
                 }
             }
+            if self.thermal_enabled {
+                #[cfg(test)]
+                {
+                    self.thermal_scan_calls = self.thermal_scan_calls.saturating_add(1);
+                }
+                let scan = thermal::scan(&self.thermal_root, &self.thermal_extra_chips);
+                self.thermal_sensors = scan.sensors;
+            } else {
+                self.thermal_sensors.clear();
+            }
         }
 
         let fast = collect_fast_sources(
@@ -218,6 +248,11 @@ impl LinuxCollector {
             let busy = gpu.process_busy();
             (samples, busy)
         });
+        let sensors = if self.thermal_enabled {
+            thermal::read_values(&self.thermal_root, &self.thermal_sensors)
+        } else {
+            Vec::new()
+        };
         self.previous_proc_stat_text = Some(fast.current_proc_stat_text.clone());
         let cache = self
             .slow_cache
@@ -228,6 +263,7 @@ impl LinuxCollector {
         if let Some((samples, busy)) = gpu_tick {
             attach_gpu(&mut snapshot, &self.gpu_adapters, &samples, &busy);
         }
+        snapshot.sensors = sensors;
         Ok(snapshot)
     }
 }
@@ -235,6 +271,9 @@ impl LinuxCollector {
 impl Collector for LinuxCollector {
     fn configure(&mut self, config: CollectorConfig) {
         self.configure_calls = self.configure_calls.saturating_add(1);
+        self.thermal_enabled = config.thermal_enabled;
+        self.thermal_extra_chips
+            .clone_from(&config.thermal_extra_chips);
         if self.config != config {
             self.config = config;
         }
@@ -300,6 +339,7 @@ pub fn build_linux_snapshot_from_sources(
         filesystems,
         processes: parse_processes(&sources.ps_text),
         gpus: Vec::new(),
+        sensors: Vec::new(),
     })
 }
 
@@ -1297,5 +1337,121 @@ mod gpu_tests {
         assert_eq!(snapshot.gpus[1].memory_used_bytes, None);
         assert_eq!(snapshot.gpus[1].memory_total_bytes, None);
         assert_eq!(snapshot.gpus[1].temperature_c, None);
+    }
+}
+
+#[cfg(test)]
+mod thermal_tests {
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        sync::atomic::{AtomicU64, Ordering},
+        time::Instant,
+    };
+
+    use super::LinuxCollector;
+    use crate::{Collector, CollectorConfig};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let serial = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!("hexe-linux-thermal-{name}-{serial}"));
+            fs::create_dir_all(&root).expect("create Linux thermal fixture root");
+            Self { root }
+        }
+
+        fn write(&self, relative: &str, contents: &str) {
+            let path = self.root.join(relative);
+            fs::create_dir_all(path.parent().expect("fixture file parent"))
+                .expect("create fixture directory");
+            fs::write(path, contents).expect("write fixture file");
+        }
+
+        fn root(&self) -> &Path {
+            &self.root
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700));
+            fs::remove_dir_all(&self.root).expect("remove Linux thermal fixture root");
+        }
+    }
+
+    fn sheep_fixture() -> Fixture {
+        let fixture = Fixture::new("sheep");
+        fixture.write("hwmon0/name", "nvme\n");
+        fixture.write("hwmon0/temp1_input", "52850\n");
+        fixture.write("hwmon0/temp1_label", "Composite\n");
+        fixture.write("hwmon1/name", "coretemp\n");
+        for (number, label, input) in [
+            (1, "Package id 0", "54000\n"),
+            (2, "Core 0", "54000\n"),
+            (3, "Core 1", "53000\n"),
+            (4, "Core 2", "53000\n"),
+            (5, "Core 3", "53000\n"),
+        ] {
+            fixture.write(&format!("hwmon1/temp{number}_input"), input);
+            fixture.write(&format!("hwmon1/temp{number}_label"), label);
+            fixture.write(&format!("hwmon1/temp{number}_max"), "105000\n");
+            fixture.write(&format!("hwmon1/temp{number}_crit"), "105000\n");
+        }
+        fixture
+    }
+
+    #[test]
+    fn disabled_never_touches_the_hwmon_tree() {
+        let fixture = Fixture::new("disabled");
+        let blocked = fixture.root().join("blocked");
+        fs::create_dir_all(&blocked).expect("create blocked fixture path");
+        let permission_variant =
+            fs::set_permissions(fixture.root(), fs::Permissions::from_mode(0o000)).is_ok();
+
+        let mut collector = LinuxCollector::with_clock(Instant::now);
+        collector.thermal_root = if permission_variant {
+            blocked
+        } else {
+            fixture.root().join("does-not-exist")
+        };
+        collector.configure(CollectorConfig {
+            thermal_enabled: false,
+            ..CollectorConfig::default()
+        });
+
+        let first = collector.collect().expect("first disabled collection");
+        let second = collector.collect().expect("second disabled collection");
+        assert!(first.sensors.is_empty());
+        assert!(second.sensors.is_empty());
+        assert_eq!(collector.thermal_scan_calls, 0);
+        eprintln!(
+            "disabled hwmon test variant: {}",
+            if permission_variant {
+                "permission-blocked tree"
+            } else {
+                "non-existent fallback path"
+            }
+        );
+    }
+
+    #[test]
+    fn enabled_reads_the_fixture_tree() {
+        let fixture = sheep_fixture();
+        let mut collector = LinuxCollector::with_clock(Instant::now);
+        collector.thermal_root = fixture.root().to_path_buf();
+        collector.configure(CollectorConfig {
+            thermal_enabled: true,
+            ..CollectorConfig::default()
+        });
+
+        let snapshot = collector.collect().expect("enabled thermal collection");
+        assert_eq!(snapshot.sensors.len(), 5);
     }
 }

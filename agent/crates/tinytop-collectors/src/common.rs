@@ -141,6 +141,8 @@ impl SysinfoCollector {
             filesystems: slow.filesystems.clone(),
             processes,
             gpus: Vec::new(),
+            // Native macOS and Windows thermals are outside the T17 Linux slice.
+            sensors: Vec::new(),
         })
     }
 

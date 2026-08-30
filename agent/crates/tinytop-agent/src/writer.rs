@@ -738,6 +738,8 @@ fn collector_config_from(settings: &DashboardSettings) -> CollectorConfig {
     CollectorConfig {
         top_process_count,
         filesystems_interval,
+        thermal_enabled: settings.thermal.enabled,
+        thermal_extra_chips: settings.thermal.extra_chips.clone(),
     }
 }
 
@@ -2450,6 +2452,48 @@ pub(crate) mod tests {
         let fourth = collect_and_store(&state).await.expect("fourth tick");
         assert!(fourth.snapshot.processes.len() <= 3);
         assert_eq!(state.collector.lock().await.configure_calls(), 2);
+
+        changed.thermal.enabled = true;
+        state
+            .store
+            .put_settings(&changed)
+            .await
+            .expect("enabled thermal settings should persist");
+        collect_and_store(&state)
+            .await
+            .expect("thermal-enabled tick");
+        assert_eq!(state.collector.lock().await.configure_calls(), 3);
+        let applied = state
+            .collector_config
+            .lock()
+            .await
+            .clone()
+            .expect("collector config should be recorded");
+        assert!(applied.thermal_enabled);
+        assert!(applied.thermal_extra_chips.is_empty());
+
+        changed.thermal.extra_chips = vec!["cpu_thermal".to_string()];
+        state
+            .store
+            .put_settings(&changed)
+            .await
+            .expect("thermal extra-chip settings should persist");
+        collect_and_store(&state)
+            .await
+            .expect("thermal extra-chip tick");
+        assert_eq!(state.collector.lock().await.configure_calls(), 4);
+        let applied = state
+            .collector_config
+            .lock()
+            .await
+            .clone()
+            .expect("collector config should be recorded");
+        assert_eq!(applied.thermal_extra_chips, ["cpu_thermal"]);
+
+        collect_and_store(&state)
+            .await
+            .expect("unchanged thermal tick");
+        assert_eq!(state.collector.lock().await.configure_calls(), 4);
     }
 
     #[tokio::test]

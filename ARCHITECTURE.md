@@ -98,7 +98,12 @@ same slow tick for hotplug. When present, it samples DRM sysfs, readable
 `/proc/<pid>/fdinfo`, and the GPU node's hwmon on every fast tick; when absent,
 the tick has no GPU work and the snapshot omits `gpus`.
 
-The daemon task set includes collection/history maintenance, disk checking, cold archive export, and the OTel exporter. Collection publishes each freshly collected snapshot on a Tokio `watch` channel before attempting SQLite persistence; the exporter task samples the most recent value at export time, applies configured resource attributes and environment-provided headers, and never delays collection when persistence or an export fails. After persistence and maintenance, `collect_and_store` re-configures the collector only when `topProcessCount` or `detailIntervalSec` changed, so a saved setting applies on the next collection tick.
+The opt-in Linux thermal collector follows the same two-phase cadence: it
+discovers allowed hwmon sensors on the slow tick and reads their values on every
+fast tick. Stable identities are interned in `sensor_dim`, while raw values are
+stored in `sensor_samples` and pruned at the L1 horizon.
+
+The daemon task set includes collection/history maintenance, disk checking, cold archive export, and the OTel exporter. Collection publishes each freshly collected snapshot on a Tokio `watch` channel before attempting SQLite persistence; the exporter task samples the most recent value at export time, applies configured resource attributes and environment-provided headers, and never delays collection when persistence or an export fails. After persistence and maintenance, `collect_and_store` re-configures the collector only when `topProcessCount`, `detailIntervalSec`, or either thermal setting changed, so a saved setting applies on the next collection tick.
 
 The collector crate exposes `NativeCollector` behind target and Cargo feature gates:
 
@@ -279,7 +284,7 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 ```
 
-The current v4 implementation stores typed graph/query columns, per-row assembly scalars, interned host identity, and on-change filesystem/presence rows for every raw history sample. `host_identity` is unique over the eight stable identity strings; `fs_mount_events` preserves mount appearance and disappearance independently of value changes. Schema v4 also interns stable GPU identity in `gpu_adapters`, stores one nullable-metric `gpu_samples` row per detected adapter per fast tick, and stores process start time as milliseconds plus nullable GPU percent in both process tiers. The store also keeps daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
+The current v5 implementation stores typed graph/query columns, per-row assembly scalars, interned host identity, and on-change filesystem/presence rows for every raw history sample. `host_identity` is unique over the eight stable identity strings; `fs_mount_events` preserves mount appearance and disappearance independently of value changes. Schema v4's interned GPU identity and process-time layout remain unchanged; v5 adds `sensor_dim` and `sensor_samples` without rebuilding an existing table. The store also keeps daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
 
 Rust retention is the four-tier ladder described in [Tiered History Ladder](#tiered-history-ladder): each sample refreshes L2, completed buckets promote to enabled coarser tiers before finer rows are pruned, and `retentionHours` / `rollupRetentionDays` are derived compatibility mirrors of L1/L2. The legacy Bun split path still keeps raw rows until manual archive/reset.
 

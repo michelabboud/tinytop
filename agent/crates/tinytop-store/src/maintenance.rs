@@ -28,6 +28,7 @@ pub struct MaintenanceReport {
     pub detail_rows: i64,
     pub detail_rows_pruned: u64,
     pub gpu_rows: u64,
+    pub sensor_rows: u64,
     pub process_fast_rows: u64,
     pub orphan_commands: u64,
     pub expired_l4: i64,
@@ -208,6 +209,19 @@ async fn maintain_with_archive(
             }
         }
         Err(error) => record_step_error(&mut first_error, "prune GPU rows", error),
+    }
+
+    match store
+        .prune_sensor_history(now_ms.saturating_sub(config.l1_keep_ms))
+        .await
+    {
+        Ok(count) => {
+            report.sensor_rows = count;
+            if count > 0 {
+                eprintln!("history maintenance info: deleted {count} expired sensor rows");
+            }
+        }
+        Err(error) => record_step_error(&mut first_error, "prune sensor rows", error),
     }
 
     match store

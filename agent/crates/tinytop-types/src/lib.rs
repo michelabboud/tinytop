@@ -188,6 +188,29 @@ pub struct GpuSnapshot {
     pub temperature_c: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SensorKind {
+    Temp,
+    Fan,
+    Pwm,
+    Power,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorReading {
+    pub stable_id: String,
+    pub chip: String,
+    pub kind: SensorKind,
+    pub label: String,
+    pub value: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crit: Option<f64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessSnapshot {
@@ -220,11 +243,15 @@ pub struct SystemSnapshot {
     pub processes: Vec<ProcessSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gpus: Vec<GpuSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sensors: Vec<SensorReading>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadSnapshot, ProcessSnapshot, RuntimeKind, SystemSnapshot};
+    use super::{
+        LoadSnapshot, ProcessSnapshot, RuntimeKind, SensorKind, SensorReading, SystemSnapshot,
+    };
     use serde_json::json;
 
     /// Every `RuntimeKind` variant's canonical `as_str()` must equal its serde
@@ -246,6 +273,59 @@ mod tests {
                 "as_str() must match serde serialization for {kind:?}"
             );
         }
+    }
+
+    #[test]
+    fn sensor_kinds_round_trip_to_lowercase_strings() {
+        for (kind, expected) in [
+            (SensorKind::Temp, "temp"),
+            (SensorKind::Fan, "fan"),
+            (SensorKind::Pwm, "pwm"),
+            (SensorKind::Power, "power"),
+        ] {
+            let serialized = serde_json::to_string(&kind).expect("serialize sensor kind");
+            assert_eq!(serialized, format!("\"{expected}\""));
+            assert_eq!(
+                serde_json::from_str::<SensorKind>(&serialized).expect("deserialize sensor kind"),
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn sensor_reading_round_trips_non_empty_stable_id() {
+        let expected = json!({
+            "stableId": "hwmon-coretemp-0-temp1",
+            "chip": "coretemp",
+            "kind": "temp",
+            "label": "Package id 0",
+            "value": 54.0
+        });
+
+        let reading: SensorReading =
+            serde_json::from_value(expected.clone()).expect("deserialize sensor reading");
+        let serialized = serde_json::to_value(reading).expect("serialize sensor reading");
+
+        assert_eq!(serialized, expected);
+        assert_eq!(serialized["stableId"], "hwmon-coretemp-0-temp1");
+        assert_ne!(serialized["stableId"], "");
+    }
+
+    #[test]
+    fn absent_sensor_thresholds_are_omitted() {
+        let reading = SensorReading {
+            stable_id: "hwmon-coretemp-0-temp1".to_string(),
+            chip: "coretemp".to_string(),
+            kind: SensorKind::Temp,
+            label: "Package id 0".to_string(),
+            value: 54.0,
+            max: None,
+            crit: None,
+        };
+
+        let serialized = serde_json::to_value(reading).expect("serialize sensor reading");
+        assert!(serialized.get("max").is_none());
+        assert!(serialized.get("crit").is_none());
     }
 
     #[test]
@@ -404,6 +484,35 @@ mod tests {
         assert_eq!(gpu.memory_used_bytes, None);
         assert_eq!(gpu.memory_total_bytes, None);
         assert_eq!(gpu.temperature_c, None);
+    }
+
+    #[test]
+    fn sensors_are_absent_when_empty_and_default_when_missing() {
+        let base = json!({
+            "timestamp": "2026-08-30T12:00:00Z",
+            "identity": {
+                "hostname": "fixture-host", "platform": "linux", "arch": "x86_64",
+                "distro": "Fixture Linux", "kernel": "6.8.0",
+                "runtime": { "kind": "Linux", "confidence": "high", "reason": "fixture" },
+                "uptimeSeconds": 60
+            },
+            "cpu": { "usagePercent": 12.5, "cores": 4 },
+            "memory": { "totalBytes": 100, "availableBytes": 40, "usedBytes": 60, "usedPercent": 60.0 },
+            "swap": { "totalBytes": 20, "freeBytes": 15, "usedBytes": 5, "usedPercent": 25.0 },
+            "load": { "one": 0.1, "five": 0.2, "fifteen": 0.3 },
+            "pressure": { "cpu": {}, "memory": {}, "io": {} },
+            "filesystems": [], "processes": []
+        });
+
+        let snapshot: SystemSnapshot =
+            serde_json::from_value(base).expect("sensors may be absent from snapshot JSON");
+        assert!(snapshot.sensors.is_empty());
+        assert!(
+            serde_json::to_value(snapshot)
+                .expect("serialize snapshot")
+                .get("sensors")
+                .is_none()
+        );
     }
 
     #[test]

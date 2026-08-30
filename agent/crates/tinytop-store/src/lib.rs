@@ -6,6 +6,7 @@ pub mod migration;
 pub mod otel_settings;
 pub mod retention_ladder;
 pub mod settings_transfer;
+pub mod thermal_settings;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -29,7 +30,7 @@ pub use tinytop_types::SystemSnapshot;
 use tinytop_types::{
     CpuSnapshot, FilesystemSnapshot, GpuSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
     PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
-    RuntimeKind, SwapSnapshot,
+    RuntimeKind, SensorKind, SwapSnapshot,
 };
 
 pub use crate::disk::{
@@ -41,6 +42,7 @@ pub use crate::migration::pre_image_path;
 use crate::otel_settings::OtelSettings;
 pub use crate::retention_ladder::DiskPressureState;
 use crate::retention_ladder::RetentionLadder;
+use crate::thermal_settings::ThermalSettings;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +59,8 @@ pub struct StoreStats {
     pub newest_captured_at_ms: Option<i64>,
     pub gpu_adapter_count: i64,
     pub gpu_sample_count: i64,
+    pub sensor_count: i64,
+    pub sensor_sample_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +76,8 @@ pub struct DashboardSettings {
     pub retention_ladder: RetentionLadder,
     #[serde(default = "OtelSettings::default_for_serde")]
     pub otel: OtelSettings,
+    #[serde(default = "ThermalSettings::default_for_serde")]
+    pub thermal: ThermalSettings,
     #[serde(default = "default_target_database_bytes")]
     pub target_database_bytes: i64,
     pub top_process_count: i64,
@@ -123,6 +129,7 @@ impl Default for DashboardSettings {
             rollup_retention_days: 30,
             retention_ladder: RetentionLadder::default(),
             otel: OtelSettings::default(),
+            thermal: ThermalSettings::default(),
             target_database_bytes: default_target_database_bytes(),
             top_process_count: 8,
             redaction_default: false,
@@ -168,6 +175,7 @@ impl DashboardSettings {
     ) -> Result<Self, StoreError> {
         let has_retention_ladder = document.get("retentionLadder").is_some();
         let has_otel = document.get("otel").is_some();
+        let has_thermal = document.get("thermal").is_some();
         let mut settings: Self = serde_json::from_value(document).map_err(|error| {
             StoreError::Validation(format!("settings document could not be decoded: {error}"))
         })?;
@@ -190,6 +198,11 @@ impl DashboardSettings {
         if !has_otel {
             settings.otel = persisted
                 .map(|value| value.otel.clone())
+                .unwrap_or_default();
+        }
+        if !has_thermal {
+            settings.thermal = persisted
+                .map(|value| value.thermal.clone())
                 .unwrap_or_default();
         }
         Ok(settings)
@@ -219,6 +232,9 @@ impl DashboardSettings {
         }
         if previous.otel != next.otel {
             changed.push("otel");
+        }
+        if previous.thermal != next.thermal {
+            changed.push("thermal");
         }
         if previous.target_database_bytes != next.target_database_bytes {
             changed.push("targetDatabaseBytes");
@@ -331,6 +347,7 @@ impl DashboardSettings {
         )?;
         self.retention_ladder.validate(None, None)?;
         self.otel.validate()?;
+        self.thermal.validate()?;
         Ok(())
     }
 }
@@ -355,6 +372,8 @@ pub struct HistoryCoverage {
     pub archive: HistoryArchiveCoverage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otel: Option<HistoryOtelCoverage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thermal: Option<HistoryThermalCoverage>,
     pub migration: Option<JsonValue>,
 }
 
@@ -368,6 +387,15 @@ pub struct HistoryOtelCoverage {
     pub last_failure_ms: Option<i64>,
     pub failures: u64,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryThermalCoverage {
+    pub enabled: bool,
+    pub sensor_count: i64,
+    pub oldest_captured_at_ms: Option<i64>,
+    pub newest_captured_at_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -647,6 +675,7 @@ pub struct SqliteHistoryStore {
     writer_gate: Arc<WriterGate>,
     current_identity: Arc<Mutex<Option<CurrentIdentity>>>,
     gpu_adapters: Arc<Mutex<HashMap<String, CachedAdapter>>>,
+    sensor_dim: Arc<Mutex<HashMap<String, CachedSensor>>>,
     filesystem_state: Arc<Mutex<FilesystemState>>,
     filesystem_warning_last_ms: Arc<Mutex<Option<i64>>>,
     process_warning_last_ms: Arc<Mutex<Option<i64>>>,
@@ -662,6 +691,12 @@ struct CurrentIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CachedAdapter {
     adapter_id: i64,
+    last_seen_written_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedSensor {
+    sensor_id: i64,
     last_seen_written_ms: i64,
 }
 
@@ -1087,6 +1122,15 @@ fn identity_strings(snapshot: &SystemSnapshot) -> [String; 8] {
     ]
 }
 
+fn sensor_kind_storage(kind: SensorKind) -> &'static str {
+    match kind {
+        SensorKind::Temp => "temp",
+        SensorKind::Fan => "fan",
+        SensorKind::Pwm => "pwm",
+        SensorKind::Power => "power",
+    }
+}
+
 async fn upsert_mount_event(
     transaction: &mut Transaction<'_, Sqlite>,
     captured_at_ms: i64,
@@ -1170,6 +1214,7 @@ impl SqliteHistoryStore {
             writer_gate: Arc::new(WriterGate::default()),
             current_identity: Arc::new(Mutex::new(None)),
             gpu_adapters: Arc::new(Mutex::new(HashMap::new())),
+            sensor_dim: Arc::new(Mutex::new(HashMap::new())),
             filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
             filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
             process_warning_last_ms: Arc::new(Mutex::new(None)),
@@ -1213,6 +1258,7 @@ impl SqliteHistoryStore {
             writer_gate: Arc::new(WriterGate::default()),
             current_identity: Arc::new(Mutex::new(None)),
             gpu_adapters: Arc::new(Mutex::new(HashMap::new())),
+            sensor_dim: Arc::new(Mutex::new(HashMap::new())),
             filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
             filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
             process_warning_last_ms: Arc::new(Mutex::new(None)),
@@ -1275,6 +1321,25 @@ impl SqliteHistoryStore {
         *self.gpu_adapters.lock().map_err(|_| {
             StoreError::Validation("GPU adapter cache mutex is poisoned".to_string())
         })? = gpu_adapters;
+
+        let mut sensor_dim = HashMap::new();
+        for row in sqlx::query(
+            "SELECT sensor_id, stable_id, last_seen_ms FROM sensor_dim ORDER BY sensor_id",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        {
+            sensor_dim.insert(
+                row.try_get("stable_id")?,
+                CachedSensor {
+                    sensor_id: row.try_get("sensor_id")?,
+                    last_seen_written_ms: row.try_get("last_seen_ms")?,
+                },
+            );
+        }
+        *self.sensor_dim.lock().map_err(|_| {
+            StoreError::Validation("sensor dimension cache mutex is poisoned".to_string())
+        })? = sensor_dim;
 
         let mut state = FilesystemState {
             last_key_ms: sqlx::query_scalar(
@@ -1441,6 +1506,15 @@ impl SqliteHistoryStore {
         captured_at_ms: i64,
         snapshot: &SystemSnapshot,
     ) -> Result<HistorySample, StoreError> {
+        if snapshot
+            .sensors
+            .iter()
+            .any(|reading| reading.stable_id.is_empty())
+        {
+            return Err(StoreError::Validation(
+                "sensor reading carries an empty stableId".to_string(),
+            ));
+        }
         // The scheduled loop and the manual collection route may overlap. Keep
         // the cache read, typed write, and cache publication one state change.
         let _writer_state_guard = self.writer_gate.lock().await;
@@ -1487,6 +1561,20 @@ impl SqliteHistoryStore {
                     .lock()
                     .map_err(|_| {
                         StoreError::Validation("GPU adapter cache mutex is poisoned".to_string())
+                    })?
+                    .clone(),
+                )
+        };
+        let cached_sensor_dim = if snapshot.sensors.is_empty() {
+            None
+        } else {
+            Some(
+                self.sensor_dim
+                    .lock()
+                    .map_err(|_| {
+                        StoreError::Validation(
+                            "sensor dimension cache mutex is poisoned".to_string(),
+                        )
                     })?
                     .clone(),
             )
@@ -1767,6 +1855,82 @@ impl SqliteHistoryStore {
                 .await?;
             }
         }
+        let mut next_sensor_dim = cached_sensor_dim;
+        if let Some(sensors) = next_sensor_dim.as_mut() {
+            for reading in &snapshot.sensors {
+                let cached = if let Some(cached) = sensors.get(&reading.stable_id).copied() {
+                    if captured_at_ms.saturating_sub(cached.last_seen_written_ms) >= 60_000 {
+                        sqlx::query(
+                            r#"
+                            UPDATE sensor_dim
+                            SET label = ?, max_c = ?, crit_c = ?, last_seen_ms = ?
+                            WHERE sensor_id = ?
+                            "#,
+                        )
+                        .bind(&reading.label)
+                        .bind(reading.max)
+                        .bind(reading.crit)
+                        .bind(captured_at_ms)
+                        .bind(cached.sensor_id)
+                        .execute(&mut *transaction)
+                        .await?;
+                        let updated = CachedSensor {
+                            last_seen_written_ms: captured_at_ms,
+                            ..cached
+                        };
+                        sensors.insert(reading.stable_id.clone(), updated);
+                        updated
+                    } else {
+                        cached
+                    }
+                } else {
+                    sqlx::query(
+                        r#"
+                        INSERT OR IGNORE INTO sensor_dim (
+                          stable_id, chip, kind, label, max_c, crit_c,
+                          first_seen_ms, last_seen_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        "#,
+                    )
+                    .bind(&reading.stable_id)
+                    .bind(&reading.chip)
+                    .bind(sensor_kind_storage(reading.kind))
+                    .bind(&reading.label)
+                    .bind(reading.max)
+                    .bind(reading.crit)
+                    .bind(captured_at_ms)
+                    .bind(captured_at_ms)
+                    .execute(&mut *transaction)
+                    .await?;
+                    let row = sqlx::query(
+                        "SELECT sensor_id, last_seen_ms FROM sensor_dim WHERE stable_id = ?",
+                    )
+                    .bind(&reading.stable_id)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+                    let cached = CachedSensor {
+                        sensor_id: row.try_get("sensor_id")?,
+                        last_seen_written_ms: row.try_get("last_seen_ms")?,
+                    };
+                    sensors.insert(reading.stable_id.clone(), cached);
+                    cached
+                };
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO sensor_samples (captured_at_ms, sensor_id, value)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(captured_at_ms, sensor_id) DO UPDATE SET
+                      value = excluded.value
+                    "#,
+                )
+                .bind(captured_at_ms)
+                .bind(cached.sensor_id)
+                .bind(reading.value)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
         transaction.commit().await?;
         *self.current_identity.lock().map_err(|_| {
             StoreError::Validation("identity cache mutex is poisoned".to_string())
@@ -1781,6 +1945,11 @@ impl SqliteHistoryStore {
             *self.gpu_adapters.lock().map_err(|_| {
                 StoreError::Validation("GPU adapter cache mutex is poisoned".to_string())
             })? = adapters;
+        }
+        if let Some(sensors) = next_sensor_dim {
+            *self.sensor_dim.lock().map_err(|_| {
+                StoreError::Validation("sensor dimension cache mutex is poisoned".to_string())
+            })? = sensors;
         }
 
         if filesystem_stamp_regressed && let Some(last_key_ms) = previous_fs_state.last_key_ms {
@@ -2624,6 +2793,7 @@ impl SqliteHistoryStore {
                             .get(&captured_at_ms)
                             .cloned()
                             .unwrap_or_default(),
+                        sensors: Vec::new(),
                     },
                 })
             })
@@ -2931,7 +3101,9 @@ impl SqliteHistoryStore {
               MIN(captured_at_ms) AS oldest_captured_at_ms,
               MAX(captured_at_ms) AS newest_captured_at_ms,
               (SELECT COUNT(*) FROM gpu_adapters) AS gpu_adapter_count,
-              (SELECT COUNT(*) FROM gpu_samples) AS gpu_sample_count
+              (SELECT COUNT(*) FROM gpu_samples) AS gpu_sample_count,
+              (SELECT COUNT(*) FROM sensor_dim) AS sensor_count,
+              (SELECT COUNT(*) FROM sensor_samples) AS sensor_sample_count
             FROM metric_samples
             "#,
         )
@@ -2944,6 +3116,8 @@ impl SqliteHistoryStore {
             newest_captured_at_ms: row.try_get::<Option<i64>, _>("newest_captured_at_ms")?,
             gpu_adapter_count: row.try_get("gpu_adapter_count")?,
             gpu_sample_count: row.try_get("gpu_sample_count")?,
+            sensor_count: row.try_get("sensor_count")?,
+            sensor_sample_count: row.try_get("sensor_sample_count")?,
         })
     }
 
@@ -2953,6 +3127,29 @@ impl SqliteHistoryStore {
     ) -> Result<HistoryCoverage, StoreError> {
         settings.validate()?;
         let stats = self.stats().await?;
+        let thermal = if settings.thermal.enabled
+            || stats.sensor_count > 0
+            || stats.sensor_sample_count > 0
+        {
+            let row = sqlx::query(
+                r#"
+                SELECT
+                  MIN(captured_at_ms) AS oldest_captured_at_ms,
+                  MAX(captured_at_ms) AS newest_captured_at_ms
+                FROM sensor_samples
+                "#,
+            )
+            .fetch_one(&self.pool)
+            .await?;
+            Some(HistoryThermalCoverage {
+                enabled: settings.thermal.enabled,
+                sensor_count: stats.sensor_count,
+                oldest_captured_at_ms: row.try_get("oldest_captured_at_ms")?,
+                newest_captured_at_ms: row.try_get("newest_captured_at_ms")?,
+            })
+        } else {
+            None
+        };
         let row = sqlx::query(
             r#"
             SELECT
@@ -3080,6 +3277,7 @@ impl SqliteHistoryStore {
                 },
             },
             otel: None,
+            thermal,
             migration,
         })
     }
@@ -3100,6 +3298,14 @@ impl SqliteHistoryStore {
 
     pub async fn prune_gpu_history(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
         let result = sqlx::query("DELETE FROM gpu_samples WHERE captured_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
+    pub async fn prune_sensor_history(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+        let result = sqlx::query("DELETE FROM sensor_samples WHERE captured_at_ms < ?")
             .bind(cutoff_ms)
             .execute(&self.pool)
             .await?;
@@ -3148,6 +3354,15 @@ impl SqliteHistoryStore {
     pub async fn count_gpu_rows_older_than(&self, cutoff_ms: i64) -> Result<i64, StoreError> {
         Ok(
             sqlx::query_scalar("SELECT COUNT(*) FROM gpu_samples WHERE captured_at_ms < ?")
+                .bind(cutoff_ms)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    pub async fn count_sensor_rows_older_than(&self, cutoff_ms: i64) -> Result<i64, StoreError> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM sensor_samples WHERE captured_at_ms < ?")
                 .bind(cutoff_ms)
                 .fetch_one(&self.pool)
                 .await?,
@@ -4117,4 +4332,387 @@ fn default_pressure_warn() -> i64 {
 
 fn default_pressure_critical() -> i64 {
     25
+}
+
+#[cfg(test)]
+mod thermal_store_tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use serde_json::json;
+    use sqlx::SqlitePool;
+    use tinytop_types::{SensorKind, SensorReading};
+
+    use super::*;
+    use crate::{
+        maintenance::{LadderConfig, maintain_with_config},
+        settings_transfer::{MAX_CONFIG_VERSION, export_document, plan_import},
+    };
+
+    const DAY_MS: i64 = 86_400_000;
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct TempDatabase {
+        dir: PathBuf,
+        url: String,
+    }
+
+    impl TempDatabase {
+        fn new(label: &str) -> Self {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time follows epoch")
+                .as_nanos();
+            let dir = std::env::temp_dir().join(format!(
+                "hexe-thermal-store-{label}-{stamp}-{}",
+                TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&dir).expect("fixture directory");
+            Self {
+                url: format!("sqlite://{}", dir.join("history.sqlite").display()),
+                dir,
+            }
+        }
+
+        async fn store(&self) -> SqliteHistoryStore {
+            SqliteHistoryStore::connect(&self.url)
+                .await
+                .expect("fixture store")
+        }
+
+        async fn pool(&self) -> SqlitePool {
+            SqlitePool::connect(&self.url)
+                .await
+                .expect("verification pool")
+        }
+    }
+
+    impl Drop for TempDatabase {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.dir).ok();
+        }
+    }
+
+    fn sensor(stable_id: &str, label: &str, value: f64) -> SensorReading {
+        SensorReading {
+            stable_id: stable_id.to_string(),
+            chip: "coretemp".to_string(),
+            kind: SensorKind::Temp,
+            label: label.to_string(),
+            value,
+            max: Some(105.0),
+            crit: Some(105.0),
+        }
+    }
+
+    fn snapshot(sensors: Vec<SensorReading>) -> SystemSnapshot {
+        let mut snapshot: SystemSnapshot = serde_json::from_value(json!({
+            "timestamp": "2026-08-30T12:00:00Z",
+            "identity": {
+                "hostname": "fixture-host",
+                "platform": "linux",
+                "arch": "x86_64",
+                "distro": "Fixture Linux",
+                "kernel": "6.8.0",
+                "runtime": {"kind": "Linux", "confidence": "high", "reason": "fixture"},
+                "uptimeSeconds": 1
+            },
+            "cpu": {"usagePercent": 10.0, "cores": 4},
+            "memory": {
+                "totalBytes": 100, "availableBytes": 50, "usedBytes": 50,
+                "usedPercent": 50.0
+            },
+            "swap": {
+                "totalBytes": 0, "freeBytes": 0, "usedBytes": 0,
+                "usedPercent": 0.0
+            },
+            "load": {"one": 0.1, "five": 0.1, "fifteen": 0.1},
+            "pressure": {"cpu": {}, "memory": {}, "io": {}},
+            "filesystems": [],
+            "processes": []
+        }))
+        .expect("snapshot fixture");
+        snapshot.sensors = sensors;
+        snapshot
+    }
+
+    async fn count(pool: &SqlitePool, table: &str) -> i64 {
+        let query = match table {
+            "metric_samples" => "SELECT COUNT(*) FROM metric_samples",
+            "sensor_dim" => "SELECT COUNT(*) FROM sensor_dim",
+            "sensor_samples" => "SELECT COUNT(*) FROM sensor_samples",
+            other => panic!("unsupported table {other}"),
+        };
+        sqlx::query_scalar(query)
+            .fetch_one(pool)
+            .await
+            .expect("row count")
+    }
+
+    #[tokio::test]
+    async fn sensor_rows_are_interned_then_reused() {
+        // Break caught: a stable sensor creates a new dimension row per fast tick.
+        let store = SqliteHistoryStore::connect("sqlite::memory:")
+            .await
+            .expect("store");
+        for captured_at_ms in [1_000, 2_500] {
+            store
+                .insert_snapshot(
+                    captured_at_ms,
+                    &snapshot(vec![sensor(
+                        "hwmon-coretemp-0-temp1",
+                        "Package id 0",
+                        55.0,
+                    )]),
+                )
+                .await
+                .expect("thermal tick");
+        }
+        assert_eq!(count(&store.pool, "sensor_dim").await, 1);
+        assert_eq!(count(&store.pool, "sensor_samples").await, 2);
+    }
+
+    #[tokio::test]
+    async fn sensor_ids_survive_a_reconnect() {
+        // Break caught: the sensor cache is not primed and reconnect forks the dimension.
+        let fixture = TempDatabase::new("reconnect");
+        let store = fixture.store().await;
+        store
+            .insert_snapshot(
+                1_000,
+                &snapshot(vec![sensor(
+                    "hwmon-coretemp-0-temp1",
+                    "Package id 0",
+                    55.0,
+                )]),
+            )
+            .await
+            .expect("first tick");
+        let pool = fixture.pool().await;
+        let before: i64 = sqlx::query_scalar("SELECT sensor_id FROM sensor_dim")
+            .fetch_one(&pool)
+            .await
+            .expect("sensor id before reconnect");
+        pool.close().await;
+        store.close().await.expect("close first store");
+
+        let store = fixture.store().await;
+        store
+            .insert_snapshot(
+                2_500,
+                &snapshot(vec![sensor(
+                    "hwmon-coretemp-0-temp1",
+                    "Package id 0",
+                    56.0,
+                )]),
+            )
+            .await
+            .expect("second tick");
+        let pool = fixture.pool().await;
+        let after: i64 = sqlx::query_scalar("SELECT sensor_id FROM sensor_dim")
+            .fetch_one(&pool)
+            .await
+            .expect("sensor id after reconnect");
+        assert_eq!(after, before);
+        assert_eq!(count(&pool, "sensor_dim").await, 1);
+    }
+
+    #[tokio::test]
+    async fn sensor_last_seen_is_minute_bounded_and_refreshes_metadata() {
+        // Break caught: every tick dirties the dimension page or metadata never refreshes.
+        let store = SqliteHistoryStore::connect("sqlite::memory:")
+            .await
+            .expect("store");
+        store
+            .insert_snapshot(
+                0,
+                &snapshot(vec![sensor(
+                    "hwmon-coretemp-0-temp1",
+                    "Package id 0",
+                    55.0,
+                )]),
+            )
+            .await
+            .expect("first tick");
+        let mut within_minute = sensor("hwmon-coretemp-0-temp1", "Renamed too early", 56.0);
+        within_minute.max = Some(100.0);
+        store
+            .insert_snapshot(59_000, &snapshot(vec![within_minute]))
+            .await
+            .expect("within-minute tick");
+        let row: (i64, String, Option<f64>) =
+            sqlx::query_as("SELECT last_seen_ms, label, max_c FROM sensor_dim")
+                .fetch_one(&store.pool)
+                .await
+                .expect("dimension before minute");
+        assert_eq!(row, (0, "Package id 0".to_string(), Some(105.0)));
+
+        let mut after_minute = sensor("hwmon-coretemp-0-temp1", "Package", 57.0);
+        after_minute.max = Some(91.0);
+        after_minute.crit = Some(103.0);
+        store
+            .insert_snapshot(61_000, &snapshot(vec![after_minute]))
+            .await
+            .expect("after-minute tick");
+        let row: (i64, String, Option<f64>, Option<f64>) =
+            sqlx::query_as("SELECT last_seen_ms, label, max_c, crit_c FROM sensor_dim")
+                .fetch_one(&store.pool)
+                .await
+                .expect("dimension after minute");
+        assert_eq!(
+            row,
+            (61_000, "Package".to_string(), Some(91.0), Some(103.0))
+        );
+    }
+
+    #[tokio::test]
+    async fn sensor_rows_prune_at_l1_but_dimension_survives() {
+        // Break caught: maintenance skips thermal rows or deletes their stable dimension.
+        let store = SqliteHistoryStore::connect("sqlite::memory:")
+            .await
+            .expect("store");
+        for captured_at_ms in [0, 100] {
+            store
+                .insert_snapshot(
+                    captured_at_ms,
+                    &snapshot(vec![sensor(
+                        "hwmon-coretemp-0-temp1",
+                        "Package id 0",
+                        55.0,
+                    )]),
+                )
+                .await
+                .expect("thermal tick");
+        }
+        let config = LadderConfig {
+            l1_keep_ms: 50,
+            l2_keep_ms: 365 * DAY_MS,
+            l3: None,
+            l4: None,
+            detail_interval_ms: 60_000,
+            process_fast_keep_ms: DAY_MS,
+            poll_interval_ms: 1_500,
+        };
+        let report = maintain_with_config(&store, &config, 100)
+            .await
+            .expect("maintenance");
+        assert_eq!(report.sensor_rows, 1);
+        assert_eq!(count(&store.pool, "sensor_samples").await, 1);
+        assert_eq!(count(&store.pool, "sensor_dim").await, 1);
+    }
+
+    #[tokio::test]
+    async fn would_delete_counts_sensor_rows() {
+        // Break caught: shrinking L1 silently omits thermal rows from the import preview.
+        let store = SqliteHistoryStore::connect("sqlite::memory:")
+            .await
+            .expect("store");
+        store
+            .insert_snapshot(
+                0,
+                &snapshot(vec![sensor(
+                    "hwmon-coretemp-0-temp1",
+                    "Package id 0",
+                    55.0,
+                )]),
+            )
+            .await
+            .expect("thermal tick");
+        let mut candidate = DashboardSettings::default();
+        candidate.retention_ladder.l1.keep_days = 3;
+        let document = json!({
+            "tinytopConfigVersion": MAX_CONFIG_VERSION,
+            "exportedAtMs": 1,
+            "agentVersion": "test",
+            "settings": candidate
+        });
+        let plan = plan_import(&store, &document, 4 * DAY_MS)
+            .await
+            .expect("import plan");
+        assert!(plan.valid, "{:?}", plan.errors);
+        assert_eq!(plan.would_delete.sensor_sample_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn empty_sensors_write_no_sensor_rows() {
+        // Break caught: absence locks the sensor cache or creates placeholder rows.
+        let store = SqliteHistoryStore::connect("sqlite::memory:")
+            .await
+            .expect("store");
+        let cache = Arc::clone(&store.sensor_dim);
+        std::thread::spawn(move || {
+            let _guard = cache.lock().expect("sensor cache lock");
+            panic!("poison sensor cache for empty-path proof");
+        })
+        .join()
+        .expect_err("fixture thread should poison the cache");
+        store
+            .insert_snapshot(1_000, &snapshot(Vec::new()))
+            .await
+            .expect("sensorless tick");
+        assert_eq!(count(&store.pool, "sensor_dim").await, 0);
+        assert_eq!(count(&store.pool, "sensor_samples").await, 0);
+    }
+
+    #[tokio::test]
+    async fn empty_stable_id_is_refused_without_rows() {
+        // Break caught: malformed readings collapse into one empty-id dimension.
+        let store = SqliteHistoryStore::connect("sqlite::memory:")
+            .await
+            .expect("store");
+        let error = store
+            .insert_snapshot(1_000, &snapshot(vec![sensor("", "Package id 0", 55.0)]))
+            .await
+            .expect_err("empty stableId must be refused");
+        assert_eq!(
+            error.to_string(),
+            "sensor reading carries an empty stableId"
+        );
+        assert_eq!(count(&store.pool, "metric_samples").await, 0);
+        assert_eq!(count(&store.pool, "sensor_dim").await, 0);
+        assert_eq!(count(&store.pool, "sensor_samples").await, 0);
+    }
+
+    #[tokio::test]
+    async fn sensor_values_never_appear_in_coverage_stats_or_export() {
+        // Break caught: a raw thermal value escapes the sample table through metadata APIs.
+        let store = SqliteHistoryStore::connect("sqlite::memory:")
+            .await
+            .expect("store");
+        store
+            .insert_snapshot(
+                1_000,
+                &snapshot(vec![sensor(
+                    "hwmon-coretemp-0-temp1",
+                    "Package id 0",
+                    77.25,
+                )]),
+            )
+            .await
+            .expect("thermal tick");
+        let mut settings = DashboardSettings::default();
+        settings.thermal.enabled = true;
+        let coverage_json = serde_json::to_string(
+            &store
+                .history_coverage(&settings)
+                .await
+                .expect("coverage"),
+        )
+        .expect("coverage JSON");
+        let stats_json = serde_json::to_string(&store.stats().await.expect("stats"))
+            .expect("stats JSON");
+        let export_json = serde_json::to_string(&export_document(&settings, 2_000, "test"))
+            .expect("export JSON");
+        for (surface, value) in [
+            ("coverage", coverage_json),
+            ("db stats", stats_json),
+            ("export", export_json),
+        ] {
+            assert!(!value.contains("77.25"), "value escaped through {surface}");
+        }
+    }
 }

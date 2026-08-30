@@ -173,7 +173,7 @@ async fn fresh_database_is_created_at_schema_version_4() {
     drop(store);
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 4);
+    assert_eq!(schema_version(&pool).await, 5);
     for table in [
         "metric_rollups_5m",
         "metric_rollups_1h",
@@ -688,6 +688,7 @@ fn fixture_snapshot() -> SystemSnapshot {
             gpu_percent: None,
         }],
         gpus: Vec::new(),
+        sensors: Vec::new(),
     }
 }
 
@@ -706,7 +707,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
     pre_image_pool.close().await;
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 4);
+    assert_eq!(schema_version(&pool).await, 5);
     let cutoff_ms = seeded.now_ms - SNAPSHOT_JSON_KEEP_MS;
     let recent_assembleable_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= ? AND identity_id IS NOT NULL",

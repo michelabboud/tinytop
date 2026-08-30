@@ -1222,5 +1222,6 @@ fn snapshot(captured_at_ms: i64, cpu: f64) -> SystemSnapshot {
             gpu_percent: None,
         }],
         gpus: Vec::new(),
+        sensors: Vec::new(),
     }
 }

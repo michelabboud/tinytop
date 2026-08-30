@@ -131,6 +131,7 @@ fn snapshot(stamp: Option<i64>) -> SystemSnapshot {
             })
             .collect(),
         gpus: Vec::new(),
+        sensors: Vec::new(),
     }
 }
 

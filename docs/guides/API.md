@@ -191,6 +191,17 @@ Response shape:
       "temperatureC": 44.0
     }
   ],
+  "sensors": [
+    {
+      "stableId": "hwmon-coretemp-0-temp1",
+      "chip": "coretemp",
+      "kind": "temp",
+      "label": "Package id 0",
+      "value": 54.0,
+      "max": 105.0,
+      "crit": 105.0
+    }
+  ],
   "processes": [
     {
       "pid": 4242,
@@ -205,6 +216,14 @@ Response shape:
 ```
 
 The example above is shortened. `filesystemsCapturedAtMs` is Unix time in milliseconds and can be older than `timestamp` between filesystem checks. `cpu.times` is optional: it is present on the Linux collector and absent on the sysinfo-based macOS/Windows collectors. Filesystem rows and pressure data are included when present, `load.runnable`, `load.totalThreads`, and `load.lastPid` are omitted when their collector has no source, and `processes.length` is at most the configured `topProcessCount`. `gpus` is absent when no adapter is detected. Each GPU row always carries `id`, `vendor`, `name`, and `driver`; its metric fields are absent when unavailable. `busyPercent` is absent on the first fdinfo tick, on proprietary-NVIDIA identity-only adapters, and whenever the selected source cannot report it. On Linux, fdinfo-derived adapter busy is a lower bound over processes readable by the daemon's user, and `processes[].gpuPercent` covers only those readable processes; `gpuPercent` is absent when no per-process source is available.
+
+`sensors` is present only when non-empty. T17 emits CPU temperature rows with
+`kind: "temp"`; `max` and `crit` are absent when the kernel omits them or
+reports an implausible threshold. `stableId` is the stable per-sensor key for a
+chart series: it remains constant across daemon restarts and kernel relabels,
+and never contains the unstable `hwmonN` directory index. Its grammar is
+`hwmon-<chip>-<same-name-occurrence>-temp<N>`; the occurrence is the zero-based
+count among chips with that trimmed name in sorted hwmon-path order.
 
 ### GET /api/settings
 
@@ -229,6 +248,7 @@ Response:
   "targetDatabaseBytes": 134217728,
   "topProcessCount": 8,
   "redactionDefault": false,
+  "thermal": { "enabled": false, "extraChips": [] },
   "retentionLadder": {
     "l1": { "keepDays": 3 },
     "l2": { "keepDays": 30 },
@@ -282,7 +302,7 @@ The Settings dialog separates browser-local choices from daemon defaults:
 
 ### POST /api/settings/import
 
-Validates and applies a versioned settings envelope. With `?dryRun=true`, the endpoint performs no write and returns validation errors, warnings, changed keys, and `wouldDelete`. The deletion preview includes `l1Rows`, each enabled rollup tier, `processFastRows`, archive movement, and `gpuSampleRows`; GPU rows use the candidate L1 horizon, and an absent `gpuSampleRows` from an older daemon is equivalent to zero.
+Validates and applies a versioned settings envelope. With `?dryRun=true`, the endpoint performs no write and returns validation errors, warnings, changed keys, and `wouldDelete`. The deletion preview includes `l1Rows`, each enabled rollup tier, `processFastRows`, archive movement, `gpuSampleRows`, and `sensorSampleRows`; GPU and sensor rows use the candidate L1 horizon, and either absent field from an older daemon is equivalent to zero.
 
 ### GET /api/history
 
@@ -501,6 +521,7 @@ Response:
     { "tier": "l4", "enabled": true, "keepDays": 730, "resolutionMs": 3600000, "bucketCount": 1, "oldestMs": 1782292546568, "newestMs": 1782296146568 }
   ],
   "detailIntervalSec": 60,
+  "thermal": { "enabled": true, "sensorCount": 5, "oldestCapturedAtMs": 1782292546568, "newestCapturedAtMs": 1782296146568 },
   "disk": { "freeBytes": null, "minFreeBytes": 5368709120, "pressure": false, "lastCheckMs": null },
   "archive": {
     "queryable": { "enabled": false, "path": "history-archive.sqlite", "bucketCount": 0, "oldestMs": null, "newestMs": null },
@@ -510,11 +531,11 @@ Response:
 }
 ```
 
-`detailIntervalSec` is the filesystem check interval in seconds (`15`–`3,600`); cached filesystem rows are served between checks.
+`detailIntervalSec` is the filesystem check interval in seconds (`15`–`3,600`); cached filesystem rows are served between checks. `thermal` is absent until thermals have been enabled or sensor rows exist; it reports only enablement, counts, and time bounds, never sensor values.
 
 ### CLI: `db stats --json`
 
-`tinytop-agent db stats --json` reports the main database schema and ladder state. Its flattened store fields include `gpuAdapterCount` and `gpuSampleCount` alongside the existing raw-sample counts, bounds, `userVersion`, tier, archive, disk, and OTel state. Both GPU counts are zero on a fresh database or a host where no adapter was detected.
+`tinytop-agent db stats --json` reports the main database schema and ladder state. Its flattened store fields include `gpuAdapterCount`, `gpuSampleCount`, `sensorCount`, and `sensorSampleCount` alongside the existing raw-sample counts, bounds, `userVersion`, tier, archive, disk, and OTel state. These are presence/count fields only; no sensor value is included.
 
 ### GET /vendor/echarts.min.js
 

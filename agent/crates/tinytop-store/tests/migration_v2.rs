@@ -117,7 +117,7 @@ async fn fresh_database_at_v4_keeps_the_v2_process_dictionary() {
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("fresh database should connect");
-    assert_eq!(store.user_version().await.expect("version should read"), 4);
+    assert_eq!(store.user_version().await.expect("version should read"), 5);
     store.close().await.expect("store should close");
 
     let pool = fixture.raw_pool().await;
@@ -157,7 +157,7 @@ async fn v1_fixture_with_three_commands_migrates_through_v2_to_v4() {
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("v1 database should migrate");
-    assert_eq!(store.user_version().await.expect("version should read"), 4);
+    assert_eq!(store.user_version().await.expect("version should read"), 5);
     store.close().await.expect("store should close");
 
     let pool = fixture.raw_pool().await;
@@ -305,7 +305,7 @@ async fn v1_fixture_with_an_index_on_command_refuses_and_leaves_the_file_untouch
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("migration should succeed after removing the probe index");
-    assert_eq!(store.user_version().await.expect("version should read"), 4);
+    assert_eq!(store.user_version().await.expect("version should read"), 5);
     store.close().await.expect("store should close");
     let pool = fixture.raw_pool().await;
     assert_eq!(marker_count(&pool).await, 1);
