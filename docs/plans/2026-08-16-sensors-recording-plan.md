@@ -128,3 +128,55 @@ stuck after a real attempt, looping, or you'd be guessing — reply
 
 Voltages/currents · alerting/notifications · cross-machine aggregation ·
 public binding · netdata-style per-second granularity (existing poll cadence).
+
+---
+
+## Amendment 2026-08-30 — Slice 1 is Task 17 (thermals), and it is OPT-IN
+
+**Michel's order 2026-08-30 04:1xZ, verbatim: "make it opt in option".** This plan is
+no longer executed as one lane. It is sliced, and **Slice 1 = Task 17 (T17) of the
+Phase 5 ladder work**: CPU-chip temperatures only. Everything below amends the plan
+text above; where the two disagree, this amendment wins. The measured inputs are
+`docs/fleet/tinytop/2026-08-30-t17-fact-sheet.md` (Fabulous repo) and the rulings are
+**ADR 0026** (Proposed — decisions 1, 2 and 6 await Michel's ruling before dispatch).
+
+- **(a) Scope of slice 1.** Temperatures from CPU chips only — chips whose hwmon `name`
+  is `coretemp` or `k10temp`, plus any name in the new `thermal.extraChips` setting.
+  **Fans, PWM, power and disk temps (`drivetemp`, `nvme`) stay in later slices**, and
+  `amdgpu` is excluded because its temperature already ships as `gpus[].temperatureC`
+  since 0.5.4 (`gpu/linux.rs:532-533`) — the allow-list makes that structural rather
+  than a subtraction the reader must verify.
+- **(b) Opt-in, default OFF.** New top-level settings block `thermal.enabled` (default
+  `false`) in the ADR 0015 `otel` mould, with `thermal.extraChips` (default `[]`).
+  **Disabled means hwmon is never read** — no `read_dir`, no snapshot field, no rows.
+  This is new: the plan above assumed the feature was always on.
+- **(c) Storage — the plan's `sensor_dim` / `sensor_samples` split stands, with two
+  amendments (ADR 0026 decision 1).** The dimension is interned with an INTEGER
+  surrogate key plus a `stable_id TEXT UNIQUE` (the ADR 0025 `gpu_adapters` pattern,
+  which did not exist when this plan was written), and `stable_id` is
+  `hwmon-<chip>-<k>-temp<N>` — **never the `hwmonN` directory index**, which is not
+  stable across hosts or boots (`coretemp` is `hwmon1` on sheep, `hwmon0` on trashcan).
+  Thresholds (`max_c`, `crit_c`) live in the dimension, not on every sample row.
+- **(d) `sensor_rollups_1m` is NOT built in slice 1.** `sensor_samples` is a raw tier
+  pruned at the L1 horizon beside `gpu_samples` (`maintenance.rs:201`), per ADR 0025
+  decision 3's ruling — chart it first; a rollup tier is backlog. The plan's
+  "pruned by the SAME saved retention/rollup windows" becomes "pruned at the L1
+  horizon", which is that sentence's raw half.
+- **(e) The contract is unchanged and adopted verbatim:** `sensors: SensorReading[]`
+  with `kind: "temp"|"fan"|"pwm"|"power"`. Slice 1 emits only `"temp"`. The other
+  variants exist so later slices are pure additions — no rename, no migration.
+- **(f) Thresholds may be absent or nonsense.** Report `max`/`crit` only when present
+  AND `0 < t ≤ 200 °C`; sheep's `nvme temp2_max` = 65261850 m°C is the driver's "no
+  limit" sentinel and `amdgpu` edge has no `_max` at all. A chip with an EMPTY `name`
+  file exists (trashcan `hwmon1`) — skip it and count it, never label it `""`.
+- **(g) The API routes of the plan above are deferred.** Slice 1 ships the snapshot
+  field, the coverage block (`HistoryCoverage.thermal`) and `db stats` counts.
+  `GET /api/sensors` and `GET /api/sensors/points` land with the first slice that has
+  more than one sensor kind to serve.
+- **(h) Dashboard.** Its own `section.panel` after the GPU panel, hidden when
+  `sensors` is empty or absent — not a fifth overview gauge (the grid is
+  `repeat(4, …)`; ADR 0025 decision 6 measured this) and not a drawer. The Bun runtime
+  gains no collector in slice 1 and hides the panel.
+- **(i) WSL degradation is unchanged** and is the fleet's own case: this box has no
+  `/sys/class/hwmon` at all. `sensors: []`, panel hidden, tested against a fixture.
+- **(j) Step 7's "ADR: dynamic sensor schema" is satisfied by ADR 0026.**
