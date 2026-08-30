@@ -833,6 +833,21 @@ describe("settings transfer plan description", () => {
     ).toEqual(["5 L2 buckets", "also changes: defaultTheme"]);
   });
 
+  test("describes GPU rows deleted by a retention ladder change", () => {
+    const lines = describeImportPlan(
+      {
+        wouldDelete: { gpuSampleRows: 1_200 },
+        changedKeys: ["retentionLadder"],
+        warnings: [],
+      },
+      ladder(),
+      { retentionLadder: ladder() },
+    );
+
+    expect(lines).toEqual(["1,200 GPU rows deleted"]);
+    expect(lines).not.toContain("retention ladder changes — no stored history is affected");
+  });
+
   test("does not add the ladder line when a transition describes it", () => {
     const previous = ladder();
     const candidate = ladder();
@@ -1034,6 +1049,27 @@ describe("settings transfer plan description", () => {
           processFastRows: 0,
           snapshotJsonRows: 90,
         },
+      }),
+    ).toBe(true);
+  });
+
+  test("accepts dry-run plans with or without the additive GPU deletion count", () => {
+    const legacyPlan = {
+      valid: true,
+      wouldDelete: {
+        l1Rows: 0,
+        l2Buckets: 0,
+        l3Buckets: 0,
+        l4Buckets: 0,
+        processFastRows: 0,
+      },
+    };
+
+    expect(isValidImportPlan(legacyPlan)).toBe(true);
+    expect(
+      isValidImportPlan({
+        ...legacyPlan,
+        wouldDelete: { ...legacyPlan.wouldDelete, gpuSampleRows: 0 },
       }),
     ).toBe(true);
   });

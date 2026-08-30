@@ -176,6 +176,17 @@
           </article>
         </section>
 
+        <section class="panel gpu-panel" id="gpu-panel" data-section="overview" aria-label="GPU" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>GPU</h2>
+              <p>Detected adapters, sampled every poll.</p>
+            </div>
+            <span class="mini-stat" id="gpu-count">0 adapters</span>
+          </div>
+          <ul class="gpu-adapters" id="gpu-adapters"></ul>
+        </section>
+
         <section class="panel history-panel" id="history" data-section="history">
           <div class="section-heading">
             <div>
@@ -362,6 +373,7 @@
                   <th scope="col"><button type="button" data-process-sort="cpu">CPU</button></th>
                   <th scope="col"><button type="button" data-process-sort="memory">RAM</button></th>
                   <th scope="col"><button type="button" data-process-sort="rss">RSS</button></th>
+                  <th scope="col" class="gpu-cell"><button type="button" data-process-sort="gpu">GPU</button></th>
                   <th scope="col">Details</th>
                 </tr>
               </thead>
@@ -706,6 +718,7 @@
             <div><span class="label">CPU</span><strong id="process-detail-cpu">-</strong></div>
             <div><span class="label">RAM</span><strong id="process-detail-memory">-</strong></div>
             <div><span class="label">RSS</span><strong id="process-detail-rss">-</strong></div>
+            <div><span class="label">GPU</span><strong id="process-detail-gpu">—</strong></div>
           </div>
           <canvas id="process-detail-trend" class="process-detail-trend" width="520" height="120" aria-label="Process CPU and RAM trend"></canvas>
         </div>

@@ -753,6 +753,66 @@ h1 {
   min-width: 0;
 }
 
+.gpu-panel {
+  padding: 1rem;
+}
+
+.gpu-adapters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.8rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.gpu-adapter {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg-strong);
+  padding: 1rem;
+}
+
+.gpu-name,
+.gpu-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpu-meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.gpu-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.45rem;
+}
+
+.gpu-busy,
+.gpu-memory,
+.gpu-temp {
+  min-width: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding-top: 0.65rem;
+}
+
+.gpu-busy strong,
+.gpu-memory strong,
+.gpu-temp strong {
+  display: block;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .gauge-panel {
   --accent: var(--green);
   display: grid;
@@ -1742,6 +1802,10 @@ table {
   min-width: 650px;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
+}
+
+.process-panel table:not([data-has-gpu="true"]) .gpu-cell {
+  display: none;
 }
 
 th,

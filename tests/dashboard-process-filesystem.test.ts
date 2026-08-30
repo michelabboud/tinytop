@@ -12,6 +12,7 @@ describe("dashboard process and filesystem controls", () => {
     expect(html).toContain('data-process-sort="cpu"');
     expect(html).toContain('data-process-sort="memory"');
     expect(html).toContain('data-process-sort="rss"');
+    expect(html).toContain('data-process-sort="gpu"');
     expect(html).toContain('id="process-detail-dialog"');
     expect(html).toContain('id="process-detail-title"');
     expect(html).toContain('id="process-detail-command"');

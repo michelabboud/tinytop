@@ -7,6 +7,10 @@ import {
   exportFilenameFrom,
   fallbackWindowKey,
   formatCount,
+  describeGpuAdapter,
+  formatGpuPercent,
+  gpuColumnVisible,
+  gpuPercentSortValue,
   formatPressureValue,
   formatResourceAttributes,
   historyWindowFor,
@@ -64,7 +68,7 @@ const HISTORY_METRICS = [
 ];
 const HISTORY_WINDOW_KEYS = new Set(Object.keys(HISTORY_WINDOWS));
 const HISTORY_SERIES_KEYS = new Set(HISTORY_METRICS.map((metric) => metric.key));
-const PROCESS_SORT_KEYS = new Set(["pid", "cpu", "memory", "rss"]);
+const PROCESS_SORT_KEYS = new Set(["pid", "cpu", "memory", "rss", "gpu"]);
 const PROCESS_DENSITIES = new Set(["comfortable", "compact"]);
 const SYSTEM_FILESYSTEM_TYPES = new Set([
   "autofs",
@@ -309,6 +313,9 @@ const elements = {
   ramPanel: document.querySelector("#ram-panel"),
   swapPanel: document.querySelector("#swap-panel"),
   loadPanel: document.querySelector("#load-panel"),
+  gpuPanel: document.querySelector("#gpu-panel"),
+  gpuCount: document.querySelector("#gpu-count"),
+  gpuAdapters: document.querySelector("#gpu-adapters"),
   loadOne: document.querySelector("#load-one"),
   loadContext: document.querySelector("#load-context"),
   threadCount: document.querySelector("#thread-count"),
@@ -344,6 +351,7 @@ const elements = {
   sampleCount: document.querySelector("#sample-count"),
   processCount: document.querySelector("#process-count"),
   processRows: document.querySelector("#process-rows"),
+  processTable: document.querySelector("#processes table"),
   processPanel: document.querySelector("#processes"),
   processSearch: document.querySelector("#process-search"),
   processDensity: document.querySelector("#process-density"),
@@ -360,6 +368,7 @@ const elements = {
   processDetailCpu: document.querySelector("#process-detail-cpu"),
   processDetailMemory: document.querySelector("#process-detail-memory"),
   processDetailRss: document.querySelector("#process-detail-rss"),
+  processDetailGpu: document.querySelector("#process-detail-gpu"),
   processDetailTrend: document.querySelector("#process-detail-trend"),
   closeProcessDetailButton: document.querySelector("#close-process-detail-button"),
   refreshButton: document.querySelector("#refresh-button"),
@@ -1969,7 +1978,9 @@ function sortProcesses(processes) {
           ? left.memoryPercent
           : sortKey === "rss"
             ? left.rssBytes
-            : left.cpuPercent;
+            : sortKey === "gpu"
+              ? gpuPercentSortValue(left)
+              : left.cpuPercent;
     const rightValue =
       sortKey === "pid"
         ? right.pid
@@ -1977,7 +1988,9 @@ function sortProcesses(processes) {
           ? right.memoryPercent
           : sortKey === "rss"
             ? right.rssBytes
-            : right.cpuPercent;
+            : sortKey === "gpu"
+              ? gpuPercentSortValue(right)
+              : right.cpuPercent;
     return (Number(leftValue) - Number(rightValue)) * direction;
   });
 }
@@ -2082,6 +2095,7 @@ function renderProcessDetail(process) {
   setText(elements.processDetailCpu, `${Number(process.cpuPercent ?? 0).toFixed(1)}%`);
   setText(elements.processDetailMemory, `${Number(process.memoryPercent ?? 0).toFixed(1)}%`);
   setText(elements.processDetailRss, formatBytes(Number(process.rssBytes ?? 0)));
+  setText(elements.processDetailGpu, formatGpuPercent(process.gpuPercent));
   drawProcessTrend(processTrendForPid(process.pid));
   if (typeof elements.processDetailDialog.showModal === "function") {
     elements.processDetailDialog.showModal();
@@ -2090,7 +2104,69 @@ function renderProcessDetail(process) {
   }
 }
 
+function renderGpus(gpus) {
+  const list = Array.isArray(gpus) ? gpus : [];
+  if (!elements.gpuPanel) return;
+  elements.gpuPanel.hidden = list.length === 0;
+  elements.gpuPanel.dataset.hasGpu = String(list.length > 0);
+  if (state.daemonSettings.enabledSections.overview === false) elements.gpuPanel.hidden = true;
+  setText(elements.gpuCount, `${list.length} ${list.length === 1 ? "adapter" : "adapters"}`);
+  if (!elements.gpuAdapters) return;
+
+  elements.gpuAdapters.replaceChildren(
+    ...list.map((adapter) => {
+      const description = describeGpuAdapter(adapter);
+      const item = document.createElement("li");
+      const name = document.createElement("strong");
+      const meta = document.createElement("span");
+      const metrics = document.createElement("div");
+      const busy = document.createElement("span");
+      const busyLabel = document.createElement("span");
+      const busyValue = document.createElement("strong");
+      const memory = document.createElement("span");
+      const memoryLabel = document.createElement("span");
+      const memoryValue = document.createElement("strong");
+
+      item.className = "gpu-adapter";
+      name.className = "gpu-name";
+      name.title = adapter.id;
+      name.textContent = description.name;
+      meta.className = "gpu-meta";
+      meta.textContent = description.meta;
+      metrics.className = "gpu-metrics";
+      busy.className = "gpu-busy";
+      busyLabel.className = "label";
+      busyLabel.textContent = "Busy";
+      busyValue.textContent = description.busy;
+      busy.append(busyLabel, busyValue);
+      memory.className = "gpu-memory";
+      memoryLabel.className = "label";
+      memoryLabel.textContent = "Memory";
+      memoryValue.textContent = description.memory;
+      memory.append(memoryLabel, memoryValue);
+      metrics.append(busy, memory);
+
+      if (description.temperature) {
+        const temperature = document.createElement("span");
+        const temperatureLabel = document.createElement("span");
+        const temperatureValue = document.createElement("strong");
+        temperature.className = "gpu-temp";
+        temperatureLabel.className = "label";
+        temperatureLabel.textContent = "Temperature";
+        temperatureValue.textContent = description.temperature;
+        temperature.append(temperatureLabel, temperatureValue);
+        metrics.append(temperature);
+      }
+
+      item.append(name, meta, metrics);
+      return item;
+    }),
+  );
+}
+
 function renderProcesses(processes) {
+  const hasGpu = gpuColumnVisible(processes);
+  if (elements.processTable) elements.processTable.dataset.hasGpu = String(hasGpu);
   const visible = filteredProcesses(sortProcesses(processes));
   setText(elements.processCount, `${visible.length} / ${processes.length} rows`);
   syncProcessSortButtons();
@@ -2099,7 +2175,7 @@ function renderProcesses(processes) {
   if (visible.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 6;
+    cell.colSpan = hasGpu ? 7 : 6;
     cell.textContent = "No matching processes";
     row.append(cell);
     elements.processRows.replaceChildren(row);
@@ -2114,6 +2190,7 @@ function renderProcesses(processes) {
       const cpu = document.createElement("td");
       const memory = document.createElement("td");
       const rss = document.createElement("td");
+      const gpu = document.createElement("td");
       const details = document.createElement("td");
       const detailButton = document.createElement("button");
 
@@ -2124,13 +2201,15 @@ function renderProcesses(processes) {
       cpu.textContent = `${process.cpuPercent.toFixed(1)}%`;
       memory.textContent = `${process.memoryPercent.toFixed(1)}%`;
       rss.textContent = formatBytes(process.rssBytes);
+      gpu.className = "gpu-cell";
+      gpu.textContent = formatGpuPercent(process.gpuPercent);
       detailButton.className = "mini-button secondary";
       detailButton.type = "button";
       detailButton.textContent = "Open";
       detailButton.addEventListener("click", () => renderProcessDetail(process));
       details.append(detailButton);
 
-      row.append(pid, command, cpu, memory, rss, details);
+      row.append(pid, command, cpu, memory, rss, gpu, details);
       return row;
     }),
   );
@@ -2360,6 +2439,7 @@ function renderSnapshotDetails(snapshot) {
   renderFilesystems(snapshot.filesystems);
   renderFilesystemFreshness(snapshot);
   renderPressure(snapshot);
+  renderGpus(snapshot.gpus);
   renderProcesses(snapshot.processes);
 }
 
@@ -2629,7 +2709,10 @@ function applyEnabledSections(settings) {
 
   for (const [section, nodes] of Object.entries(elements.sectionNodes)) {
     const enabled = Boolean(enabledSections[section]);
-    for (const node of nodes) setHidden(node, !enabled);
+    for (const node of nodes) {
+      const gpuUnavailable = node === elements.gpuPanel && node.dataset.hasGpu !== "true";
+      setHidden(node, !enabled || gpuUnavailable);
+    }
   }
 
   for (const link of elements.sectionLinks) {
