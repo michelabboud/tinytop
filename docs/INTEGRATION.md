@@ -144,6 +144,7 @@ Required stable top-level fields:
 | `pressure` | object | PSI data; empty on platforms without PSI |
 | `filesystems` | array | mounted filesystems |
 | `processes` | array | top-N process list |
+| `gpus[]` | array, optional — absent when no GPU adapter is detected | detected GPU adapters and available metrics |
 
 Stable identity fields:
 
@@ -196,6 +197,19 @@ Stable filesystem item fields:
 | `inodeUsed` | number or null |
 | `inodeTotal` | number or null |
 
+Stable GPU item fields:
+
+| Field | Type |
+| --- | --- |
+| `gpus[].id` | string |
+| `gpus[].vendor` | string |
+| `gpus[].name` | string |
+| `gpus[].driver` | string |
+| `gpus[].busyPercent` | number, optional by driver/source |
+| `gpus[].memoryUsedBytes` | number, optional by driver/source |
+| `gpus[].memoryTotalBytes` | number, optional by driver/source |
+| `gpus[].temperatureC` | number, optional by driver/source |
+
 Stable process item fields:
 
 | Field | Type |
@@ -207,6 +221,7 @@ Stable process item fields:
 | `rssBytes` | number |
 | `parentPid` | number or null |
 | `startedAt` | string, optional |
+| `processes[].gpuPercent` | number, optional — absent when the collector has no per-process GPU source |
 
 ## GET /api/history/points
 

@@ -21,7 +21,10 @@ use tinytop_types::{
     RuntimeDetection, RuntimeKind, SwapSnapshot, SystemSnapshot,
 };
 
-use crate::{Collector, CollectorConfig, CollectorError, CollectorResult};
+use crate::{
+    Collector, CollectorConfig, CollectorError, CollectorResult,
+    gpu::{GpuAdapter, GpuBackend, GpuScanStats, attach_gpu, detect_backend},
+};
 
 #[derive(Debug, Clone)]
 pub struct LinuxSnapshotSources {
@@ -108,6 +111,8 @@ pub struct LinuxCollector {
     clock: Box<dyn FnMut() -> Instant + Send>,
     slow_enumerations: u64,
     configure_calls: u64,
+    gpu: Option<Box<dyn GpuBackend>>,
+    gpu_adapters: Vec<GpuAdapter>,
 }
 
 impl Default for LinuxCollector {
@@ -120,6 +125,8 @@ impl Default for LinuxCollector {
             clock: Box::new(Instant::now),
             slow_enumerations: 0,
             configure_calls: 0,
+            gpu: detect_backend(),
+            gpu_adapters: Vec::new(),
         }
     }
 }
@@ -131,6 +138,19 @@ impl LinuxCollector {
             clock: Box::new(clock),
             ..Self::default()
         }
+    }
+
+    #[doc(hidden)]
+    pub fn with_gpu_backend(backend: Box<dyn GpuBackend>) -> Self {
+        Self {
+            gpu: Some(backend),
+            ..Self::default()
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn last_gpu_scan(&self) -> Option<GpuScanStats> {
+        self.gpu.as_ref().and_then(|backend| backend.last_scan())
     }
 
     #[doc(hidden)]
@@ -162,6 +182,9 @@ impl LinuxCollector {
                 captured_at_ms: sources.captured_at_ms,
                 sources,
             });
+            if let Some(gpu) = &mut self.gpu {
+                self.gpu_adapters = gpu.detect();
+            }
         }
 
         let fast = collect_fast_sources(
@@ -169,13 +192,22 @@ impl LinuxCollector {
             self.previous_proc_stat_text.as_deref(),
             self.config.top_process_count,
         )?;
+        let gpu_tick = self.gpu.as_mut().map(|gpu| {
+            let samples = gpu.sample();
+            let busy = gpu.process_busy();
+            (samples, busy)
+        });
         self.previous_proc_stat_text = Some(fast.current_proc_stat_text.clone());
         let cache = self
             .slow_cache
             .as_ref()
             .expect("the first collection always populates the slow cache");
         let sources = merge_sources(fast, cache.sources.clone(), cache.captured_at_ms);
-        build_linux_snapshot_from_sources(sources)
+        let mut snapshot = build_linux_snapshot_from_sources(sources)?;
+        if let Some((samples, busy)) = gpu_tick {
+            attach_gpu(&mut snapshot, &self.gpu_adapters, &samples, &busy);
+        }
+        Ok(snapshot)
     }
 }
 
@@ -246,6 +278,7 @@ pub fn build_linux_snapshot_from_sources(
         },
         filesystems,
         processes: parse_processes(&sources.ps_text),
+        gpus: Vec::new(),
     })
 }
 
@@ -713,6 +746,7 @@ fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
                     rss_bytes: parts[3].parse::<u64>().ok()?.saturating_mul(1024),
                     parent_pid: parse_optional_u32(parts[4]),
                     started_at: parse_optional_string(parts[5]),
+                    gpu_percent: None,
                     command: parts[6].to_string(),
                 });
             }
@@ -729,6 +763,7 @@ fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
                 rss_bytes: parts[3].parse::<u64>().ok()?.saturating_mul(1024),
                 parent_pid: None,
                 started_at: None,
+                gpu_percent: None,
                 command: parts[4..].join(" "),
             })
         })
@@ -1056,4 +1091,156 @@ fn round_percent(value: f64) -> f64 {
         return 0.0;
     }
     (value.clamp(0.0, 100.0) * 10.0).round() / 10.0
+}
+
+#[cfg(test)]
+mod gpu_tests {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex},
+        time::{Duration, Instant},
+    };
+
+    use serde_json::json;
+
+    use super::LinuxCollector;
+    use crate::{
+        Collector, CollectorConfig,
+        gpu::{
+            GpuAdapter, GpuBackend, GpuSample, GpuScanStats, GpuVendor, attach_gpu,
+        },
+    };
+
+    #[derive(Default)]
+    struct Counts {
+        detect: usize,
+        sample: usize,
+    }
+
+    struct FakeBackend {
+        counts: Arc<Mutex<Counts>>,
+        busy: HashMap<u32, f64>,
+    }
+
+    impl GpuBackend for FakeBackend {
+        fn detect(&mut self) -> Vec<GpuAdapter> {
+            self.counts.lock().expect("counts mutex").detect += 1;
+            vec![GpuAdapter {
+                id: "pci-0000:02:00.0".to_string(),
+                vendor: GpuVendor::Amd,
+                name: "fixture GPU".to_string(),
+                driver: "amdgpu".to_string(),
+            }]
+        }
+
+        fn sample(&mut self) -> Vec<GpuSample> {
+            self.counts.lock().expect("counts mutex").sample += 1;
+            vec![GpuSample {
+                adapter_id: "pci-0000:02:00.0".to_string(),
+                busy_percent: Some(25.0),
+                memory_used_bytes: None,
+                memory_total_bytes: None,
+                temperature_c: None,
+            }]
+        }
+
+        fn process_busy(&mut self) -> HashMap<u32, f64> {
+            self.busy.clone()
+        }
+
+        fn last_scan(&self) -> Option<GpuScanStats> {
+            None
+        }
+    }
+
+    #[test]
+    fn gpu_is_redetected_on_the_slow_tick_and_sampled_every_tick() {
+        let counts = Arc::new(Mutex::new(Counts::default()));
+        let backend = FakeBackend {
+            counts: Arc::clone(&counts),
+            busy: HashMap::new(),
+        };
+        let base = Instant::now();
+        let offset = Arc::new(Mutex::new(Duration::ZERO));
+        let clock_offset = Arc::clone(&offset);
+        let clocked = LinuxCollector::with_clock(move || {
+            base + *clock_offset.lock().expect("clock mutex")
+        });
+        let mut collector = LinuxCollector::with_gpu_backend(Box::new(backend));
+        collector.clock = clocked.clock;
+        collector.configure(CollectorConfig {
+            filesystems_interval: Duration::from_secs(60),
+            ..CollectorConfig::default()
+        });
+
+        collector.collect().expect("first GPU collection");
+        assert_eq!(counts.lock().expect("counts mutex").detect, 1);
+        assert_eq!(counts.lock().expect("counts mutex").sample, 1);
+
+        *offset.lock().expect("clock mutex") = Duration::from_secs(30);
+        collector.collect().expect("fast GPU collection");
+        assert_eq!(counts.lock().expect("counts mutex").detect, 1);
+        assert_eq!(counts.lock().expect("counts mutex").sample, 2);
+
+        *offset.lock().expect("clock mutex") = Duration::from_secs(61);
+        collector.collect().expect("slow GPU collection");
+        assert_eq!(counts.lock().expect("counts mutex").detect, 2);
+        assert_eq!(counts.lock().expect("counts mutex").sample, 3);
+    }
+
+    #[test]
+    fn attach_gpu_maps_busy_by_pid_and_fills_absent_samples_with_none() {
+        let mut snapshot = serde_json::from_value(json!({
+            "timestamp": "2026-08-29T12:00:00Z",
+            "identity": {
+                "hostname": "fixture", "platform": "linux", "arch": "x86_64",
+                "distro": "Fixture Linux", "kernel": "6.8.0",
+                "runtime": { "kind": "Linux", "confidence": "high", "reason": "fixture" },
+                "uptimeSeconds": 60
+            },
+            "cpu": { "usagePercent": 1.0, "cores": 2 },
+            "memory": { "totalBytes": 100, "availableBytes": 50, "usedBytes": 50, "usedPercent": 50.0 },
+            "swap": { "totalBytes": 0, "freeBytes": 0, "usedBytes": 0, "usedPercent": 0.0 },
+            "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+            "pressure": { "cpu": {}, "memory": {}, "io": {} },
+            "filesystems": [],
+            "processes": [
+                { "pid": 1, "command": "one", "cpuPercent": 0.0, "memoryPercent": 0.0, "rssBytes": 1 },
+                { "pid": 2, "command": "two", "cpuPercent": 0.0, "memoryPercent": 0.0, "rssBytes": 1 }
+            ]
+        }))
+        .expect("synthetic snapshot");
+        let adapters = vec![
+            GpuAdapter {
+                id: "pci-0000:02:00.0".to_string(),
+                vendor: GpuVendor::Amd,
+                name: "first".to_string(),
+                driver: "amdgpu".to_string(),
+            },
+            GpuAdapter {
+                id: "pci-0000:06:00.0".to_string(),
+                vendor: GpuVendor::Other(0x1a03),
+                name: "second".to_string(),
+                driver: "unknown".to_string(),
+            },
+        ];
+        let samples = vec![GpuSample {
+            adapter_id: adapters[0].id.clone(),
+            busy_percent: Some(37.0),
+            memory_used_bytes: Some(6_000_640),
+            memory_total_bytes: Some(2_147_483_648),
+            temperature_c: Some(44.0),
+        }];
+        attach_gpu(&mut snapshot, &adapters, &samples, &HashMap::from([(2, 12.5)]));
+
+        assert_eq!(snapshot.processes[0].gpu_percent, None);
+        assert_eq!(snapshot.processes[1].gpu_percent, Some(12.5));
+        assert_eq!(snapshot.gpus.len(), 2);
+        assert_eq!(snapshot.gpus[0].busy_percent, Some(37.0));
+        assert_eq!(snapshot.gpus[1].vendor, "0x1a03");
+        assert_eq!(snapshot.gpus[1].busy_percent, None);
+        assert_eq!(snapshot.gpus[1].memory_used_bytes, None);
+        assert_eq!(snapshot.gpus[1].memory_total_bytes, None);
+        assert_eq!(snapshot.gpus[1].temperature_c, None);
+    }
 }

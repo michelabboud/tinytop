@@ -5,6 +5,7 @@
 mod common;
 #[cfg(all(feature = "linux-collector", target_os = "linux"))]
 pub mod linux;
+pub mod gpu;
 #[cfg(all(feature = "macos-collector", target_os = "macos"))]
 pub mod macos;
 #[cfg(all(feature = "windows-collector", target_os = "windows"))]

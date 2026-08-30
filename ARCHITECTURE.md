@@ -17,6 +17,7 @@ Browser
   | GET /api/history/coverage
   | GET /api/history/points
   | GET /api/history/markers
+  | GET /api/history/gpus
   | GET /api/version
   | GET/PUT /api/settings
   | GET /api/settings/export, POST /api/settings/import[?dryRun=true]
@@ -44,7 +45,7 @@ The supported Linux/WSL operator entrypoint is the root `./tinytop` Bash command
 3. `app.js` reads browser-local theme, graph-mode, history-range, visible-series, process-table, filesystem-toggle, and last-section overrides from `localStorage`.
 4. The frontend requests `/api/history` with explicit `since_ms` and `until_ms` bounds for the raw Live, 15m, and 1h ranges.
 5. For 6h, 24h, 7d, 30d, 90d, 1y, and All, the frontend makes one `/api/history/points?source=auto&limit=10000` request and renders the tier reported by `source` and `resolutionMs`.
-6. The Rust read surface also exposes `/api/history/filesystems` and `/api/history/processes` for typed historical detail.
+6. The Rust read surface also exposes `/api/history/filesystems`, `/api/history/gpus`, and `/api/history/processes` for typed historical detail.
 7. The frontend requests `/api/history/markers` for daemon starts, settings changes, migration events, and computed coverage gaps.
 8. The frontend requests `/api/history/coverage` when the Rust daemon is serving the page; dashboard polling coalesces concurrent requests and throttles routine refreshes.
 9. The frontend requests `/api/version` once to display the serving runtime and product version.
@@ -73,7 +74,7 @@ The supported Linux/WSL operator entrypoint is the root `./tinytop` Bash command
 | `agent/assets/dashboard/` | The single dashboard asset tree: embedded by the Rust agent at compile time (`include_bytes!`), served from disk by the Bun server |
 | `tests/` | Bun tests for parsers, snapshot building, server routes, and history storage |
 | `agent/crates/tinytop-types` | Rust snapshot structs serialized to the existing dashboard JSON contract |
-| `agent/crates/tinytop-collectors` | Rust platform collector crate; Linux/WSL default plus feature-gated macOS/Windows native collector modules |
+| `agent/crates/tinytop-collectors` | Rust platform collector crate; Linux/WSL default plus feature-gated macOS/Windows native collector modules and a detection-gated GPU backend (Linux implemented; Windows/macOS explicit Task 16 returns) |
 | `agent/crates/tinytop-store` | SQLx-backed Rust history store using the current SQLite schema |
 | `agent/crates/tinytop-agent` | Rust CLI and daemon for collection, SQLite history, dashboard serving, and legacy collector-compatible APIs |
 
@@ -91,6 +92,11 @@ cargo run --manifest-path agent/Cargo.toml -p tinytop-agent -- serve-writer
 ```
 
 The Rust Linux/WSL collector keeps the same `SystemSnapshot` contract as the Bun collector while using Rust crates for host access. It owns three cadence classes behind the one writer tick: fast uptime, CPU, memory, swap, load, pressure, and processes refresh every `pollIntervalMs`; slow filesystems refresh every `retentionLadder.detailIntervalSec` and are served from cache with their `filesystemsCapturedAtMs`; static hostname, kernel, and distro identity is re-read on the slow tick. It uses `procfs` for Linux kernel metrics and `sysinfo` for process and identity data. Per-filesystem inode counts, which `sysinfo` does not expose, are read directly with the `statvfs(2)` syscall via `rustix` (ADR 0012), so `statvfs` runs once per mount per `detailIntervalSec` instead of once per mount per tick. It does not shell out to `df`, `ps`, or `uname`. The live collector keeps a reusable `sysinfo::System` across samples so process and CPU refreshes have previous state. The Rust store uses SQLx with SQLite today, with SQL isolated in `tinytop-store` so future PostgreSQL/MySQL support does not leak into collector code.
+
+The Linux GPU backend is detected at collector start and re-detected on the
+same slow tick for hotplug. When present, it samples DRM sysfs, readable
+`/proc/<pid>/fdinfo`, and the GPU node's hwmon on every fast tick; when absent,
+the tick has no GPU work and the snapshot omits `gpus`.
 
 The daemon task set includes collection/history maintenance, disk checking, cold archive export, and the OTel exporter. Collection publishes each freshly collected snapshot on a Tokio `watch` channel before attempting SQLite persistence; the exporter task samples the most recent value at export time, applies configured resource attributes and environment-provided headers, and never delays collection when persistence or an export fails. After persistence and maintenance, `collect_and_store` re-configures the collector only when `topProcessCount` or `detailIntervalSec` changed, so a saved setting applies on the next collection tick.
 
@@ -121,6 +127,7 @@ The Rust daemon and legacy Bun dashboard expose:
 - `GET /api/history/coverage` in the Rust daemon
 - `GET /api/history/points?limit=&window_seconds=&since_ms=&until_ms=&source=`
 - `GET /api/history/filesystems?sinceMs=&untilMs=&mount=&limit=` in the Rust daemon
+- `GET /api/history/gpus?sinceMs=&untilMs=&adapter=&limit=` in the Rust daemon
 - `GET /api/history/processes?sinceMs=&untilMs=&limit=` in the Rust daemon
 - `GET /api/history/markers?limit=&window_seconds=&since_ms=&until_ms=&expected_gap_ms=`
 - `GET /vendor/echarts.min.js`
@@ -186,7 +193,7 @@ PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 ```
 
-Core schema-v3 table excerpt (see [Tiered History Ladder](#tiered-history-ladder) and the SQLite architecture document for the complete tier/detail tables):
+Core schema-v4 table excerpt (see [Tiered History Ladder](#tiered-history-ladder) and the SQLite architecture document for the complete tier/detail tables):
 
 ```sql
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -272,7 +279,7 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 ```
 
-The current v3 implementation stores typed graph/query columns, per-row assembly scalars, interned host identity, and on-change filesystem/presence rows for every raw history sample. `host_identity` is unique over the eight stable identity strings; `fs_mount_events` preserves mount appearance and disappearance independently of value changes. The store also keeps daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
+The current v4 implementation stores typed graph/query columns, per-row assembly scalars, interned host identity, and on-change filesystem/presence rows for every raw history sample. `host_identity` is unique over the eight stable identity strings; `fs_mount_events` preserves mount appearance and disappearance independently of value changes. Schema v4 also interns stable GPU identity in `gpu_adapters`, stores one nullable-metric `gpu_samples` row per detected adapter per fast tick, and stores process start time as milliseconds plus nullable GPU percent in both process tiers. The store also keeps daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
 
 Rust retention is the four-tier ladder described in [Tiered History Ladder](#tiered-history-ladder): each sample refreshes L2, completed buckets promote to enabled coarser tiers before finer rows are pruned, and `retentionHours` / `rollupRetentionDays` are derived compatibility mirrors of L1/L2. The legacy Bun split path still keeps raw rows until manual archive/reset.
 

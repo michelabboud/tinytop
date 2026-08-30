@@ -338,6 +338,15 @@ If the first start fails after the pre-image was written but before the schema t
 
 A crash after the post-migration `VACUUM` but before the audit transaction commits leaves schema v1 with an incomplete audit. The next start runs `VACUUM` once more; this is safe but can cost several minutes on a large database.
 
+The first Rust-daemon start after upgrading to 0.5.4 migrates SQLite to schema
+v4. In one transaction it rebuilds both process-history tables, converts
+`started_at` text to millisecond integers, adds minute-tier GPU percentages,
+and creates the GPU adapter/sample tables. The default 24-hour fast-process
+window is expected to rebuild in seconds. The `history migration info` line
+reports `startedAtUnparsed`; those display-only values are stored as NULL while
+their process rows are retained. Any row-count mismatch or other failure rolls
+the transaction back, so the database file remains at its previous schema.
+
 **Refused schema migration.** `holds snapshot JSON that does not decode` means
 that a retained history payload cannot be decoded by this version. The database
 is untouched and the daemon exits with status 1. Payloads written by the legacy

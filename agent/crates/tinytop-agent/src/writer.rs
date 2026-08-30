@@ -1817,6 +1817,48 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn history_gpus_query_rejections_name_parameter_and_observed_value() {
+        // Break caught: the GPU history route accepts malformed numeric query values or
+        // reports an error that does not identify the parameter and observed value.
+        assert_bad_query_names_parameter(
+            "gpus-bad-limit",
+            "/api/history/gpus?limit=abc",
+            "limit",
+            "abc",
+        )
+        .await;
+        assert_bad_query_names_parameter(
+            "gpus-bad-since",
+            "/api/history/gpus?sinceMs=x",
+            "sinceMs",
+            "x",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn history_gpus_rejects_zero_limit_and_inverted_range() {
+        // Break caught: boundary-invalid GPU history requests are silently clamped or
+        // queried as empty ranges.
+        let (_fixture, state) = test_state("gpus-invalid-boundaries").await;
+        let (status, body) =
+            request_json(router(state.clone()), "/api/history/gpus?limit=0").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            json!({ "error": "limit must be between 1 and 10000; observed 0" })
+        );
+
+        let (status, body) =
+            request_json(router(state), "/api/history/gpus?sinceMs=200&untilMs=100").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            body,
+            json!({ "error": "sinceMs must be less than or equal to untilMs; observed sinceMs=200, untilMs=100" })
+        );
+    }
+
+    #[tokio::test]
     async fn history_processes_query_rejections_name_parameter_and_observed_value() {
         assert_bad_query_names_parameter(
             "processes-bad-limit",
@@ -2286,6 +2328,21 @@ pub(crate) mod tests {
         let (legacy_status, legacy_body) = request_json(router(state), "/snapshot/latest").await;
         assert_eq!(legacy_status, StatusCode::OK, "{legacy_body}");
         assert_eq!(legacy_body, api_body);
+    }
+
+    #[tokio::test]
+    async fn snapshot_route_omits_gpus_when_the_collector_has_none() {
+        // Break caught: an empty GPU collection serializes as `gpus: []` instead of
+        // preserving the additive, absent-when-empty snapshot contract.
+        let (_fixture, state) = test_state("snapshot-without-gpu").await;
+        collect_and_store(&state)
+            .await
+            .expect("initial collection should succeed");
+
+        let (status, body) = request_json(router(state), "/api/snapshot").await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.get("gpus").is_none(), "{body}");
     }
 
     #[tokio::test]

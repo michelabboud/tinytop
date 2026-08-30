@@ -12,7 +12,7 @@ use tinytop_types::SystemSnapshot;
 
 use crate::{StoreError, disk};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Historical v0→v1 JSON retention window.
 ///
@@ -494,7 +494,8 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
 PRAGMA user_version = 3;
 "#;
 
-const CREATE_SCHEMA_V3_SQL: [&str; 6] = [
+#[doc(hidden)]
+pub const CREATE_SCHEMA_V3_SQL: [&str; 6] = [
     CREATE_SCHEMA_V3_HEAD_SQL,
     CREATE_SCHEMA_V2_HEAD_SQL,
     CREATE_PROCESS_COMMANDS_V2_SQL,
@@ -502,6 +503,127 @@ const CREATE_SCHEMA_V3_SQL: [&str; 6] = [
     CREATE_PROCESS_SAMPLES_V2_SQL,
     CREATE_SCHEMA_V3_TAIL_SQL,
 ];
+
+const CREATE_PROCESS_SAMPLES_FAST_V4_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS process_samples_fast (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  command_id INTEGER NOT NULL REFERENCES process_commands(command_id),
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at_ms INTEGER,
+  gpu_percent REAL,
+  PRIMARY KEY (captured_at_ms, rank)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_fast_command
+  ON process_samples_fast (command_id);
+"#;
+
+const CREATE_PROCESS_SAMPLES_V4_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS process_samples (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at_ms INTEGER,
+  command_id INTEGER REFERENCES process_commands(command_id),
+  gpu_percent REAL,
+  PRIMARY KEY (captured_at_ms, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_time
+  ON process_samples (captured_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_command
+  ON process_samples (command_id);
+"#;
+
+const CREATE_GPU_TABLES_V4_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS gpu_adapters (
+  adapter_id INTEGER PRIMARY KEY,
+  stable_id TEXT NOT NULL UNIQUE,
+  vendor TEXT NOT NULL,
+  name TEXT NOT NULL,
+  driver TEXT NOT NULL,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gpu_samples (
+  captured_at_ms INTEGER NOT NULL,
+  adapter_id INTEGER NOT NULL REFERENCES gpu_adapters(adapter_id),
+  busy_percent REAL,
+  memory_used_bytes INTEGER,
+  memory_total_bytes INTEGER,
+  temperature_c REAL,
+  PRIMARY KEY (captured_at_ms, adapter_id)
+) WITHOUT ROWID;
+"#;
+
+const CREATE_SCHEMA_V4_TAIL_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS app_events (
+  event_id INTEGER PRIMARY KEY,
+  occurred_at_ms INTEGER NOT NULL,
+  marker_type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
+  ON app_events (occurred_at_ms DESC, marker_type);
+
+PRAGMA user_version = 4;
+"#;
+
+#[doc(hidden)]
+pub const CREATE_SCHEMA_V4_SQL: [&str; 7] = [
+    CREATE_SCHEMA_V3_HEAD_SQL,
+    CREATE_SCHEMA_V2_HEAD_SQL,
+    CREATE_PROCESS_COMMANDS_V2_SQL,
+    CREATE_PROCESS_SAMPLES_FAST_V4_SQL,
+    CREATE_PROCESS_SAMPLES_V4_SQL,
+    CREATE_GPU_TABLES_V4_SQL,
+    CREATE_SCHEMA_V4_TAIL_SQL,
+];
+
+const CREATE_PROCESS_SAMPLES_FAST_V4_TEMP_SQL: &str = r#"
+CREATE TABLE process_samples_fast_v4 (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  command_id INTEGER NOT NULL REFERENCES process_commands(command_id),
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at_ms INTEGER,
+  gpu_percent REAL,
+  PRIMARY KEY (captured_at_ms, rank)
+) WITHOUT ROWID
+"#;
+
+const CREATE_PROCESS_SAMPLES_V4_TEMP_SQL: &str = r#"
+CREATE TABLE process_samples_v4 (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at_ms INTEGER,
+  command_id INTEGER REFERENCES process_commands(command_id),
+  gpu_percent REAL,
+  PRIMARY KEY (captured_at_ms, rank)
+)
+"#;
 
 const CREATE_HOST_IDENTITY_V3_SQL: &str = r#"
 CREATE TABLE host_identity (
@@ -729,23 +851,29 @@ pub(crate) async fn ensure_schema(
 
     match user_version {
         SCHEMA_VERSION => {
-            apply_schema_v3(pool).await?;
+            apply_schema_v4(pool).await?;
+            complete_pending_migration(pool, db_path).await
+        }
+        3 => {
+            migrate_v3_to_v4(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         2 => {
             migrate_v2_to_v3(pool, now_ms).await?;
+            migrate_v3_to_v4(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         1 => {
             let report = complete_pending_migration(pool, db_path).await?;
             migrate_v1_to_v2(pool, db_path, now_ms).await?;
             migrate_v2_to_v3(pool, now_ms).await?;
+            migrate_v3_to_v4(pool, now_ms).await?;
             Ok(report)
         }
         0 => {
             let metric_samples_exists = table_exists(pool, "metric_samples").await?;
             if !metric_samples_exists {
-                apply_schema_v3(pool).await?;
+                apply_schema_v4(pool).await?;
                 return Ok(None);
             }
 
@@ -756,6 +884,7 @@ pub(crate) async fn ensure_schema(
                 rebuild_v0_schema(pool, now_ms, V0_JSON_KEEP_MS, None).await?;
                 migrate_v1_to_v2(pool, db_path, now_ms).await?;
                 migrate_v2_to_v3(pool, now_ms).await?;
+                migrate_v3_to_v4(pool, now_ms).await?;
                 return Ok(None);
             }
 
@@ -763,6 +892,7 @@ pub(crate) async fn ensure_schema(
                 migrate_populated_v0(pool, db_path, now_ms, V0_JSON_KEEP_MS, sample_count).await?;
             migrate_v1_to_v2(pool, db_path, now_ms).await?;
             migrate_v2_to_v3(pool, now_ms).await?;
+            migrate_v3_to_v4(pool, now_ms).await?;
             Ok(Some(report))
         }
         other => Err(StoreError::Migration {
@@ -777,8 +907,8 @@ pub(crate) async fn ensure_schema(
     }
 }
 
-async fn apply_schema_v3(pool: &SqlitePool) -> Result<(), StoreError> {
-    apply_schema_groups(pool, &CREATE_SCHEMA_V3_SQL).await
+async fn apply_schema_v4(pool: &SqlitePool) -> Result<(), StoreError> {
+    apply_schema_groups(pool, &CREATE_SCHEMA_V4_SQL).await
 }
 
 async fn apply_schema_groups(
@@ -1131,6 +1261,158 @@ async fn migrate_v2_to_v3(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
 
     eprintln!(
         "history migration info: schema v2 → v3 in {duration_ms} ms ({json_rows_decoded} JSON rows decoded, {identities_interned} identities interned, {events_written} filesystem events written over {sample_rows} metric rows, {legacy_inode_rows_normalised} rows with legacy negative inode counts normalised)"
+    );
+    Ok(())
+}
+
+async fn migrate_v3_to_v4(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {
+    let started = Instant::now();
+    let mut transaction = pool.begin().await?;
+
+    sqlx::query(CREATE_PROCESS_SAMPLES_FAST_V4_TEMP_SQL)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(CREATE_PROCESS_SAMPLES_V4_TEMP_SQL)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::raw_sql(CREATE_GPU_TABLES_V4_SQL)
+        .execute(&mut *transaction)
+        .await?;
+
+    let fast_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM process_samples_fast")
+        .fetch_one(&mut *transaction)
+        .await?;
+    let minute_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM process_samples")
+        .fetch_one(&mut *transaction)
+        .await?;
+    let fast_unparsed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM process_samples_fast WHERE started_at IS NOT NULL AND strftime('%s', started_at) IS NULL",
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    let minute_unparsed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM process_samples WHERE started_at IS NOT NULL AND strftime('%s', started_at) IS NULL",
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    let started_at_unparsed = fast_unparsed.checked_add(minute_unparsed).ok_or_else(|| {
+        StoreError::Migration {
+            reason: "schema v4 unparsable start-time count exceeds SQLite INTEGER capacity"
+                .to_string(),
+            remedy: "inspect the database with `db check`; the database was not modified"
+                .to_string(),
+        }
+    })?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO process_samples_fast_v4 (
+          captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
+          rss_bytes, parent_pid, started_at_ms, gpu_percent
+        )
+        SELECT captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
+               rss_bytes, parent_pid,
+               CAST(strftime('%s', started_at) AS INTEGER) * 1000,
+               gpu_percent
+        FROM process_samples_fast
+        "#,
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO process_samples_v4 (
+          captured_at_ms, rank, pid, cpu_percent, memory_percent, rss_bytes,
+          parent_pid, started_at_ms, command_id, gpu_percent
+        )
+        SELECT captured_at_ms, rank, pid, cpu_percent, memory_percent, rss_bytes,
+               parent_pid, CAST(strftime('%s', started_at) AS INTEGER) * 1000,
+               command_id, NULL
+        FROM process_samples
+        "#,
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    let copied_fast_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM process_samples_fast_v4")
+            .fetch_one(&mut *transaction)
+            .await?;
+    if copied_fast_rows != fast_rows {
+        return Err(StoreError::Migration {
+            reason: format!(
+                "schema v4 rebuild copied {copied_fast_rows} of {fast_rows} process_samples_fast rows"
+            ),
+            remedy: "inspect the database with `db check`; the database was not modified"
+                .to_string(),
+        });
+    }
+    let copied_minute_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM process_samples_v4")
+        .fetch_one(&mut *transaction)
+        .await?;
+    if copied_minute_rows != minute_rows {
+        return Err(StoreError::Migration {
+            reason: format!(
+                "schema v4 rebuild copied {copied_minute_rows} of {minute_rows} process_samples rows"
+            ),
+            remedy: "inspect the database with `db check`; the database was not modified"
+                .to_string(),
+        });
+    }
+
+    sqlx::query("DROP TABLE process_samples_fast")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("ALTER TABLE process_samples_fast_v4 RENAME TO process_samples_fast")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_process_samples_fast_command ON process_samples_fast (command_id)",
+    )
+    .execute(&mut *transaction)
+    .await?;
+
+    sqlx::query("DROP TABLE process_samples")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query("ALTER TABLE process_samples_v4 RENAME TO process_samples")
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_process_samples_time ON process_samples (captured_at_ms DESC)",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("CREATE INDEX idx_process_samples_command ON process_samples (command_id)")
+        .execute(&mut *transaction)
+        .await?;
+
+    let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    let details_json = serde_json::to_string(&serde_json::json!({
+        "fromVersion": 3,
+        "toVersion": 4,
+        "fastRows": fast_rows,
+        "minuteRows": minute_rows,
+        "startedAtUnparsed": started_at_unparsed,
+        "durationMs": duration_ms,
+    }))?;
+    sqlx::query(
+        r#"
+        INSERT INTO app_events (occurred_at_ms, marker_type, label, details_json)
+        VALUES (?, 'schemaMigrated', 'SQLite schema migrated from v3 to v4', ?)
+        "#,
+    )
+    .bind(now_ms)
+    .bind(details_json)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("PRAGMA user_version = 4")
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+
+    eprintln!(
+        "history migration info: schema v3 → v4 in {duration_ms} ms ({fast_rows} fast process rows and {minute_rows} minute process rows rebuilt with started_at_ms, {started_at_unparsed} unparsable start times stored as NULL; gpu_adapters and gpu_samples created)"
     );
     Ok(())
 }
