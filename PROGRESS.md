@@ -2,17 +2,19 @@
 
 ## Current Version
 
-- Version: `0.5.2`
-- Date: 2026-08-29
+- Version: `0.5.3`
+- Date: 2026-08-30
 - Status: Phase 5 (cadence classes + GPU, plan `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md`,
-  ADRs 0021–0023) IN PROGRESS. T13 landed as 0.5.2: schema v2 — the `process_commands`
-  dictionary, the per-tick `process_samples_fast` table, `command_id` on the minute table,
-  `processFastKeepHours`, `/api/history/processes` `source` fast|minute, `db stats --json`
-  `userVersion`; v1→v2 in one transaction (ADR 0023; 199 ms on a copy of the live file);
-  review rounds luna 655 → fix 657. Next = T14 (schema v3: filesystems stored on change, the
-  identity table, `/api/history` assembled from typed tables, `snapshot_json` dropped; brief
-  `docs/plans/2026-08-28-tiered-history-ladder/briefs/T14.md`), then T15–T17 → 0.6.0. The live
-  daemon still runs 0.3.1 — redeploy is an explicitly ordered step.
+  ADRs 0021–0024) IN PROGRESS. T14 landed as 0.5.3: schema v3 — `metric_samples` rebuilt without
+  `snapshot_json` (per-row uptime, the three scalars, `last_pid`, the filesystem stamp; nullable thread
+  columns), `host_identity` interning, filesystems on change with `fs_mount_events`, `/api/history`
+  assembled from the typed tables in window batches (287–312 ms for a 1 h / 2,400-row window on the
+  release daemon); v2→v3 in one transaction with the guard before the drop, legacy Bun negative inode
+  counts normalised and counted (ADR 0024 + two amendments); the dashboard replay repair (T14b) and the
+  fix for the 0.3.1–0.5.2 blank-panel regression (T14b-fix1); review rounds luna 662 → fix 664, luna
+  667 → fix 668. Next = T15 (GPU collector, Linux backend; schema v4 `started_at_ms`), then T16–T17 →
+  0.6.0. The live daemon still runs 0.3.1 — redeploy is an explicitly ordered step (the v1 file
+  migrates in ≈ 3.3 s; the pre-image law applies).
 
 ## Backlog
 
@@ -38,6 +40,10 @@
   OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
+
+### 0.5.3 - Cadence classes and GPU, Phase 5 lane 3 (T14 + T14b)
+
+- [x] T14 / 0.5.3: schema v3 (ADR 0024) — `metric_samples` rebuilt without `snapshot_json`, `host_identity` interning, filesystems on change keyed by the enumeration stamp with presence events, `/api/history` assembled from typed tables, every runtime JSON path removed; T14-fix1: the migration normalises + counts legacy Bun negative inode counts (found by the real-file gate); T14-fix2: the regressing-stamp warn, schema-equality + carried-values tests, doc corrections (luna 667). T14b: the dashboard replay repair, `—` for history pressure, threads as a number; T14b-fix1: the blank-panel regression since 0.3.1 (luna 662's P0). Acceptance: `Fabulous/docs/fleet/tinytop/2026-08-30-t14-acceptance-checklist.md`.
 
 ### 0.5.2 - Cadence classes and GPU, Phase 5 lane 2 (T13)
 
