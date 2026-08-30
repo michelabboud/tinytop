@@ -73,7 +73,8 @@ The store's current shape (read at `80694ae`): `SCHEMA_VERSION = 4` (`migration.
 
 ## Consequences
 
-- **Storage, measured from the shape, not asserted:** ≈ 24 B/row payload in a `WITHOUT ROWID` PK b-tree × 5 sensors on a 4-core Intel box × the fast tick (1.5 s ≈ 57.6 k ticks/day) ≈ **7 MB/day**, flat at the L1 horizon, and **exactly zero** while `thermal.enabled` is false. The lane measures the real per-row cost with `dbstat` at its gate (the ADR 0024 discipline) rather than trusting this estimate.
+- **Storage — MEASURED 2026-08-30 by lane #682 with `dbstat` over 10,000 samples: 21.2992 allocated bytes/row, 15.4387 payload bytes/row** (the estimate below said ~24 B; the measurement stands, the estimate does not). The populated v4→v5 migration measured **0–1 ms**, as expected for two `CREATE TABLE`s. Original estimate, kept for the record:
+- **Storage, estimated from the shape:** ≈ 24 B/row payload in a `WITHOUT ROWID` PK b-tree × 5 sensors on a 4-core Intel box × the fast tick (1.5 s ≈ 57.6 k ticks/day) ≈ **7 MB/day**, flat at the L1 horizon, and **exactly zero** while `thermal.enabled` is false. The lane measures the real per-row cost with `dbstat` at its gate (the ADR 0024 discipline) rather than trusting this estimate.
 - v4→v5 is two `CREATE TABLE`s: milliseconds on any file, no rebuild, no data at risk. A v5 file opened by a 0.5.4 daemon fails the version check as designed (`migration.rs:900`).
 - `sensors[]` is additive and absent when empty, so the Bun runtime, the shared dashboard and `docs/guides/API.md` stay valid; the Bun runtime gains **no** collector in this slice and hides the panel.
 - The parent sensors plan's remaining slices (fans, PWM, power, disk temps via `drivetemp`) become pure additions: a new `SensorKind` value already in the enum, a new chip allow-list entry, a new opt-in flag — **no schema change and no migration.**
