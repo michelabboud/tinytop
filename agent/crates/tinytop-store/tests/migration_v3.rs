@@ -378,7 +378,7 @@ async fn fresh_database_is_created_at_v4() {
 
 #[tokio::test]
 async fn migrated_v3_and_fresh_v4_schemas_are_identical() {
-    // Break caught: fresh-v3 DDL and the v2-to-v3 rebuild drift in any column
+    // Break caught: fresh-v4 DDL and the v2→v3→v4 rebuild chain drift in any column
     // attribute or required index while both still report user_version 4.
     let migrated_fixture = TempDatabase::new("migrated-schema");
     let migrated_seed = seed_v2_schema(&migrated_fixture).await;

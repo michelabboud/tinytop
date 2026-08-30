@@ -340,7 +340,7 @@ A crash after the post-migration `VACUUM` but before the audit transaction commi
 
 The first Rust-daemon start after upgrading to 0.5.4 migrates SQLite to schema
 v4. In one transaction it rebuilds both process-history tables, converts
-`started_at` text to millisecond integers, adds minute-tier GPU percentages,
+`started_at` text to millisecond integers, adds a nullable GPU-percent column to the minute tier,
 and creates the GPU adapter/sample tables. The default 24-hour fast-process
 window is expected to rebuild in seconds. The `history migration info` line
 reports `startedAtUnparsed`; those display-only values are stored as NULL while

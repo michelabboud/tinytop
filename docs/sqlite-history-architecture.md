@@ -11,7 +11,7 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current schema version: v3, with typed metric rows, interned host identity, on-change filesystem rows and mount-presence events, one-minute/five-minute/hourly rollup tables, typed process detail tables, a per-tick process table and command dictionary, migration/disk/fold state, and daemon timeline events
+- Current schema version: v4, with typed metric rows, interned host identity, on-change filesystem rows and mount-presence events, one-minute/five-minute/hourly rollup tables, typed process detail tables with millisecond start times and nullable GPU percent, a per-tick process table and command dictionary, interned GPU adapters and per-tick GPU samples, migration/disk/fold state, and daemon timeline events
 - Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, filesystem check cadence, and per-tick process history; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
 
 ## Process Boundary

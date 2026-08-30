@@ -465,7 +465,9 @@ fn parse_fdinfo(text: &str) -> Option<ParsedFdinfo> {
                     engine_ns.insert(key.trim_start_matches("drm-engine-").to_string(), ns);
                 }
             }
-            _ if key.starts_with("drm-cycles-") => saw_cycles = true,
+            _ if key.starts_with("drm-cycles-") || key.starts_with("drm-total-cycles-") => {
+                saw_cycles = true;
+            }
             _ => {}
         }
     }
@@ -934,6 +936,14 @@ mod tests {
         *offset.lock().expect("clock") = Duration::from_secs(2);
         fixture.client(4242, 7, cycles);
         assert_eq!(backend.sample()[0].busy_percent, None);
+    }
+
+    #[test]
+    fn total_cycles_only_stats_are_reported_as_cycles_only() {
+        let parsed = parse_fdinfo("drm-driver:\txe\ndrm-total-cycles-rcs:\t200\n")
+            .expect("mandatory driver");
+        assert!(parsed.cycles_only);
+        assert!(parsed.engines.is_empty());
     }
 
     #[test]
