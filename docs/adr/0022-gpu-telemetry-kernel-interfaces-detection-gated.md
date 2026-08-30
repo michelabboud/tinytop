@@ -29,3 +29,12 @@ TinyTop collects no GPU metric. Michel's requirements (2026-08-29): GPU at the f
 - GPU busy % and memory at 1.5 s where the OS exposes them; per-process GPU % on Linux and Windows; temperature on Linux only (the sensors plan `docs/plans/2026-08-16-sensors-recording-plan.md` owns fans/power/temps generally).
 - Windows/macOS backends are compile-verified cross-target on the dev box and must be runtime-accepted on real hardware before the release notes claim them.
 - Expected storage ≈ 30 B per adapter per tick (≈ 1.7 MB/day per adapter).
+
+## Amendment 2026-08-30 (Task 16 fact sheet; supplements the Decision — nothing above is edited)
+
+- **Stable adapter ids on Windows and macOS are NOT the LUID / registry entry id.** Both are allocated per boot (a LUID is unique only until the system restarts; an IOKit registry entry ID is unique for the running system only), and ADR 0025 decision 2 interns adapters on `gpu_adapters.stable_id` — a per-boot value would create a new adapter row per reboot and split every adapter's history. Rule: **Windows** `stable_id = dxgi-<vendor:04x>:<device:04x>:<subsys:08x>:<rev:02x>-<k>` (`k` = the 0-based index of that identity tuple in DXGI enumeration order; two identical cards → `-0`, `-1`); **macOS** `stable_id = ioaccel-<k>` plus `-<vendor:04x>:<device:04x>` when an `IOPCIDevice` ancestor exposes `vendor-id`/`device-id` (Apple silicon has none → `ioaccel-0`). The LUID joins PDH to DXGI within a run and triggers a re-open of the PDH query when the set changes; the registry entry id only dedups a service within one enumeration.
+- **A PDH LUID with no DXGI adapter is ignored and counted** (wizai carries one, `0x3FC20ECC`); a `0x1414` or `DXGI_ADAPTER_FLAG_SOFTWARE` adapter is dropped at detection.
+- **Memory on Windows comes from DXGI only**: `IDXGIAdapter3::QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL).CurrentUsage` = used, `DXGI_ADAPTER_DESC1.DedicatedVideoMemory` = total (`null` when 0). One PDH counter per query (`\GPU Engine(*)\Utilization Percentage`).
+- **Seven hand-declared IOKit symbols** (`IORegistryEntryGetRegistryEntryID` added to the six in the plan). `IOServiceGetMatchingServices` consumes the matching dictionary.
+- **The macOS key set was not re-measured** (miniwiz unreachable on 2026-08-30): the three documented keys stand; any other key needs a real `ioreg` dump captured into the fact sheet and a further amendment — never a guess.
+
