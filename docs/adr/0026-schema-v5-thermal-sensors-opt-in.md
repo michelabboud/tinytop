@@ -78,3 +78,18 @@ The store's current shape (read at `80694ae`): `SCHEMA_VERSION = 4` (`migration.
 - `sensors[]` is additive and absent when empty, so the Bun runtime, the shared dashboard and `docs/guides/API.md` stay valid; the Bun runtime gains **no** collector in this slice and hides the panel.
 - The parent sensors plan's remaining slices (fans, PWM, power, disk temps via `drivetemp`) become pure additions: a new `SensorKind` value already in the enum, a new chip allow-list entry, a new opt-in flag — **no schema change and no migration.**
 - `docs/guides/API.md`, `README.md`, `ARCHITECTURE.md` and `INSTALL.md` gain the thermal surface; the parent plan's step 7 ("ADR: dynamic sensor schema") is satisfied by this ADR.
+
+
+## Amendment 2026-08-30 13:0xZ — `stable_id` is a REAL field on `SensorReading` (decision 3 corrected)
+
+**Run #681 escalated correctly against decision 3 as first written, and the hole was real.** Decision 1 requires the store to intern every reading by `stable_id`; decision 3 gave `SensorReading` only `chip / kind / label / value / max / crit`; and the store receives nothing but `&SystemSnapshot`. The identity computed by the collector's `scan()` therefore had **no path to the store**, and `stable_id` cannot be reconstructed from the wire fields (`<k>` and `temp<N>` are not among them, by design — see decision 1). The lane searched for a side channel, found none, and refused to invent one.
+
+**Decision 3 is corrected: `SensorReading` gains `pub stable_id: String`, serialized as `stableId`, as its FIRST field.** It is part of the public JSON contract, not an internal carrier.
+
+*Rejected — `#[serde(skip)] pub stable_id: String` (the lane's own suggestion):* a skipped field deserializes to `""`, so any `SystemSnapshot` that round-trips through JSON — a test fixture, a stored document, the Bun runtime — would carry a struct that **silently lies about its own identity**, and the store would intern every such reading under the empty id. That is the `sqlx` NULL-decodes-as-0 failure class with a different spelling: no error, no panic, wrong data. A field that only sometimes holds the truth is worse than no field.
+
+*Rejected — a second parameter on `insert_snapshot`:* it splits one fact across two arguments that can disagree, and every future caller must remember to pass the matching vector.
+
+**Why exposing it is right, not merely tolerable:** a stable per-sensor key is exactly what an API consumer needs to keep a chart series attached to one sensor across daemon restarts and across a kernel relabel. T17b currently groups by `chip` + `label`, which breaks the moment a label changes; with `stableId` on the wire it can key on identity instead. The value is structural and non-sensitive (`hwmon-coretemp-0-temp1`) — it leaks nothing a reader cannot already see in `chip` and `label`.
+
+**Consequences:** F1 of brief T17 gains the field and a round-trip test asserting `stableId` is present and non-empty on every reading; F6 interns from `reading.stable_id` directly with **no fallback** — an empty `stable_id` is a bug and must fail loudly, never be defaulted; `docs/guides/API.md` documents it; T17b may key its grouping and series on `stableId` in a follow-up (its shipped behaviour stays correct without it, since the field is additive).
