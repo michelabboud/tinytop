@@ -2,22 +2,28 @@
 
 ## Current Version
 
-- Version: `0.5.3`
+- Version: `0.5.4`
 - Date: 2026-08-30
 - Status: Phase 5 (cadence classes + GPU, plan `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md`,
-  ADRs 0021–0024) IN PROGRESS. T14 landed as 0.5.3: schema v3 — `metric_samples` rebuilt without
-  `snapshot_json` (per-row uptime, the three scalars, `last_pid`, the filesystem stamp; nullable thread
-  columns), `host_identity` interning, filesystems on change with `fs_mount_events`, `/api/history`
-  assembled from the typed tables in window batches (287–312 ms for a 1 h / 2,400-row window on the
-  release daemon); v2→v3 in one transaction with the guard before the drop, legacy Bun negative inode
-  counts normalised and counted (ADR 0024 + two amendments); the dashboard replay repair (T14b) and the
-  fix for the 0.3.1–0.5.2 blank-panel regression (T14b-fix1); review rounds luna 662 → fix 664, luna
-  667 → fix 668. Next = T15 (GPU collector, Linux backend; schema v4 `started_at_ms`), then T16–T17 →
-  0.6.0. The live daemon still runs 0.3.1 — redeploy is an explicitly ordered step (the v1 file
-  migrates in ≈ 3.3 s; the pre-image law applies).
+  ADRs 0021–0025) IN PROGRESS. T15 landed as 0.5.4: the GPU collector on Linux (DRM sysfs +
+  `/proc/<pid>/fdinfo` engine deltas + hwmon; `gpu_busy_percent` preferred, a failed busy verdict
+  cached until re-detect, NVIDIA proprietary identity-only, WSL2 none, no subprocess or vendor
+  library) and schema v4 (ADR 0025: both process tables rebuilt with `started_at_ms`, `gpu_adapters`
+  interned, `gpu_samples` per adapter per tick, ONE guarded transaction — 34 ms over the live file's
+  11,987 minute rows), `GET /api/history/gpus`, `db stats` GPU counts; T15-fix1 after luna 675
+  (`drm-total-cycles-*` as the cycles form); the dashboard's GPU panel and row-gated column / sort /
+  detail (T15b; luna 673 clean). Hardware-proven on trashcan (2 × amdgpu, 96.8 % busy under load) and
+  sheep (i915, 97 %). Next = T16 (Windows PDH + DXGI, macOS IOKit — fact sheet first on the target
+  hosts, plan-only until Michel's go); T17 (thermals) proposed, awaiting his go → 0.6.0. The live
+  daemon still runs 0.3.1 — redeploy is an explicitly ordered step (the v1 file migrates v1→v4 in
+  ≈ 1.3–3.2 s, proven twice on copies; the pre-image law applies).
 
 ## Backlog
 
+- **GPU `busyPercent` is `null` when no readable DRM client exists (T15 observation (a))** — idle, and again the tick after a load ends: ADR 0025 decision 5's "no evidence" reading rather than 0 %; the dashboard shows `—`. With 242 denied pids on trashcan that is the honest value. Reporting 0 % whenever an interval exists is a design change — Michel's call, then an ADR 0025 amendment.
+- **One `null` GPU busy sample per minute per fdinfo adapter (T15 observation (b))** — every slow-tick (60 s) re-detect resets the fdinfo client state, so the first tick after a re-detect reports `null` (ADR 0025 decision 5 says so explicitly). A future amendment could keep the client map while the adapter set is unchanged (a smoother chart). Not a defect.
+- **`gpu_samples` secondary index — measure first (luna run 675 ruling (d))** — adapter-filtered reads over a full 24 h window (luna's 345,600-row example) run without a secondary index today; measure `GET /api/history/gpus` on a populated file before adding one.
+- **Time v3→v4 on a POPULATED fast table (T15 observation (e))** — the measured 34 ms is on an empty fast table (the live file is 0.3.1); a 24 h fast table (≈ 460k rows) is untimed on real data — expect low seconds (`INSERT … SELECT` + one index). INSTALL's "seconds on a default 24 h window" stands as a projection until measured.
 - **`consecutiveFailures` beside the cumulative OTel `failures`** — deep review ruling 18 (d): sufficient today with `lastFailureMs > lastSuccessMs` and `lastError`; a consecutive count would sharpen operator diagnosis.
 - **Measure the disabled-path cost the exporter adds** — deep review ruling 18 (e): one snapshot clone into the watch channel per collection and one settings read per 5 s tick while `otel.enabled=false`; by design (the 5 s tick bounds settings latency), unmeasured — measure before optimising.
 - **Stale-check refusal (from the T9 blind review, luna run 600)** — ADR 0020 keeps the last known
@@ -40,6 +46,10 @@
   OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
+
+### 0.5.4 - Cadence classes and GPU, Phase 5 lane 4 (T15 + T15b)
+
+- [x] T15 / 0.5.4: the GPU collector on Linux (DRM sysfs + `/proc/<pid>/fdinfo` engine deltas + hwmon; `gpu_busy_percent` preferred; a failed busy verdict cached until re-detect; NVIDIA proprietary identity-only; no subprocess, no vendor library) and schema v4 (ADR 0025) — both process tables rebuilt with `started_at_ms` in ONE guarded transaction, `gpu_adapters` interned, `gpu_samples` per adapter per tick, `GET /api/history/gpus`, `db stats` GPU counts, `wouldDelete.gpuSampleRows` (hexe run 674 after 670 escalated correctly on the `time` `parsing` feature; luna 675 → T15-fix1 run 676: `drm-total-cycles-*` as the cycles form + three doc lines). T15b: the GPU panel, the row-gated GPU column with sort + detail (hexe run 671; luna 673 clean). Measured: real-file v1→v4 3,215 ms (v3→v4 34 ms over 11,987 minute rows, 0 unparsable), `process_samples_fast` 51.9 B/row (was 66.7; target ≤ 60), the fdinfo scan 4.53 ms over 8 readable / 242 denied pids on trashcan. Acceptance: `Fabulous/docs/fleet/tinytop/2026-08-30-t15-acceptance-checklist.md`. Gate on main: see `CHANGELOG.md`.
 
 ### 0.5.3 - Cadence classes and GPU, Phase 5 lane 3 (T14 + T14b)
 
