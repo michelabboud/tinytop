@@ -54,6 +54,8 @@ The operator strip shows:
 
 Click the operator strip or its `Details` button to open the alert detail drawer. It lists the current metric values, warning/critical thresholds, sample age, recent trend, and what changed recently for the worst offender.
 
+The GPU panel appears only when the daemon detects an adapter. It shows each adapter's name, busy percentage, VRAM used/total when the driver reports it, and temperature when the GPU node has a sensor. Busy is the busiest engine, matching Task Manager's rule; it is `—` on the first sample, on NVIDIA proprietary adapters, and wherever the kernel exposes no source. On Linux, fdinfo-derived busy is computed over only the processes the daemon's user can see. The Bun runtime and WSL2 never show the panel.
+
 The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.34`. The same identity is available from:
 
 ```bash
@@ -92,7 +94,7 @@ The Settings dialog opens from the left rail and is split by scope:
 - `This Daemon` controls defaults stored by the Rust daemon in SQLite. These include default theme, default graph mode, browser refresh interval, default history window, target DB budget, top process count, redaction default, warning/critical thresholds, and enabled dashboard sections.
 - On the Rust daemon, `History ladder` controls L1 raw and L2 one-minute retention, optional L3 five-minute and L4 hourly tiers, the filesystem check interval (`Filesystem check seconds`, also the typed detail cadence), archive options, and disk-check thresholds. `processFastKeepHours` keeps per-tick process rows for 1–72 hours before older windows fall back to once-a-minute rows. L4 can be kept forever, and `History hours` / `Rollup days` are read-only compatibility mirrors derived from L1/L2. Bun has no ladder: the group is replaced by `History ladder — Rust daemon only`, the coverage card is hidden, the legacy retention inputs remain editable, and saves omit `retentionLadder`.
 
-The dialog validates ranges before saving, including the ladder's monotonic tier rules, with the same field-specific messages as the Rust server. It warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Boolean daemon options, including redaction and enabled dashboard sections, render as compact responsive toggle controls so several options can fit per row on desktop while remaining touch-friendly on narrow screens. Saving daemon defaults uses `PUT /api/settings`. If a save shrinks a horizon or disables a tier/archive, the dialog asks the Rust server for a dry-run first and shows the rows or buckets older than the candidate horizons. Disabled tier tables and archive files are reported as retained, not deleted. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
+The dialog validates ranges before saving, including the ladder's monotonic tier rules, with the same field-specific messages as the Rust server. It warns about unsaved daemon changes before closing, offers threshold presets, can reset the form back to the loaded daemon values, can stage factory defaults, and shows an effective settings readout. Boolean daemon options, including redaction and enabled dashboard sections, render as compact responsive toggle controls so several options can fit per row on desktop while remaining touch-friendly on narrow screens. Saving daemon defaults uses `PUT /api/settings`. If a save shrinks a horizon or disables a tier/archive, the dialog asks the Rust server for a dry-run first and shows the rows or buckets older than the candidate horizons; an L1 shrink may list `GPU rows deleted`. Disabled tier tables and archive files are reported as retained, not deleted. A browser-local setting wins for that browser; daemon defaults are used when no local override exists.
 
 On the Rust daemon, `Export JSON` downloads a versioned settings document and `Import JSON…` uploads one for a server dry-run before confirmation. The file contains the daemon settings and transfer metadata, never a secret; credentials remain outside settings. Invalid envelopes and settings show the server's validation messages, and retention growth may be refused while disk pressure is active. Shell operators can use `tinytop-agent config export [--out FILE]` and `tinytop-agent config import FILE --dry-run` before applying with `config import FILE`; CLI application records the import but leaves pruning to the daemon's next tick so a second process does not run maintenance beside it.
 
@@ -184,7 +186,7 @@ Persisted in browser `localStorage`:
 - graph mode
 - selected history range
 - visible history series
-- process table filter, sort, and density
+- process table filter, PID/CPU/RAM/RSS/GPU sort, and density
 - filesystem system-mount toggle
 - last section
 
@@ -200,6 +202,8 @@ Not persisted:
 - RAM and swap come from `/proc/meminfo`.
 - Load percent is derived from 1-minute load divided by CPU core count, capped to 100 for overview gauge and chart display.
 - Pressure values come from `/proc/pressure/*` when available.
+- GPU busy is the busiest engine's percentage over the sampling interval, capped at 100%.
+- Per-process GPU percentage is shown only when at least one process row has a value.
 - In the Rust daemon, filesystem and process data come from Rust crates instead of shelling out.
 - Process detail rows include parent PID and start time when the active collector can provide them. The copy command uses a redacted command string to avoid copying obvious token/password values.
 - In legacy Bun mode, filesystem capacity comes from `df` and process rows come from `ps`.

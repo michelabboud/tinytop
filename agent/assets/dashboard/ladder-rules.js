@@ -15,6 +15,7 @@ const WOULD_DELETE_FIELDS = [
   "l3Buckets",
   "l4Buckets",
   "processFastRows",
+  "gpuSampleRows",
 ];
 
 function formatCoverageBytes(bytes) {
@@ -96,6 +97,39 @@ export function pressureMaximum(values) {
 
 export function formatCount(value) {
   return Number.isFinite(value) ? String(value) : "—";
+}
+
+export function formatGpuPercent(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)}%` : "—";
+}
+
+export function formatGpuMemory(usedBytes, totalBytes) {
+  if (!Number.isFinite(usedBytes)) return "—";
+  if (!Number.isFinite(totalBytes)) return formatCoverageBytes(usedBytes);
+  return `${formatCoverageBytes(usedBytes)} / ${formatCoverageBytes(totalBytes)}`;
+}
+
+export function formatGpuTemperature(value) {
+  return Number.isFinite(value) ? `${Math.round(value)} °C` : "";
+}
+
+export function describeGpuAdapter(adapter) {
+  const name = typeof adapter?.name === "string" && adapter.name.length > 0 ? adapter.name : adapter?.id;
+  return {
+    name,
+    meta: `${adapter?.vendor} · ${adapter?.driver}`,
+    busy: formatGpuPercent(adapter?.busyPercent),
+    memory: formatGpuMemory(adapter?.memoryUsedBytes, adapter?.memoryTotalBytes),
+    temperature: formatGpuTemperature(adapter?.temperatureC),
+  };
+}
+
+export function gpuColumnVisible(processes) {
+  return Array.isArray(processes) && processes.some((process) => Number.isFinite(process?.gpuPercent));
+}
+
+export function gpuPercentSortValue(process) {
+  return Number.isFinite(process?.gpuPercent) ? process.gpuPercent : -1;
 }
 
 function finiteTimestamp(value) {
@@ -397,7 +431,7 @@ export function isValidImportPlan(plan) {
   const wouldDelete = plan.wouldDelete;
   if (!wouldDelete || typeof wouldDelete !== "object" || Array.isArray(wouldDelete)) return false;
   return WOULD_DELETE_FIELDS.every((field) => {
-    const value = wouldDelete[field];
+    const value = field === "gpuSampleRows" && !Object.hasOwn(wouldDelete, field) ? 0 : wouldDelete[field];
     return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
   });
 }
@@ -430,6 +464,7 @@ export function describeImportPlan(
     candidateLadder?.archive?.queryable ? " (moved to the queryable archive)" : " deleted",
   );
   addCount("processFastRows", "fast process rows", " deleted");
+  addCount("gpuSampleRows", "GPU rows", " deleted");
 
   const previousLadder = previousSettings?.retentionLadder;
   for (const tier of ["l3", "l4"]) {
