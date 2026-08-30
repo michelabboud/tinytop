@@ -261,6 +261,36 @@ async fn dry_run_reports_changed_keys_and_would_delete() {
 }
 
 #[tokio::test]
+async fn would_delete_counts_gpu_rows_at_the_l1_horizon() {
+    // Break caught: a retention shrink deletes GPU samples without reporting them in the dry-run.
+    let fixture = TempDatabase::new("gpu-dry-run-count");
+    let store = fixture.store().await;
+    let pool = fixture.pool().await;
+    let now_ms = 2_000 * DAY_MS;
+    sqlx::query(
+        "INSERT INTO gpu_adapters (stable_id, vendor, name, driver, first_seen_ms, last_seen_ms) VALUES ('pci-0000:02:00.0', 'amd', 'fixture', 'amdgpu', ?, ?)",
+    )
+    .bind(now_ms - 4 * DAY_MS)
+    .bind(now_ms - 4 * DAY_MS)
+    .execute(&pool)
+    .await
+    .expect("GPU adapter fixture should insert");
+    sqlx::query(
+        "INSERT INTO gpu_samples (captured_at_ms, adapter_id, busy_percent) SELECT ?, adapter_id, 25.0 FROM gpu_adapters WHERE stable_id = 'pci-0000:02:00.0'",
+    )
+    .bind(now_ms - 4 * DAY_MS)
+    .execute(&pool)
+    .await
+    .expect("GPU sample fixture should insert");
+
+    let plan = plan_import(&store, &document(&shrinking_candidate()), now_ms)
+        .await
+        .expect("GPU dry-run should plan");
+
+    assert_eq!(plan.would_delete.gpu_sample_rows, 1);
+}
+
+#[tokio::test]
 async fn import_plan_counts_fast_process_rows_for_a_shrinking_horizon() {
     // Break caught: shortening the fast-process horizon omits rows from the
     // dry-run, lengthening it invents deletions, or a 0.5.x document no longer
@@ -280,7 +310,7 @@ async fn import_plan_counts_fast_process_rows_for_a_shrinking_horizon() {
     .await
     .expect("command id should read");
     sqlx::query(
-        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) VALUES (?, 1, 1, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
+        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) VALUES (?, 1, 1, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
     )
     .bind(now_ms - 2 * 60 * MINUTE_MS)
     .bind(command_id)
@@ -300,7 +330,7 @@ async fn import_plan_counts_fast_process_rows_for_a_shrinking_horizon() {
         .await
         .expect("short horizon should save");
     sqlx::query(
-        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) VALUES (?, 2, 2, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
+        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) VALUES (?, 2, 2, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
     )
     .bind(now_ms - 30 * 60 * MINUTE_MS)
     .bind(command_id)

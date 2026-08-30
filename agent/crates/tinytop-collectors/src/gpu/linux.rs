@@ -97,10 +97,9 @@ impl LinuxGpuBackend {
         let mut current_clients = HashMap::new();
         let mut pid_entries = read_dir_sorted(&self.proc_root);
         pid_entries.retain(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit()))
+            entry.file_name().to_str().is_some_and(|name| {
+                !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit())
+            })
         });
         let scannable = self
             .adapters
@@ -117,7 +116,8 @@ impl LinuxGpuBackend {
                 continue;
             };
             let fd_root = pid_entry.path().join("fd");
-            let Ok(mut fds) = fs::read_dir(&fd_root).map(|entries| entries.flatten().collect::<Vec<_>>())
+            let Ok(mut fds) =
+                fs::read_dir(&fd_root).map(|entries| entries.flatten().collect::<Vec<_>>())
             else {
                 pids_denied = pids_denied.saturating_add(1);
                 continue;
@@ -132,8 +132,7 @@ impl LinuxGpuBackend {
                     continue;
                 }
                 let fd = fd_entry.file_name().to_string_lossy().into_owned();
-                let Ok(text) = fs::read_to_string(pid_entry.path().join("fdinfo").join(&fd))
-                else {
+                let Ok(text) = fs::read_to_string(pid_entry.path().join("fdinfo").join(&fd)) else {
                     continue;
                 };
                 let Some(parsed) = parse_fdinfo(&text) else {
@@ -269,8 +268,8 @@ impl GpuBackend for LinuxGpuBackend {
                 .to_string();
             let vendor_text = read_trimmed(&device_root.join("vendor"))
                 .unwrap_or_else(|| format!("0x{vendor_id:04x}"));
-            let device_text = read_trimmed(&device_root.join("device"))
-                .unwrap_or_else(|| "unknown".to_string());
+            let device_text =
+                read_trimmed(&device_root.join("device")).unwrap_or_else(|| "unknown".to_string());
             let name = read_trimmed(&device_root.join("product_name"))
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| format!("{vendor_text}:{device_text}"));
@@ -323,7 +322,10 @@ impl GpuBackend for LinuxGpuBackend {
 
     fn sample(&mut self) -> Vec<GpuSample> {
         let started_at = (self.clock)();
-        let should_scan = self.adapters.iter().any(|adapter| adapter.driver != "nvidia");
+        let should_scan = self
+            .adapters
+            .iter()
+            .any(|adapter| adapter.driver != "nvidia");
         let fdinfo_busy = if should_scan {
             self.scan_fdinfo(started_at)
         } else {
@@ -436,7 +438,7 @@ fn parse_fdinfo(text: &str) -> Option<ParsedFdinfo> {
     let mut client_id = None;
     let mut engine_ns = HashMap::new();
     let mut capacities = HashMap::new();
-    let mut cycles_only = false;
+    let mut saw_cycles = false;
     for line in text.lines() {
         let Some((key, value)) = line.split_once(':') else {
             continue;
@@ -456,26 +458,26 @@ fn parse_fdinfo(text: &str) -> Option<ParsedFdinfo> {
                 }
             }
             _ if key.starts_with("drm-engine-") => {
-                if let Some(ns) = value
-                    .split_whitespace()
-                    .next()
-                    .and_then(|value| value.parse::<u64>().ok())
+                let mut parts = value.split_whitespace();
+                if let (Some(value), Some("ns"), None) = (parts.next(), parts.next(), parts.next())
+                    && let Ok(ns) = value.parse::<u64>()
                 {
                     engine_ns.insert(key.trim_start_matches("drm-engine-").to_string(), ns);
                 }
             }
-            _ if key.starts_with("drm-cycles-") => cycles_only = true,
+            _ if key.starts_with("drm-cycles-") => saw_cycles = true,
             _ => {}
         }
     }
     let driver = driver?;
-    let engines = engine_ns
+    let engines: HashMap<String, EngineReading> = engine_ns
         .into_iter()
         .map(|(name, ns)| {
             let capacity = capacities.get(&name).copied().unwrap_or(1);
             (name, EngineReading { ns, capacity })
         })
         .collect();
+    let cycles_only = saw_cycles && engines.is_empty();
     Some(ParsedFdinfo {
         driver,
         pdev,
@@ -486,8 +488,9 @@ fn parse_fdinfo(text: &str) -> Option<ParsedFdinfo> {
 }
 
 fn is_card_name(name: &str) -> bool {
-    name.strip_prefix("card")
-        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit()))
+    name.strip_prefix("card").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
 }
 
 fn read_hex_u16(path: &Path) -> Option<u16> {
@@ -544,7 +547,7 @@ mod tests {
         time::{Duration, Instant},
     };
 
-    use super::LinuxGpuBackend;
+    use super::{LinuxGpuBackend, parse_fdinfo};
     use crate::gpu::GpuBackend;
 
     struct Fixture {
@@ -556,10 +559,8 @@ mod tests {
 
     impl Fixture {
         fn new(name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "tinytop-gpu-{name}-{}",
-                std::process::id()
-            ));
+            let root =
+                std::env::temp_dir().join(format!("tinytop-gpu-{name}-{}", std::process::id()));
             let drm = root.join("drm");
             let proc = root.join("proc");
             let nvidia = root.join("nvidia");
@@ -577,10 +578,8 @@ mod tests {
         fn card(&self, name: &str, slot: &str, driver: &str, vendor: &str, device: &str) {
             let device_root = self.drm.join(name).join("device");
             fs::create_dir_all(&device_root).expect("create card fixture");
-            fs::write(device_root.join("vendor"), format!("{vendor}\n"))
-                .expect("write vendor");
-            fs::write(device_root.join("device"), format!("{device}\n"))
-                .expect("write device");
+            fs::write(device_root.join("vendor"), format!("{vendor}\n")).expect("write vendor");
+            fs::write(device_root.join("device"), format!("{device}\n")).expect("write device");
             fs::write(
                 device_root.join("uevent"),
                 format!("DRIVER={driver}\nPCI_SLOT_NAME={slot}\n"),
@@ -615,9 +614,7 @@ mod tests {
                 self.drm.clone(),
                 self.proc.clone(),
                 self.nvidia.clone(),
-                Box::new(move || {
-                    base + *clock_offset.lock().expect("fixture clock mutex")
-                }),
+                Box::new(move || base + *clock_offset.lock().expect("fixture clock mutex")),
             );
             (backend, offset)
         }
@@ -793,31 +790,91 @@ mod tests {
     #[test]
     fn two_clients_sum_and_the_busiest_engine_wins() {
         let (fixture, mut backend, offset) = detected_amd_backend("fdinfo-sum-max");
-        fixture.client(1001, 7, &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 0)]));
-        fixture.client(1002, 8, &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]));
+        fixture.client(
+            1001,
+            7,
+            &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 0)]),
+        );
+        fixture.client(
+            1002,
+            8,
+            &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]),
+        );
         backend.sample();
         *offset.lock().expect("clock") = Duration::from_secs(2);
-        fixture.client(1001, 7, &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 1_000_000_000), ("compute", 800_000_000)]));
-        fixture.client(1002, 8, &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 600_000_000)]));
+        fixture.client(
+            1001,
+            7,
+            &fdinfo(
+                Some("0000:02:00.0"),
+                Some(1),
+                &[("gfx", 1_000_000_000), ("compute", 800_000_000)],
+            ),
+        );
+        fixture.client(
+            1002,
+            8,
+            &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 600_000_000)]),
+        );
         assert_eq!(backend.sample()[0].busy_percent, Some(80.0));
 
         backend.detect();
-        fixture.client(1001, 7, &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 0), ("compute", 0)]));
-        fixture.client(1002, 8, &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]));
+        fixture.client(
+            1001,
+            7,
+            &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 0), ("compute", 0)]),
+        );
+        fixture.client(
+            1002,
+            8,
+            &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]),
+        );
         backend.sample();
         *offset.lock().expect("clock") = Duration::from_secs(4);
-        fixture.client(1001, 7, &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 800_000_000), ("compute", 800_000_000)]));
-        fixture.client(1002, 8, &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]));
+        fixture.client(
+            1001,
+            7,
+            &fdinfo(
+                Some("0000:02:00.0"),
+                Some(1),
+                &[("gfx", 800_000_000), ("compute", 800_000_000)],
+            ),
+        );
+        fixture.client(
+            1002,
+            8,
+            &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]),
+        );
         assert_eq!(backend.sample()[0].busy_percent, Some(40.0));
 
         backend.detect();
-        fixture.client(1001, 7, &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 0)]));
-        fixture.client(1002, 8, &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]));
-        fixture.client(1003, 9, &fdinfo(Some("0000:02:00.0"), Some(3), &[("gfx", 0)]));
+        fixture.client(
+            1001,
+            7,
+            &fdinfo(Some("0000:02:00.0"), Some(1), &[("gfx", 0)]),
+        );
+        fixture.client(
+            1002,
+            8,
+            &fdinfo(Some("0000:02:00.0"), Some(2), &[("gfx", 0)]),
+        );
+        fixture.client(
+            1003,
+            9,
+            &fdinfo(Some("0000:02:00.0"), Some(3), &[("gfx", 0)]),
+        );
         backend.sample();
         *offset.lock().expect("clock") = Duration::from_secs(6);
         for (pid, fd, client) in [(1001, 7, 1), (1002, 8, 2), (1003, 9, 3)] {
-            fixture.client(pid, fd, &fdinfo(Some("0000:02:00.0"), Some(client), &[("gfx", 1_000_000_000)]));
+            fixture.client(
+                pid,
+                fd,
+                &fdinfo(
+                    Some("0000:02:00.0"),
+                    Some(client),
+                    &[("gfx", 1_000_000_000)],
+                ),
+            );
         }
         assert_eq!(backend.sample()[0].busy_percent, Some(100.0));
     }
@@ -835,10 +892,18 @@ mod tests {
     #[test]
     fn a_decreasing_counter_counts_as_zero() {
         let (fixture, mut backend, offset) = detected_amd_backend("fdinfo-decrease");
-        fixture.client(4242, 7, &fdinfo(Some("0000:02:00.0"), Some(4), &[("gfx", 2_000_000_000)]));
+        fixture.client(
+            4242,
+            7,
+            &fdinfo(Some("0000:02:00.0"), Some(4), &[("gfx", 2_000_000_000)]),
+        );
         backend.sample();
         *offset.lock().expect("clock") = Duration::from_secs(2);
-        fixture.client(4242, 7, &fdinfo(Some("0000:02:00.0"), Some(4), &[("gfx", 1_000_000_000)]));
+        fixture.client(
+            4242,
+            7,
+            &fdinfo(Some("0000:02:00.0"), Some(4), &[("gfx", 1_000_000_000)]),
+        );
         assert_eq!(backend.sample()[0].busy_percent, Some(0.0));
     }
 
@@ -869,5 +934,26 @@ mod tests {
         *offset.lock().expect("clock") = Duration::from_secs(2);
         fixture.client(4242, 7, cycles);
         assert_eq!(backend.sample()[0].busy_percent, None);
+    }
+
+    #[test]
+    fn fdinfo_engine_values_require_kernel_ns_units() {
+        // Break caught: a future kernel unit is silently interpreted as nanoseconds.
+        for text in [
+            "drm-driver:\tamdgpu\ndrm-engine-gfx:\t10 us\n",
+            "drm-driver:\tamdgpu\ndrm-engine-gfx:\t10\n",
+        ] {
+            let parsed = parse_fdinfo(text).expect("mandatory driver");
+            assert!(parsed.engines.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn mixed_cycles_and_engine_stats_are_not_reported_as_cycles_only() {
+        let parsed =
+            parse_fdinfo("drm-driver:\txe\ndrm-cycles-rcs:\t100\ndrm-engine-render:\t500 ns\n")
+                .expect("mandatory driver");
+        assert!(!parsed.cycles_only);
+        assert_eq!(parsed.engines["render"].ns, 500);
     }
 }

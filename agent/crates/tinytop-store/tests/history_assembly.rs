@@ -127,8 +127,10 @@ fn snapshot(stamp: Option<i64>) -> SystemSnapshot {
                 rss_bytes: 1_000 + u64::from(rank),
                 parent_pid: Some(1),
                 started_at: Some(format!("2026-08-30T00:00:0{rank}Z")),
+                gpu_percent: None,
             })
             .collect(),
+        gpus: Vec::new(),
     }
 }
 
@@ -709,6 +711,7 @@ async fn history_window_of_2400_rows_assembles_under_budget() {
             rss_bytes: 10_000 + u64::from(rank),
             parent_pid: Some(1),
             started_at: Some(format!("2026-08-30T00:00:0{rank}Z")),
+            gpu_percent: None,
         })
         .collect();
     store.insert_snapshot(0, &seed).await.expect("seed");
@@ -745,11 +748,11 @@ async fn history_window_of_2400_rows_assembles_under_budget() {
         )
         INSERT INTO process_samples_fast (
           captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
-          rss_bytes, parent_pid, started_at, gpu_percent
+          rss_bytes, parent_pid, started_at_ms, gpu_percent
         )
         SELECT ticks.i * 1500, ranks.rank, 1000 + ranks.rank, c.command_id,
                ranks.rank, ranks.rank, 10000 + ranks.rank, 1,
-               printf('2026-08-30T00:00:0%dZ', ranks.rank), NULL
+               1788048000000 + ranks.rank * 1000, NULL
         FROM ticks CROSS JOIN ranks
         JOIN process_commands c ON c.command = printf('perf-%d', ranks.rank);
         "#,

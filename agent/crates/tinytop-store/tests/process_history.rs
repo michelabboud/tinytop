@@ -149,7 +149,7 @@ async fn read_history_processes_picks_fast_inside_the_keep_window_and_minute_out
             .await
             .expect("fixture command identifier should read");
     sqlx::query(
-        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) VALUES (?, 0, 424242, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
+        "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) VALUES (?, 0, 424242, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
     )
     .bind(fast_only_captured_at_ms)
     .bind(command_id)
@@ -271,7 +271,7 @@ async fn prune_process_fast_history_is_limit_bounded_and_leaves_no_orphans() {
             .await
             .expect("minute command id should read");
     sqlx::query(
-        "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 12000) INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) SELECT ?, n, n, ?, 1.0, 2.0, 3, NULL, NULL, NULL FROM seq",
+        "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 12000) INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) SELECT ?, n, n, ?, 1.0, 2.0, 3, NULL, NULL, NULL FROM seq",
     )
     .bind(old_ms)
     .bind(old_id)
@@ -280,7 +280,7 @@ async fn prune_process_fast_history_is_limit_bounded_and_leaves_no_orphans() {
     .expect("old fast process fixtures should insert");
     for rank in 1_i64..=10 {
         sqlx::query(
-            "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, gpu_percent) VALUES (?, ?, ?, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
+            "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) VALUES (?, ?, ?, ?, 1.0, 2.0, 3, NULL, NULL, NULL)",
         )
         .bind(new_ms)
         .bind(rank)
@@ -291,7 +291,7 @@ async fn prune_process_fast_history_is_limit_bounded_and_leaves_no_orphans() {
         .expect("new fast process fixture should insert");
     }
     sqlx::query(
-        "INSERT INTO process_samples (captured_at_ms, rank, pid, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at, command_id) VALUES (?, 1, 1, 1.0, 2.0, 3, NULL, NULL, ?)",
+        "INSERT INTO process_samples (captured_at_ms, rank, pid, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, command_id, gpu_percent) VALUES (?, 1, 1, 1.0, 2.0, 3, NULL, NULL, ?, NULL)",
     )
     .bind(new_ms)
     .bind(minute_id)
@@ -409,8 +409,10 @@ fn snapshot(captured_at_ms: i64) -> SystemSnapshot {
                 rss_bytes: 3,
                 parent_pid: None,
                 started_at: None,
+                gpu_percent: None,
             })
             .collect(),
+        gpus: Vec::new(),
     }
 }
 

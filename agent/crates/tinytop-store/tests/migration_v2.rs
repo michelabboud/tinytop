@@ -112,12 +112,12 @@ async fn marker_count(pool: &SqlitePool) -> i64 {
 }
 
 #[tokio::test]
-async fn fresh_database_at_v3_keeps_the_v2_process_schema() {
+async fn fresh_database_at_v4_keeps_the_v2_process_dictionary() {
     let fixture = TempDatabase::new("fresh");
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("fresh database should connect");
-    assert_eq!(store.user_version().await.expect("version should read"), 3);
+    assert_eq!(store.user_version().await.expect("version should read"), 4);
     store.close().await.expect("store should close");
 
     let pool = fixture.raw_pool().await;
@@ -150,14 +150,14 @@ async fn fresh_database_at_v3_keeps_the_v2_process_schema() {
 }
 
 #[tokio::test]
-async fn v1_fixture_with_three_commands_migrates_through_v2_to_v3() {
+async fn v1_fixture_with_three_commands_migrates_through_v2_to_v4() {
     let fixture = TempDatabase::new("three-commands");
     seed_v1_processes(&fixture).await;
 
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("v1 database should migrate");
-    assert_eq!(store.user_version().await.expect("version should read"), 3);
+    assert_eq!(store.user_version().await.expect("version should read"), 4);
     store.close().await.expect("store should close");
 
     let pool = fixture.raw_pool().await;
@@ -224,7 +224,7 @@ async fn v1_fixture_with_three_commands_migrates_through_v2_to_v3() {
             .fetch_one(&pool)
             .await
             .expect("version should read"),
-        3
+        4
     );
     assert_eq!(marker_count(&pool).await, 1);
     pool.close().await;
@@ -305,7 +305,7 @@ async fn v1_fixture_with_an_index_on_command_refuses_and_leaves_the_file_untouch
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
         .expect("migration should succeed after removing the probe index");
-    assert_eq!(store.user_version().await.expect("version should read"), 3);
+    assert_eq!(store.user_version().await.expect("version should read"), 4);
     store.close().await.expect("store should close");
     let pool = fixture.raw_pool().await;
     assert_eq!(marker_count(&pool).await, 1);
@@ -380,8 +380,8 @@ async fn newer_schema_version_is_refused() {
         .await
         .expect_err("newer schema should be refused")
         .to_string();
-    assert!(error.contains("unsupported SQLite schema version 4"));
-    assert!(error.contains("supported version is 3"));
+    assert!(error.contains("unsupported SQLite schema version 5"));
+    assert!(error.contains("supported version is 4"));
 }
 
 fn set_sqlite_user_version(path: &Path, user_version: u32) {

@@ -1219,6 +1219,8 @@ fn snapshot(captured_at_ms: i64, cpu: f64) -> SystemSnapshot {
             rss_bytes: 3,
             parent_pid: None,
             started_at: None,
+            gpu_percent: None,
         }],
+        gpus: Vec::new(),
     }
 }

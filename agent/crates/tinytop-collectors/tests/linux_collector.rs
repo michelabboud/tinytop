@@ -150,7 +150,7 @@ fn live_linux_collector_returns_a_real_snapshot_on_linux_hosts() {
         return;
     }
 
-    let mut collector = LinuxCollector::default();
+    let mut collector = LinuxCollector::with_clock(Instant::now);
     let snapshot = collector.collect().expect("live linux snapshot");
 
     assert!(!snapshot.identity.hostname.is_empty());
@@ -322,7 +322,7 @@ fn top_process_count_is_honoured() {
         return;
     }
 
-    let mut collector = LinuxCollector::default();
+    let mut collector = LinuxCollector::with_clock(Instant::now);
     collector.configure(CollectorConfig {
         top_process_count: 1,
         ..CollectorConfig::default()

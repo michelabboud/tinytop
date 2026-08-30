@@ -1295,14 +1295,15 @@ async fn migrate_v3_to_v4(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
     )
     .fetch_one(&mut *transaction)
     .await?;
-    let started_at_unparsed = fast_unparsed.checked_add(minute_unparsed).ok_or_else(|| {
-        StoreError::Migration {
-            reason: "schema v4 unparsable start-time count exceeds SQLite INTEGER capacity"
-                .to_string(),
-            remedy: "inspect the database with `db check`; the database was not modified"
-                .to_string(),
-        }
-    })?;
+    let started_at_unparsed =
+        fast_unparsed
+            .checked_add(minute_unparsed)
+            .ok_or_else(|| StoreError::Migration {
+                reason: "schema v4 unparsable start-time count exceeds SQLite INTEGER capacity"
+                    .to_string(),
+                remedy: "inspect the database with `db check`; the database was not modified"
+                    .to_string(),
+            })?;
 
     sqlx::query(
         r#"
@@ -1334,10 +1335,9 @@ async fn migrate_v3_to_v4(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
     .execute(&mut *transaction)
     .await?;
 
-    let copied_fast_rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM process_samples_fast_v4")
-            .fetch_one(&mut *transaction)
-            .await?;
+    let copied_fast_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM process_samples_fast_v4")
+        .fetch_one(&mut *transaction)
+        .await?;
     if copied_fast_rows != fast_rows {
         return Err(StoreError::Migration {
             reason: format!(
@@ -1378,11 +1378,9 @@ async fn migrate_v3_to_v4(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
     sqlx::query("ALTER TABLE process_samples_v4 RENAME TO process_samples")
         .execute(&mut *transaction)
         .await?;
-    sqlx::query(
-        "CREATE INDEX idx_process_samples_time ON process_samples (captured_at_ms DESC)",
-    )
-    .execute(&mut *transaction)
-    .await?;
+    sqlx::query("CREATE INDEX idx_process_samples_time ON process_samples (captured_at_ms DESC)")
+        .execute(&mut *transaction)
+        .await?;
     sqlx::query("CREATE INDEX idx_process_samples_command ON process_samples (command_id)")
         .execute(&mut *transaction)
         .await?;

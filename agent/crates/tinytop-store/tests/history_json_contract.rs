@@ -1,8 +1,8 @@
 use tinytop_store::HistorySample;
 use tinytop_types::{
-    CpuSnapshot, CpuTimes, IdentitySnapshot, LoadSnapshot, MemorySnapshot, PressureGroup,
-    PressureSnapshot, RuntimeConfidence, RuntimeDetection, RuntimeKind, SwapSnapshot,
-    SystemSnapshot,
+    CpuSnapshot, CpuTimes, GpuSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
+    PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
+    RuntimeKind, SwapSnapshot, SystemSnapshot,
 };
 
 #[test]
@@ -17,6 +17,48 @@ fn history_sample_serializes_with_dashboard_field_names() {
     assert_eq!(value["capturedAtMs"], 1_772_000_000_000_i64);
     assert!(value.get("captured_at_ms").is_none());
     assert!(value.get("snapshot").is_some());
+    assert!(value["snapshot"].get("gpus").is_none());
+}
+
+#[test]
+fn history_sample_with_a_gpu_serializes_with_dashboard_field_names() {
+    // Break caught: assembled GPU and per-process values use Rust field names or disappear.
+    let mut snapshot = minimal_snapshot();
+    snapshot.gpus.push(GpuSnapshot {
+        id: "pci-0000:02:00.0".to_string(),
+        vendor: "amd".to_string(),
+        name: "0x1002:0x6810".to_string(),
+        driver: "amdgpu".to_string(),
+        busy_percent: Some(37.0),
+        memory_used_bytes: Some(6_000_640),
+        memory_total_bytes: Some(2_147_483_648),
+        temperature_c: Some(44.0),
+    });
+    snapshot.processes.push(ProcessSnapshot {
+        pid: 42,
+        command: "fixture".to_string(),
+        cpu_percent: 1.0,
+        memory_percent: 2.0,
+        rss_bytes: 3,
+        parent_pid: None,
+        started_at: None,
+        gpu_percent: Some(12.5),
+    });
+
+    let value = serde_json::to_value(HistorySample {
+        captured_at_ms: 1_772_000_000_000,
+        snapshot,
+    })
+    .expect("GPU history sample should serialize");
+
+    assert_eq!(value["snapshot"]["gpus"][0]["busyPercent"], 37.0);
+    assert_eq!(value["snapshot"]["gpus"][0]["memoryUsedBytes"], 6_000_640);
+    assert_eq!(
+        value["snapshot"]["gpus"][0]["memoryTotalBytes"],
+        2_147_483_648_u64
+    );
+    assert_eq!(value["snapshot"]["gpus"][0]["temperatureC"], 44.0);
+    assert_eq!(value["snapshot"]["processes"][0]["gpuPercent"], 12.5);
 }
 
 fn minimal_snapshot() -> SystemSnapshot {
@@ -68,5 +110,6 @@ fn minimal_snapshot() -> SystemSnapshot {
         },
         filesystems: vec![],
         processes: vec![],
+        gpus: Vec::new(),
     }
 }

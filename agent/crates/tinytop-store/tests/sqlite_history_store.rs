@@ -99,7 +99,9 @@ fn snapshot(timestamp: &str, cpu: f64) -> SystemSnapshot {
             rss_bytes: 3,
             parent_pid: None,
             started_at: None,
+            gpu_percent: None,
         }],
+        gpus: Vec::new(),
     }
 }
 

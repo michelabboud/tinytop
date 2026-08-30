@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use tinytop_store::{
     HistoryQuery, ProcessHistorySource, SqliteHistoryStore,
     maintenance::{LadderConfig, maintain_with_config},
@@ -62,9 +62,19 @@ impl Drop for TempDatabase {
 fn gpu(id: &str, busy_percent: Option<f64>) -> GpuSnapshot {
     GpuSnapshot {
         id: id.to_string(),
-        vendor: if id.ends_with("02:00.0") { "amd" } else { "intel" }.to_string(),
+        vendor: if id.ends_with("02:00.0") {
+            "amd"
+        } else {
+            "intel"
+        }
+        .to_string(),
         name: format!("GPU {id}"),
-        driver: if id.ends_with("02:00.0") { "amdgpu" } else { "i915" }.to_string(),
+        driver: if id.ends_with("02:00.0") {
+            "amdgpu"
+        } else {
+            "i915"
+        }
+        .to_string(),
         busy_percent,
         memory_used_bytes: busy_percent.map(|_| 6_000_640),
         memory_total_bytes: busy_percent.map(|_| 2_147_483_648),
@@ -72,7 +82,11 @@ fn gpu(id: &str, busy_percent: Option<f64>) -> GpuSnapshot {
     }
 }
 
-fn snapshot(gpus: Vec<GpuSnapshot>, started_at: Option<&str>, gpu_percent: Option<f64>) -> SystemSnapshot {
+fn snapshot(
+    gpus: Vec<GpuSnapshot>,
+    started_at: Option<&str>,
+    gpu_percent: Option<f64>,
+) -> SystemSnapshot {
     SystemSnapshot {
         timestamp: "2026-08-29T05:30:00Z".to_string(),
         filesystems_captured_at_ms: None,
@@ -156,7 +170,10 @@ async fn gpu_rows_are_written_per_adapter_per_tick_and_adapters_are_interned_onc
             .insert_snapshot(
                 captured_at_ms,
                 &snapshot(
-                    vec![gpu("pci-0000:02:00.0", Some(37.0)), gpu("pci-0000:00:02.0", None)],
+                    vec![
+                        gpu("pci-0000:02:00.0", Some(37.0)),
+                        gpu("pci-0000:00:02.0", None),
+                    ],
                     None,
                     None,
                 ),
@@ -167,12 +184,11 @@ async fn gpu_rows_are_written_per_adapter_per_tick_and_adapters_are_interned_onc
     let pool = fixture.pool().await;
     assert_eq!(count(&pool, "gpu_adapters").await, 2);
     assert_eq!(count(&pool, "gpu_samples").await, 6);
-    let first_seen: Vec<i64> = sqlx::query_scalar(
-        "SELECT first_seen_ms FROM gpu_adapters ORDER BY stable_id",
-    )
-    .fetch_all(&pool)
-    .await
-    .expect("first seen");
+    let first_seen: Vec<i64> =
+        sqlx::query_scalar("SELECT first_seen_ms FROM gpu_adapters ORDER BY stable_id")
+            .fetch_all(&pool)
+            .await
+            .expect("first seen");
     assert_eq!(first_seen, [1_000, 1_000]);
 }
 
@@ -182,7 +198,10 @@ async fn adapter_ids_survive_a_reconnect() {
     let fixture = TempDatabase::new("reconnect");
     let store = fixture.store().await;
     store
-        .insert_snapshot(1_000, &snapshot(vec![gpu("pci-0000:02:00.0", Some(1.0))], None, None))
+        .insert_snapshot(
+            1_000,
+            &snapshot(vec![gpu("pci-0000:02:00.0", Some(1.0))], None, None),
+        )
         .await
         .expect("first tick");
     let pool = fixture.pool().await;
@@ -197,7 +216,10 @@ async fn adapter_ids_survive_a_reconnect() {
 
     let store = fixture.store().await;
     store
-        .insert_snapshot(2_500, &snapshot(vec![gpu("pci-0000:02:00.0", Some(2.0))], None, None))
+        .insert_snapshot(
+            2_500,
+            &snapshot(vec![gpu("pci-0000:02:00.0", Some(2.0))], None, None),
+        )
         .await
         .expect("second tick");
     let pool = fixture.pool().await;
@@ -218,7 +240,10 @@ async fn last_seen_is_written_at_most_once_a_minute() {
     let store = fixture.store().await;
     for captured_at_ms in [0, 1_500, 59_000] {
         store
-            .insert_snapshot(captured_at_ms, &snapshot(vec![gpu("pci-0000:02:00.0", None)], None, None))
+            .insert_snapshot(
+                captured_at_ms,
+                &snapshot(vec![gpu("pci-0000:02:00.0", None)], None, None),
+            )
             .await
             .expect("tick before minute");
     }
@@ -231,7 +256,10 @@ async fn last_seen_is_written_at_most_once_a_minute() {
         0
     );
     store
-        .insert_snapshot(61_000, &snapshot(vec![gpu("pci-0000:02:00.0", None)], None, None))
+        .insert_snapshot(
+            61_000,
+            &snapshot(vec![gpu("pci-0000:02:00.0", None)], None, None),
+        )
         .await
         .expect("tick after minute");
     assert_eq!(
@@ -270,7 +298,10 @@ async fn read_history_gpus_filters_by_adapter_and_orders_ascending() {
             .insert_snapshot(
                 captured_at_ms,
                 &snapshot(
-                    vec![gpu("pci-0000:02:00.0", Some(captured_at_ms as f64 / 1_000.0)), gpu("pci-0000:00:02.0", None)],
+                    vec![
+                        gpu("pci-0000:02:00.0", Some(captured_at_ms as f64 / 1_000.0)),
+                        gpu("pci-0000:00:02.0", None),
+                    ],
                     None,
                     None,
                 ),
@@ -289,7 +320,12 @@ async fn read_history_gpus_filters_by_adapter_and_orders_ascending() {
         )
         .await
         .expect("GPU history");
-    assert_eq!(rows.iter().map(|row| row.captured_at_ms).collect::<Vec<_>>(), [1_000, 2_000, 3_000]);
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.captured_at_ms)
+            .collect::<Vec<_>>(),
+        [1_000, 2_000, 3_000]
+    );
     assert!(rows.iter().all(|row| row.id == "pci-0000:02:00.0"));
     assert_eq!(rows[0].busy_percent, Some(1.0));
     assert_eq!(rows[2].temperature_c, Some(44.0));
@@ -341,9 +377,9 @@ async fn started_at_round_trips_through_ms_storage_on_both_tiers() {
         .expect("process tick");
     let pool = fixture.pool().await;
     for table in ["process_samples_fast", "process_samples"] {
-        let value: Option<i64> = sqlx::query_scalar(&format!(
+        let value: Option<i64> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT started_at_ms FROM {table} WHERE captured_at_ms = ?"
-        ))
+        )))
         .bind(captured_at_ms)
         .fetch_one(&pool)
         .await
@@ -359,7 +395,10 @@ async fn started_at_round_trips_through_ms_storage_on_both_tiers() {
         })
         .await
         .expect("fast assembled history");
-    assert_eq!(assembled[0].snapshot.processes[0].started_at.as_deref(), Some("2026-08-29T05:28:11Z"));
+    assert_eq!(
+        assembled[0].snapshot.processes[0].started_at.as_deref(),
+        Some("2026-08-29T05:28:11Z")
+    );
 
     let minute = store
         .read_history_processes(HistoryQuery {
@@ -370,7 +409,10 @@ async fn started_at_round_trips_through_ms_storage_on_both_tiers() {
         .await
         .expect("minute process history");
     assert_eq!(minute.source, ProcessHistorySource::Minute);
-    assert_eq!(minute.captures[0].processes[0].started_at.as_deref(), Some("2026-08-29T05:28:11Z"));
+    assert_eq!(
+        minute.captures[0].processes[0].started_at.as_deref(),
+        Some("2026-08-29T05:28:11Z")
+    );
 }
 
 #[tokio::test]
@@ -384,9 +426,9 @@ async fn an_unparsable_started_at_is_stored_as_null_and_the_row_is_kept() {
         .expect("invalid startedAt tick");
     let pool = fixture.pool().await;
     for table in ["process_samples_fast", "process_samples"] {
-        let row = sqlx::query(&format!(
+        let row = sqlx::query(AssertSqlSafe(format!(
             "SELECT started_at_ms FROM {table} WHERE captured_at_ms = 1000"
-        ))
+        )))
         .fetch_one(&pool)
         .await
         .expect("process row retained");
@@ -401,7 +443,10 @@ async fn gpu_rows_prune_at_the_l1_horizon() {
     let store = fixture.store().await;
     for captured_at_ms in [0, 100] {
         store
-            .insert_snapshot(captured_at_ms, &snapshot(vec![gpu("pci-0000:02:00.0", None)], None, None))
+            .insert_snapshot(
+                captured_at_ms,
+                &snapshot(vec![gpu("pci-0000:02:00.0", None)], None, None),
+            )
             .await
             .expect("GPU tick");
     }
@@ -431,7 +476,10 @@ async fn stats_report_adapter_and_sample_counts() {
         .insert_snapshot(
             1_000,
             &snapshot(
-                vec![gpu("pci-0000:02:00.0", Some(1.0)), gpu("pci-0000:00:02.0", None)],
+                vec![
+                    gpu("pci-0000:02:00.0", Some(1.0)),
+                    gpu("pci-0000:00:02.0", None),
+                ],
                 None,
                 None,
             ),

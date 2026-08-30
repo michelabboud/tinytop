@@ -463,7 +463,7 @@ Resource attributes include `service.name`, `service.version` (the agent version
 
 | Endpoint | Rust response |
 | --- | --- |
-| `GET /api/history` | Assembleable raw snapshots reconstructed from typed v3 tables; `limit` is clamped to 1–10,000. History omits `cpu.times` and pressure detail, and may omit unsupported load thread/PID fields. |
+| `GET /api/history` | Assembleable raw snapshots reconstructed from typed v4 tables; `limit` is clamped to 1–10,000. History omits `cpu.times` and pressure detail, and may omit unsupported load thread/PID fields. |
 | `GET /api/history/points` | Chart points from `auto`, `raw`, `rollup` (1 minute), `5m`, `1h`, or `archive`, plus top-level `source`, `resolutionMs`, and `available`. `archive` returns hourly points with `available:true` when `retentionLadder.archive.queryable` is enabled; an explicit archive request while it is disabled is an empty `available:false` page. |
 | `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, detail cadence, disk state (`freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, `lastCheckMs`), archive state, migration state, and Rust-daemon OTel status (`enabled`, `endpoint`, `intervalSec`, `lastSuccessMs`, `lastFailureMs`, `lastError`, `failures`). |
 | `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |

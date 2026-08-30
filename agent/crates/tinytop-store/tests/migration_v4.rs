@@ -6,7 +6,7 @@ use std::{
 };
 
 use serde_json::Value as JsonValue;
-use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{AssertSqlSafe, Row, SqlitePool, sqlite::SqliteConnectOptions};
 use tinytop_store::{
     SqliteHistoryStore,
     migration::{CREATE_SCHEMA_V2_SQL, CREATE_SCHEMA_V3_SQL},
@@ -198,15 +198,15 @@ async fn v3_fixture_migrates_to_v4_converting_started_at_and_creating_gpu_tables
 
     assert_eq!(user_version(&pool).await, 4);
     for table in ["process_samples_fast", "process_samples"] {
-        let rows: Vec<Option<i64>> = sqlx::query_scalar(&format!(
+        let rows: Vec<Option<i64>> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT started_at_ms FROM {table} ORDER BY rank"
-        ))
+        )))
         .fetch_all(&pool)
         .await
         .expect("converted start times");
         assert_eq!(rows, [Some(1_787_981_291_000), None, None, None]);
         assert_eq!(
-            sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
+            sqlx::query_scalar::<_, i64>(AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
                 .fetch_one(&pool)
                 .await
                 .expect("rebuilt row count"),
@@ -288,7 +288,10 @@ async fn a_v2_fixture_chains_to_v4() {
         .expect("close chained store");
     let pool = fixture.raw_pool(false).await;
     assert_eq!(user_version(&pool).await, 4);
-    assert_eq!(table_info(&pool, "process_samples_fast").await[8].1, "started_at_ms");
+    assert_eq!(
+        table_info(&pool, "process_samples_fast").await[8].1,
+        "started_at_ms"
+    );
 }
 
 #[tokio::test]
@@ -310,5 +313,8 @@ async fn a_v0_fixture_chains_to_v4() {
         .expect("close chained store");
     let pool = fixture.raw_pool(false).await;
     assert_eq!(user_version(&pool).await, 4);
-    assert_eq!(table_info(&pool, "process_samples").await[8].1, "started_at_ms");
+    assert_eq!(
+        table_info(&pool, "process_samples").await[7].1,
+        "started_at_ms"
+    );
 }

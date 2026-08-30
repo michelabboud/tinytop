@@ -106,7 +106,7 @@ async fn index_names(pool: &SqlitePool, table: &str) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn v2_fixture_with_json_rows_migrates_to_v3() {
+async fn v2_fixture_with_json_rows_migrates_to_v4() {
     // Break caught: the v2 rebuild loses sample ids, borrows scalar values from
     // neighbouring JSON rows, fails to intern exact identities, or invents an
     // identity for a row whose JSON had already been stripped.
@@ -146,7 +146,7 @@ async fn v2_fixture_with_json_rows_migrates_to_v3() {
         .expect("migrated store should close");
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 3);
+    assert_eq!(user_version(&pool).await, 4);
 
     let columns = sqlx::query("PRAGMA table_info(metric_samples)")
         .fetch_all(&pool)
@@ -331,7 +331,7 @@ async fn v2_fixture_with_json_rows_migrates_to_v3() {
 }
 
 #[tokio::test]
-async fn fresh_database_is_created_at_v3() {
+async fn fresh_database_is_created_at_v4() {
     // Break caught: fresh files run an older DDL and acquire a migration marker
     // despite never having contained an older schema.
     let fixture = TempDatabase::new("fresh");
@@ -343,7 +343,7 @@ async fn fresh_database_is_created_at_v3() {
         .expect("fresh store should close");
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 3);
+    assert_eq!(user_version(&pool).await, 4);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM app_events WHERE marker_type = 'schemaMigrated'",
@@ -377,9 +377,9 @@ async fn fresh_database_is_created_at_v3() {
 }
 
 #[tokio::test]
-async fn migrated_and_fresh_v3_schemas_are_identical() {
+async fn migrated_v3_and_fresh_v4_schemas_are_identical() {
     // Break caught: fresh-v3 DDL and the v2-to-v3 rebuild drift in any column
-    // attribute or required index while both still report user_version 3.
+    // attribute or required index while both still report user_version 4.
     let migrated_fixture = TempDatabase::new("migrated-schema");
     let migrated_seed = seed_v2_schema(&migrated_fixture).await;
     insert_v2_metric(
@@ -536,7 +536,7 @@ async fn v2_fixture_with_legacy_negative_inode_counts_migrates_and_counts() {
         .expect("migrated store should close");
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 3);
+    assert_eq!(user_version(&pool).await, 4);
     let identities = sqlx::query(
         "SELECT sample_id, identity_id FROM metric_samples WHERE sample_id IN (41, 42) ORDER BY sample_id",
     )
@@ -631,7 +631,7 @@ async fn v2_fixture_with_undecodable_json_refuses_and_leaves_the_file_untouched(
 
 #[tokio::test]
 #[ignore = "needs TINYTOP_V1_FIXTURE=<path to a v1 history.sqlite>"]
-async fn real_v1_file_copy_migrates_to_v3() {
+async fn real_v1_file_copy_migrates_to_v4() {
     let source = std::env::var("TINYTOP_V1_FIXTURE").unwrap_or_else(|error| {
         panic!("TINYTOP_V1_FIXTURE must name a readable v1 database: {error}")
     });
@@ -654,7 +654,7 @@ async fn real_v1_file_copy_migrates_to_v3() {
     let total_elapsed_ms = started.elapsed().as_millis();
 
     let pool = fixture.raw_pool().await;
-    assert_eq!(user_version(&pool).await, 3);
+    assert_eq!(user_version(&pool).await, 4);
     assert_eq!(
         sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
             .fetch_one(&pool)
@@ -666,10 +666,11 @@ async fn real_v1_file_copy_migrates_to_v3() {
         r#"
         SELECT json_extract(details_json, '$.fromVersion') AS from_version,
                json_extract(details_json, '$.toVersion') AS to_version,
-               json_extract(details_json, '$.durationMs') AS duration_ms
+               json_extract(details_json, '$.durationMs') AS duration_ms,
+               json_extract(details_json, '$.startedAtUnparsed') AS started_at_unparsed
         FROM app_events
         WHERE marker_type = 'schemaMigrated'
-          AND json_extract(details_json, '$.fromVersion') IN (1, 2)
+          AND json_extract(details_json, '$.fromVersion') IN (1, 2, 3)
         ORDER BY from_version
         "#,
     )
@@ -678,13 +679,14 @@ async fn real_v1_file_copy_migrates_to_v3() {
     .expect("real-file migration timings should read");
     for row in migration_durations {
         println!(
-            "migration v{} -> v{} took {} ms",
+            "migration v{} -> v{} took {} ms (startedAtUnparsed={:?})",
             row.get::<i64, _>("from_version"),
             row.get::<i64, _>("to_version"),
-            row.get::<i64, _>("duration_ms")
+            row.get::<i64, _>("duration_ms"),
+            row.get::<Option<i64>, _>("started_at_unparsed")
         );
     }
-    println!("migration v1 -> v3 total took {total_elapsed_ms} ms");
+    println!("migration v1 -> v4 total took {total_elapsed_ms} ms");
     pool.close().await;
 }
 

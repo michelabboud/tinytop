@@ -17,10 +17,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use tinytop_collectors::{Collector, CollectorConfig, NativeCollector};
 use tinytop_store::{
-    DashboardSettings, DiskTransition, FreeBytesProvider, HistoryFilesystemSample, HistoryMarker,
-    HistoryMarkerType, HistoryOtelCoverage, HistoryPoint, HistoryPointMode, HistoryPointsQuery,
-    HistoryProcessCapture, HistoryQuery, HistorySample, ProcessHistorySource, SqliteHistoryStore,
-    SysinfoFreeBytes, SystemSnapshot, apply_disk_measurement,
+    DashboardSettings, DiskTransition, FreeBytesProvider, HistoryFilesystemSample,
+    HistoryGpuSample, HistoryMarker, HistoryMarkerType, HistoryOtelCoverage, HistoryPoint,
+    HistoryPointMode, HistoryPointsQuery, HistoryProcessCapture, HistoryQuery, HistorySample,
+    ProcessHistorySource, SqliteHistoryStore, SysinfoFreeBytes, SystemSnapshot,
+    apply_disk_measurement,
     otel_settings::{OTEL_INTERVAL_SEC_RANGE, OtelSettings},
     resolve_history_point_source_with_poll,
     settings_transfer::{
@@ -163,6 +164,17 @@ struct HistoryFilesystemsParams {
     limit: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryGpusParams {
+    #[serde(alias = "since_ms")]
+    since_ms: Option<i64>,
+    #[serde(alias = "until_ms")]
+    until_ms: Option<i64>,
+    adapter: Option<String>,
+    limit: Option<i64>,
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HistoryProcessesParams {
@@ -190,6 +202,11 @@ struct HistoryPointsResponse {
 #[derive(Debug, Serialize)]
 struct HistoryFilesystemsResponse {
     filesystems: Vec<HistoryFilesystemSample>,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryGpusResponse {
+    gpus: Vec<HistoryGpuSample>,
 }
 
 #[derive(Debug, Serialize)]
@@ -342,6 +359,7 @@ fn router(state: AppState) -> Router {
         .route("/api/history/points", get(history_points))
         .route("/api/history/markers", get(history_markers))
         .route("/api/history/filesystems", get(history_filesystems))
+        .route("/api/history/gpus", get(history_gpus))
         .route("/api/history/processes", get(history_processes))
         .route("/api/history", get(history))
         .route("/", get(static_file))
@@ -530,6 +548,19 @@ async fn history_filesystems(
         .read_history_filesystems(query, params.mount.as_deref())
         .await?;
     Ok(no_store(Json(HistoryFilesystemsResponse { filesystems })).into_response())
+}
+
+async fn history_gpus(
+    State(state): State<AppState>,
+    RawQuery(raw_query): RawQuery,
+) -> Result<Response, ServeError> {
+    let params = parse_history_gpus_params(raw_query.as_deref())?;
+    let query = detail_history_query(params.since_ms, params.until_ms, params.limit);
+    let gpus = state
+        .store
+        .read_history_gpus(query, params.adapter.as_deref())
+        .await?;
+    Ok(no_store(Json(HistoryGpusResponse { gpus })).into_response())
 }
 
 async fn history_processes(
@@ -1122,6 +1153,31 @@ fn parse_history_filesystems_params(
     })
 }
 
+fn parse_history_gpus_params(raw_query: Option<&str>) -> Result<HistoryGpusParams, ServeError> {
+    let pairs = parse_query_pairs(raw_query)?;
+    let params = HistoryGpusParams {
+        since_ms: query_i64(&pairs, "sinceMs", &["sinceMs", "since_ms"])?,
+        until_ms: query_i64(&pairs, "untilMs", &["untilMs", "until_ms"])?,
+        adapter: query_string(&pairs, "adapter", &["adapter"])?,
+        limit: query_i64(&pairs, "limit", &["limit"])?,
+    };
+    if let Some(limit) = params.limit
+        && !(1..=10_000).contains(&limit)
+    {
+        return Err(invalid_query(format!(
+            "limit must be between 1 and 10000; observed {limit}"
+        )));
+    }
+    if let (Some(since_ms), Some(until_ms)) = (params.since_ms, params.until_ms)
+        && since_ms > until_ms
+    {
+        return Err(invalid_query(format!(
+            "sinceMs must be less than or equal to untilMs; observed sinceMs={since_ms}, untilMs={until_ms}"
+        )));
+    }
+    Ok(params)
+}
+
 fn parse_history_processes_params(
     raw_query: Option<&str>,
 ) -> Result<HistoryProcessesParams, ServeError> {
@@ -1537,8 +1593,12 @@ pub(crate) mod tests {
             .expect("fixture store should connect");
         let settings = store.get_settings().await.expect("default settings");
         let (latest_snapshot, _) = watch::channel(None);
+        #[cfg(target_os = "linux")]
+        let collector = NativeCollector::with_clock(Instant::now);
+        #[cfg(not(target_os = "linux"))]
+        let collector = NativeCollector::default();
         let state = AppState {
-            collector: Arc::new(Mutex::new(NativeCollector::default())),
+            collector: Arc::new(Mutex::new(collector)),
             collector_config: Arc::new(Mutex::new(None)),
             store,
             dashboard_assets: DashboardAssets::Disabled,
@@ -1841,8 +1901,7 @@ pub(crate) mod tests {
         // Break caught: boundary-invalid GPU history requests are silently clamped or
         // queried as empty ranges.
         let (_fixture, state) = test_state("gpus-invalid-boundaries").await;
-        let (status, body) =
-            request_json(router(state.clone()), "/api/history/gpus?limit=0").await;
+        let (status, body) = request_json(router(state.clone()), "/api/history/gpus?limit=0").await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             body,

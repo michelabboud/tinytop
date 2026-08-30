@@ -103,6 +103,8 @@ pub struct ParsedMeminfo {
     pub swap_used_percent: f64,
 }
 
+type GpuDetector = Box<dyn FnMut() -> Option<Box<dyn GpuBackend>> + Send>;
+
 pub struct LinuxCollector {
     previous_proc_stat_text: Option<String>,
     system: System,
@@ -113,6 +115,7 @@ pub struct LinuxCollector {
     configure_calls: u64,
     gpu: Option<Box<dyn GpuBackend>>,
     gpu_adapters: Vec<GpuAdapter>,
+    gpu_detector: Option<GpuDetector>,
 }
 
 impl Default for LinuxCollector {
@@ -127,25 +130,37 @@ impl Default for LinuxCollector {
             configure_calls: 0,
             gpu: detect_backend(),
             gpu_adapters: Vec::new(),
+            gpu_detector: Some(Box::new(detect_backend)),
         }
     }
 }
 
 impl LinuxCollector {
-    #[doc(hidden)]
-    pub fn with_clock(clock: impl FnMut() -> Instant + Send + 'static) -> Self {
+    fn without_gpu(clock: Box<dyn FnMut() -> Instant + Send>) -> Self {
         Self {
-            clock: Box::new(clock),
-            ..Self::default()
+            previous_proc_stat_text: None,
+            system: System::new(),
+            config: CollectorConfig::default(),
+            slow_cache: None,
+            clock,
+            slow_enumerations: 0,
+            configure_calls: 0,
+            gpu: None,
+            gpu_adapters: Vec::new(),
+            gpu_detector: None,
         }
     }
 
     #[doc(hidden)]
+    pub fn with_clock(clock: impl FnMut() -> Instant + Send + 'static) -> Self {
+        Self::without_gpu(Box::new(clock))
+    }
+
+    #[doc(hidden)]
     pub fn with_gpu_backend(backend: Box<dyn GpuBackend>) -> Self {
-        Self {
-            gpu: Some(backend),
-            ..Self::default()
-        }
+        let mut collector = Self::without_gpu(Box::new(Instant::now));
+        collector.gpu = Some(backend);
+        collector
     }
 
     #[doc(hidden)]
@@ -171,6 +186,7 @@ impl LinuxCollector {
         }
 
         let now = (self.clock)();
+        let first_slow_tick = self.slow_cache.is_none();
         let slow_due = self.slow_cache.as_ref().is_none_or(|cache| {
             now.duration_since(cache.taken_at) >= self.config.filesystems_interval
         });
@@ -184,6 +200,11 @@ impl LinuxCollector {
             });
             if let Some(gpu) = &mut self.gpu {
                 self.gpu_adapters = gpu.detect();
+            } else if !first_slow_tick && let Some(detector) = &mut self.gpu_detector {
+                self.gpu = detector();
+                if let Some(gpu) = &mut self.gpu {
+                    self.gpu_adapters = gpu.detect();
+                }
             }
         }
 
@@ -1106,9 +1127,7 @@ mod gpu_tests {
     use super::LinuxCollector;
     use crate::{
         Collector, CollectorConfig,
-        gpu::{
-            GpuAdapter, GpuBackend, GpuSample, GpuScanStats, GpuVendor, attach_gpu,
-        },
+        gpu::{GpuAdapter, GpuBackend, GpuSample, GpuScanStats, GpuVendor, attach_gpu},
     };
 
     #[derive(Default)]
@@ -1163,9 +1182,8 @@ mod gpu_tests {
         let base = Instant::now();
         let offset = Arc::new(Mutex::new(Duration::ZERO));
         let clock_offset = Arc::clone(&offset);
-        let clocked = LinuxCollector::with_clock(move || {
-            base + *clock_offset.lock().expect("clock mutex")
-        });
+        let clocked =
+            LinuxCollector::with_clock(move || base + *clock_offset.lock().expect("clock mutex"));
         let mut collector = LinuxCollector::with_gpu_backend(Box::new(backend));
         collector.clock = clocked.clock;
         collector.configure(CollectorConfig {
@@ -1186,6 +1204,38 @@ mod gpu_tests {
         collector.collect().expect("slow GPU collection");
         assert_eq!(counts.lock().expect("counts mutex").detect, 2);
         assert_eq!(counts.lock().expect("counts mutex").sample, 3);
+    }
+
+    #[test]
+    fn gpu_is_discovered_after_a_cold_empty_start_on_a_later_slow_tick() {
+        // Break caught: storing `None` after startup made later hotplug invisible forever.
+        let counts = Arc::new(Mutex::new(Counts::default()));
+        let detector_calls = Arc::new(Mutex::new(0_usize));
+        let detector_count = Arc::clone(&detector_calls);
+        let backend_counts = Arc::clone(&counts);
+        let base = Instant::now();
+        let offset = Arc::new(Mutex::new(Duration::ZERO));
+        let clock_offset = Arc::clone(&offset);
+        let mut collector =
+            LinuxCollector::with_clock(move || base + *clock_offset.lock().expect("clock mutex"));
+        collector.gpu_detector = Some(Box::new(move || {
+            *detector_count.lock().expect("detector mutex") += 1;
+            Some(Box::new(FakeBackend {
+                counts: Arc::clone(&backend_counts),
+                busy: HashMap::new(),
+            }))
+        }));
+
+        let first = collector.collect().expect("cold collection");
+        assert!(first.gpus.is_empty());
+        assert_eq!(*detector_calls.lock().expect("detector mutex"), 0);
+
+        *offset.lock().expect("clock mutex") = Duration::from_secs(61);
+        let second = collector.collect().expect("hotplug collection");
+        assert_eq!(*detector_calls.lock().expect("detector mutex"), 1);
+        assert_eq!(counts.lock().expect("counts mutex").detect, 1);
+        assert_eq!(counts.lock().expect("counts mutex").sample, 1);
+        assert_eq!(second.gpus.len(), 1);
     }
 
     #[test]
@@ -1231,7 +1281,12 @@ mod gpu_tests {
             memory_total_bytes: Some(2_147_483_648),
             temperature_c: Some(44.0),
         }];
-        attach_gpu(&mut snapshot, &adapters, &samples, &HashMap::from([(2, 12.5)]));
+        attach_gpu(
+            &mut snapshot,
+            &adapters,
+            &samples,
+            &HashMap::from([(2, 12.5)]),
+        );
 
         assert_eq!(snapshot.processes[0].gpu_percent, None);
         assert_eq!(snapshot.processes[1].gpu_percent, Some(12.5));
