@@ -173,6 +173,23 @@ pub struct FilesystemSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GpuSnapshot {
+    pub id: String,
+    pub vendor: String,
+    pub name: String,
+    pub driver: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_used_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_total_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProcessSnapshot {
     pub pid: u32,
     pub command: String,
@@ -183,6 +200,8 @@ pub struct ProcessSnapshot {
     pub parent_pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,11 +218,13 @@ pub struct SystemSnapshot {
     pub pressure: PressureGroup,
     pub filesystems: Vec<FilesystemSnapshot>,
     pub processes: Vec<ProcessSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gpus: Vec<GpuSnapshot>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{LoadSnapshot, RuntimeKind, SystemSnapshot};
+    use super::{LoadSnapshot, ProcessSnapshot, RuntimeKind, SystemSnapshot};
     use serde_json::json;
 
     /// Every `RuntimeKind` variant's canonical `as_str()` must equal its serde
@@ -335,5 +356,72 @@ mod tests {
             serde_json::to_value(snapshot).expect("serialize additive snapshot"),
             with_optional_fields
         );
+    }
+
+    #[test]
+    fn gpus_are_absent_when_empty_and_round_trip_when_present() {
+        let base = json!({
+            "timestamp": "2026-08-29T12:00:00Z",
+            "identity": {
+                "hostname": "fixture-host", "platform": "linux", "arch": "x86_64",
+                "distro": "Fixture Linux", "kernel": "6.8.0",
+                "runtime": { "kind": "Linux", "confidence": "high", "reason": "fixture" },
+                "uptimeSeconds": 60
+            },
+            "cpu": { "usagePercent": 12.5, "cores": 4 },
+            "memory": { "totalBytes": 100, "availableBytes": 40, "usedBytes": 60, "usedPercent": 60.0 },
+            "swap": { "totalBytes": 20, "freeBytes": 15, "usedBytes": 5, "usedPercent": 25.0 },
+            "load": { "one": 0.1, "five": 0.2, "fifteen": 0.3 },
+            "pressure": { "cpu": {}, "memory": {}, "io": {} },
+            "filesystems": [], "processes": []
+        });
+        let snapshot: SystemSnapshot =
+            serde_json::from_value(base.clone()).expect("gpus may be absent");
+        assert!(snapshot.gpus.is_empty());
+        assert!(
+            serde_json::to_value(snapshot)
+                .unwrap()
+                .get("gpus")
+                .is_none()
+        );
+
+        let mut complete = base.clone();
+        complete["gpus"] = json!([{
+            "id": "pci-0000:02:00.0", "vendor": "amd", "name": "0x1002:0x6810",
+            "driver": "amdgpu", "busyPercent": 37.0, "memoryUsedBytes": 6_000_640_u64,
+            "memoryTotalBytes": 2_147_483_648_u64, "temperatureC": 44.0
+        }]);
+        let snapshot: SystemSnapshot = serde_json::from_value(complete.clone()).unwrap();
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), complete);
+
+        let mut identity_only = base;
+        identity_only["gpus"] = json!([{
+            "id": "pci-0000:01:00.0", "vendor": "nvidia", "name": "Fixture GPU", "driver": "nvidia"
+        }]);
+        let snapshot: SystemSnapshot = serde_json::from_value(identity_only).unwrap();
+        let gpu = &snapshot.gpus[0];
+        assert_eq!(gpu.busy_percent, None);
+        assert_eq!(gpu.memory_used_bytes, None);
+        assert_eq!(gpu.memory_total_bytes, None);
+        assert_eq!(gpu.temperature_c, None);
+    }
+
+    #[test]
+    fn process_gpu_percent_is_optional() {
+        let absent = json!({
+            "pid": 42, "command": "fixture", "cpuPercent": 1.0,
+            "memoryPercent": 2.0, "rssBytes": 3
+        });
+        let process: ProcessSnapshot = serde_json::from_value(absent.clone()).unwrap();
+        assert_eq!(process.gpu_percent, None);
+        assert_eq!(serde_json::to_value(process).unwrap(), absent);
+
+        let present = json!({
+            "pid": 42, "command": "fixture", "cpuPercent": 1.0,
+            "memoryPercent": 2.0, "rssBytes": 3, "gpuPercent": 12.5
+        });
+        let process: ProcessSnapshot = serde_json::from_value(present.clone()).unwrap();
+        assert_eq!(process.gpu_percent, Some(12.5));
+        assert_eq!(serde_json::to_value(process).unwrap(), present);
     }
 }

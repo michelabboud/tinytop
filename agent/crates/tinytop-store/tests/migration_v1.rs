@@ -162,10 +162,10 @@ struct SeededV0 {
 }
 
 #[tokio::test]
-async fn fresh_database_is_created_at_schema_version_3() {
+async fn fresh_database_is_created_at_schema_version_4() {
     // Break caught: connecting to a new file leaves user_version at 0 or omits
-    // any table, index, or additive column from the complete v3 schema.
-    let fixture = TempDatabase::new("fresh-v3");
+    // any table, index, or additive column from the complete v4 schema.
+    let fixture = TempDatabase::new("fresh-v4");
 
     let store = SqliteHistoryStore::connect(&fixture.url)
         .await
@@ -173,7 +173,7 @@ async fn fresh_database_is_created_at_schema_version_3() {
     drop(store);
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 3);
+    assert_eq!(schema_version(&pool).await, 4);
     for table in [
         "metric_rollups_5m",
         "metric_rollups_1h",
@@ -354,7 +354,7 @@ async fn reconnect_completes_an_interrupted_post_schema_vacuum() {
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count after resumed completion");
-    assert_eq!(marker_count, 3);
+    assert_eq!(marker_count, 4);
     let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
         .fetch_one(&pool)
         .await
@@ -418,13 +418,13 @@ async fn crash_after_schema_commit_is_recovered_on_next_connect() {
             .fetch_one(&pool)
             .await
             .expect("post-recovery schemaMigrated marker count");
-    assert_eq!(marker_count_after, 3);
+    assert_eq!(marker_count_after, 4);
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_one(&pool)
         .await
         .expect("integrity check after recovered migration chain");
-    // The recovered v0→v1 VACUUM runs before the subsequent v2 and v3
-    // migrations. The v3 table rebuild may leave a few reusable pages and must
+    // The recovered v0→v1 VACUUM runs before the subsequent v2, v3, and v4
+    // migrations. The later table rebuilds may leave a few reusable pages and must
     // not trigger a second automatic VACUUM (ADR 0023/0024).
     assert_eq!(integrity, "ok");
     pool.close().await;
@@ -685,7 +685,9 @@ fn fixture_snapshot() -> SystemSnapshot {
             rss_bytes: 3,
             parent_pid: None,
             started_at: None,
+            gpu_percent: None,
         }],
+        gpus: Vec::new(),
     }
 }
 
@@ -704,7 +706,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
     pre_image_pool.close().await;
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 3);
+    assert_eq!(schema_version(&pool).await, 4);
     let cutoff_ms = seeded.now_ms - SNAPSHOT_JSON_KEEP_MS;
     let recent_assembleable_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= ? AND identity_id IS NOT NULL",
@@ -748,7 +750,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count");
-    assert_eq!(marker_count, 3);
+    assert_eq!(marker_count, 4);
     pool.close().await;
 
     let bytes_after = std::fs::metadata(&fixture.path)

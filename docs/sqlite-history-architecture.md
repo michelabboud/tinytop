@@ -11,7 +11,7 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current schema version: v3, with typed metric rows, interned host identity, on-change filesystem rows and mount-presence events, one-minute/five-minute/hourly rollup tables, typed process detail tables, a per-tick process table and command dictionary, migration/disk/fold state, and daemon timeline events
+- Current schema version: v4, with typed metric rows, interned host identity, on-change filesystem rows and mount-presence events, one-minute/five-minute/hourly rollup tables, typed process detail tables with millisecond start times and nullable GPU percent, a per-tick process table and command dictionary, interned GPU adapters and per-tick GPU samples, migration/disk/fold state, and daemon timeline events
 - Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, filesystem check cadence, and per-tick process history; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
 
 ## Process Boundary
@@ -84,7 +84,7 @@ PRAGMA foreign_keys = ON;
 
 ## Current Schema
 
-Fresh databases are created directly at schema v3. The DDL below is also the
+Fresh databases are created directly at schema v4. The DDL below is also the
 post-migration shape; the six minimum/root-maximum columns appear at the end of
 `metric_rollups_1m` because SQLite appends them when upgrading a populated v0
 database.
@@ -267,8 +267,9 @@ CREATE TABLE IF NOT EXISTS process_samples (
   memory_percent REAL NOT NULL,
   rss_bytes INTEGER NOT NULL,
   parent_pid INTEGER,
-  started_at TEXT,
+  started_at_ms INTEGER,
   command_id INTEGER REFERENCES process_commands(command_id),
+  gpu_percent REAL,
   PRIMARY KEY (captured_at_ms, rank)
 );
 
@@ -292,13 +293,33 @@ CREATE TABLE IF NOT EXISTS process_samples_fast (
   memory_percent REAL NOT NULL,
   rss_bytes INTEGER NOT NULL,
   parent_pid INTEGER,
-  started_at TEXT,
+  started_at_ms INTEGER,
   gpu_percent REAL,
   PRIMARY KEY (captured_at_ms, rank)
 ) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_process_samples_fast_command
   ON process_samples_fast (command_id);
+
+CREATE TABLE IF NOT EXISTS gpu_adapters (
+  adapter_id INTEGER PRIMARY KEY,
+  stable_id TEXT NOT NULL UNIQUE,
+  vendor TEXT NOT NULL,
+  name TEXT NOT NULL,
+  driver TEXT NOT NULL,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gpu_samples (
+  captured_at_ms INTEGER NOT NULL,
+  adapter_id INTEGER NOT NULL REFERENCES gpu_adapters(adapter_id),
+  busy_percent REAL,
+  memory_used_bytes INTEGER,
+  memory_total_bytes INTEGER,
+  temperature_c REAL,
+  PRIMARY KEY (captured_at_ms, adapter_id)
+) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS app_events (
   event_id INTEGER PRIMARY KEY,
@@ -311,7 +332,7 @@ CREATE TABLE IF NOT EXISTS app_events (
 CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;
 ```
 
 The value written into `fs_samples.captured_at_ms` is the enumeration key
@@ -319,15 +340,17 @@ The value written into `fs_samples.captured_at_ms` is the enumeration key
 `captured_at_ms` when the snapshot has no filesystem stamp.
 
 `process_samples_fast` is the per-tick process history table. Its `command_id`
-references the dictionary, so repeated command text is stored once. The fast
-table's `started_at` intentionally remains `TEXT` in v3. Both process tables
-index `command_id` because orphan-command pruning probes each table by that key.
+references the dictionary, so repeated command text is stored once. Schema v4
+stores process start time in nullable Unix-millisecond `started_at_ms` columns
+and GPU usage in nullable `gpu_percent` columns in both process tiers. Both
+process tables index `command_id` because orphan-command pruning probes each
+table by that key.
 
 ## Schema Versions And Migration
 
 `SqliteHistoryStore::connect` applies the SQLite pragmas, reads
-`PRAGMA user_version`, and ensures schema v3 before it runs the older runtime
-name canonicalization. A new or empty database is built directly at v3. A v3
+`PRAGMA user_version`, and ensures schema v4 before it runs the older runtime
+name canonicalization. A new or empty database is built directly at v4. A v4
 database only receives idempotent `CREATE ... IF NOT EXISTS` checks.
 
 A v1 database migrates to v2 in one transaction. Before any write, the store
@@ -394,10 +417,23 @@ serialised by SQLite's write lock, and any failure or crash rolls the transactio
 back. The explicit guard is the post-backfill identity-count check: the migration
 refuses to commit unless the number of assembleable rows equals the number of
 decoded JSON rows.
+
+Schema v4 is also one transaction. It rebuilds both `process_samples_fast` and
+`process_samples` into their canonical fresh-v4 column order, converting
+`started_at TEXT` with
+`CAST(strftime('%s', started_at) AS INTEGER) * 1000`. Unparseable non-NULL text
+becomes NULL and is counted as `startedAtUnparsed` in both the migration marker
+and the information log. Before replacing either source table, the migration
+requires its rebuilt row count to match exactly; any mismatch or other failure
+rolls the transaction back. It recreates all three process indexes, adds
+`gpu_percent` to the minute tier, creates `gpu_adapters` and `gpu_samples`, and
+writes one `schemaMigrated` marker before setting `user_version = 4`.
+
 The v0 path still performs its existing pre-image/VACUUM migration first and
-then chains into v1→v2→v3. Unsupported schema versions are refused with
+then chains into v1→v2→v3→v4; v1 and v2 follow the same remaining chain, and v3
+runs only the v3→v4 transaction. Unsupported schema versions are refused with
 `unsupported SQLite schema version <version> at <path> (supported version is
-3)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
+4)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
 `tinytop-agent db pre-image status` inspects its canonical path and main-database
 state; `tinytop-agent db pre-image remove --yes` removes only that exact file and
 refuses unless the main database has completed schema v1 and passes integrity checking.
@@ -419,6 +455,21 @@ that stamp. Retention keeps each mount's newest row and newest event as a
 carry-forward floor; a mount that has been absent past the horizon can be fully
 pruned.
 
+### GPU samples
+
+`gpu_adapters` interns each platform-stable adapter ID, so `gpu_samples` stores
+an integer foreign key rather than repeating the PCI-style string every tick.
+The writer primes this adapter cache at connect. A new adapter records its
+identity plus `first_seen_ms` and `last_seen_ms`; an existing adapter's
+`last_seen_ms` is updated at most once per minute. Each detected adapter writes
+one sample per fast tick, including nullable busy, memory, and temperature
+values. Hosts with no detected adapter write no GPU rows.
+
+GPU samples share the L1 horizon and are pruned by the dedicated GPU step after
+L1 raw pruning. A settings-import dry run reports matching rows as
+`wouldDelete.gpuSampleRows`, using the candidate L1 cutoff, so a shorter horizon
+does not hide this deletion.
+
 ### Identity interning
 
 `host_identity` interns the eight stable identity strings. The writer primes
@@ -433,9 +484,11 @@ so it round-trips exactly across reboots.
 uptime, memory-available, and swap-free scalars as well. The assembler: (1)
 reads the metric row and identity; (2) restores its typed CPU, memory, swap, and
 load fields; (3) resolves filesystems by stamp, change rows, and presence
-events; (4) selects fast process rows or the eligible minute capture; and (5)
-returns the original snapshot envelope oldest first. `cpu.times` and all
-`pressure.*.some`/`pressure.*.full` lines are absent because v3 does not store
+events; (4) selects fast process rows or the eligible minute capture; (5) reads
+all GPU rows for the history window in one batch and attaches each capture's
+adapters; and (6) returns the original snapshot envelope oldest first.
+`cpu.times` and all `pressure.*.some`/`pressure.*.full` lines are absent because
+v4 does not store
 them; `load.runnable`, `load.totalThreads`, and `load.lastPid` are absent where
 the collector has no source.
 
@@ -443,7 +496,7 @@ the collector has no source.
 
 1. The Rust daemon collection loop runs every `HISTORY_POLL_MS` milliseconds. In legacy Bun mode, the collector timer calls `/snapshot/collect`.
 2. The collector reads local Linux/WSL sources.
-3. `tinytop-store` writes the metric sample and then writes the per-tick process rows in a separate transaction. Each process command is interned with `INSERT OR IGNORE` followed by a dictionary lookup; the resulting `command_id` is used by both process tables.
+3. `tinytop-store` writes the metric sample, filesystem changes, and GPU adapter/sample rows in one transaction, then writes the per-tick process rows in a separate transaction. Each process command is interned with `INSERT OR IGNORE` followed by a dictionary lookup; the resulting `command_id` is used by both process tables.
 4. The fast process transaction replaces rows at the same `captured_at_ms`, preserving idempotent collection while keeping metric readers independent.
 5. Once per detail interval, the existing minute-tier `process_samples` capture is written with the same dictionary IDs.
 
@@ -455,7 +508,7 @@ selected by its retention window:
 ```sql
 SELECT p.captured_at_ms, p.rank, p.pid, c.command,
        p.cpu_percent, p.memory_percent, p.rss_bytes,
-       p.parent_pid, p.started_at
+       p.parent_pid, p.started_at_ms, p.gpu_percent
 FROM process_samples_fast AS p
 JOIN process_commands AS c ON c.command_id = p.command_id
 ORDER BY p.captured_at_ms DESC, p.rank;
@@ -511,10 +564,15 @@ Typed detail reads are Rust-only and bounded:
 
 ```text
 /api/history/filesystems?sinceMs=<start>&untilMs=<end>&mount=/data&limit=<rows>
+/api/history/gpus?sinceMs=<start>&untilMs=<end>&adapter=pci-0000:02:00.0&limit=<rows>
 /api/history/processes?sinceMs=<start>&untilMs=<end>&limit=<captures>
 ```
 
-Filesystem results are ordered oldest-first and may be filtered by exact mount. Process results are grouped by `capturedAtMs`; the limit applies to capture timestamps, so a page never cuts a ranked process group in half. Both limits clamp to 1–10,000.
+Filesystem results are ordered oldest-first and may be filtered by exact mount.
+GPU results are oldest-first, accept an optional exact stable-ID filter, and
+limit rows. Process results are grouped by `capturedAtMs`; the limit applies to
+capture timestamps, so a page never cuts a ranked process group in half. All
+three limits clamp to 1–10,000.
 
 Timeline markers:
 
@@ -548,7 +606,7 @@ Each insert compares the affected L2 minute's existing `sample_count` with the n
 - configured detail sampling interval
 - last persisted disk state as `freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, and `lastCheckMs`
 - queryable archive configuration plus real bucket count/range, and cold archive configuration/state
-- the persisted schema-migration document, or `null` on a fresh v3 database
+- the persisted schema-migration document, or `null` on a fresh v4 database
 
 ## Retention
 
@@ -559,6 +617,7 @@ Rust maintenance runs after each insert in this order:
 - Maintenance promotes at most 50 complete L3 buckets, then at most 50 complete L4 buckets. A bucket is complete only when its end plus `max(3 seconds, 2 × poll interval)` has passed. L4 folds from L2 when L3 is disabled.
 - Each successful promotion advances `history_state.l3FoldedUntilMs` or `l4FoldedUntilMs` to the promoted bucket's end. Pruning uses the watermarks visible at the start of the tick, so a newly promoted range becomes deletion authority on the next tick.
 - L1 rows are deleted after their horizon without rebuilding any L2 bucket.
+- GPU sample rows are deleted after the same L1 horizon; interned adapter identity rows remain for reconnects and future samples.
 - Filesystems are checked on the configured cadence (60 seconds by default), recorded only on change, and pruned with their presence-event floor; minute-tier process detail is retained through the L2 horizon.
 - Per-tick process rows are retained for `retentionLadder.processFastKeepHours` (1–72 hours, default 24); older process windows fall back to the minute tier. Fast rows are deleted in LIMIT-bounded batches using a row-value `IN` query because `process_samples_fast` is `WITHOUT ROWID`.
 - Orphan dictionary commands are pruned in a bounded batch only after process rows were deleted in that maintenance pass. The indexed `command_id` probes cover both process tables.
@@ -591,7 +650,19 @@ The `otel` block is part of the settings document, while `headersEnvVar` is only
 
 Import is split into a read-only plan and an authoritative apply. Planning rejects unknown envelope keys and unsupported versions, decodes through `DashboardSettings::from_document`, normalizes the legacy L1/L2 mirrors, validates the candidate against the persisted ladder and disk-pressure state, and reports ignored unknown keys inside `settings` as warnings. It returns changed keys and `wouldDelete` without writing. Applying repeats that plan and then calls `put_settings`, whose `BEGIN IMMEDIATE` validation is authoritative if pressure changes between preview and write.
 
-`wouldDelete` uses the same predicates as maintenance: L1 counts `captured_at_ms < cutoff`; rollups count `bucket_start_ms + resolution <= cutoff`; and `processFastRows` counts per-tick process rows older than the candidate `processFastKeepHours` horizon. The candidate ladder is converted through the maintenance configuration builder, so disabled tiers count zero and forever L4 counts zero. Queryable-archive L4 counts are the rows that leave `main` and move to the archive. Counts mean “older than the candidate horizon”: they can include rows already past the current horizon but not yet pruned because L2/L3 deletion is watermark-gated and each tick is bounded. The counts describe rows matching those predicates at preview time; maintenance may take several ticks to reach that number, and rows that cross the candidate cutoff between the preview and a maintenance tick are pruned as well—the ladder working as configured, not a preview error.
+`wouldDelete` uses the same predicates as maintenance: L1 and `gpuSampleRows`
+count `captured_at_ms < cutoff` at the candidate L1 horizon; rollups count
+`bucket_start_ms + resolution <= cutoff`; and `processFastRows` counts per-tick
+process rows older than the candidate `processFastKeepHours` horizon. The
+candidate ladder is converted through the maintenance configuration builder,
+so disabled tiers count zero and forever L4 counts zero. Queryable-archive L4
+counts are the rows that leave `main` and move to the archive. Counts mean
+“older than the candidate horizon”: they can include rows already past the
+current horizon but not yet pruned because L2/L3 deletion is watermark-gated
+and each tick is bounded. The counts describe rows matching those predicates at
+preview time; maintenance may take several ticks to reach that number, and rows
+that cross the candidate cutoff between the preview and a maintenance tick are
+pruned as well—the ladder working as configured, not a preview error.
 
 HTTP import runs maintenance after the settings write and then records a `settingsChange` marker labelled `Settings imported` with `{"source":"import","changed":[…]}`. CLI import records the same marker but never runs maintenance: a running daemon re-reads settings on every collection tick and at startup, while running pruning from a second process beside the daemon would violate the maintenance ownership boundary.
 

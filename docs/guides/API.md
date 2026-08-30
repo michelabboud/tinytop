@@ -179,11 +179,32 @@ Response shape:
     "io": {}
   },
   "filesystems": [],
-  "processes": []
+  "gpus": [
+    {
+      "id": "pci-0000:02:00.0",
+      "vendor": "amd",
+      "name": "0x1002:0x6810",
+      "driver": "amdgpu",
+      "busyPercent": 37.0,
+      "memoryUsedBytes": 6000640,
+      "memoryTotalBytes": 2147483648,
+      "temperatureC": 44.0
+    }
+  ],
+  "processes": [
+    {
+      "pid": 4242,
+      "command": "gpu-worker",
+      "cpuPercent": 12.5,
+      "memoryPercent": 1.2,
+      "rssBytes": 67108864,
+      "gpuPercent": 18.5
+    }
+  ]
 }
 ```
 
-The example above is shortened. `filesystemsCapturedAtMs` is Unix time in milliseconds and can be older than `timestamp` between filesystem checks. `cpu.times` is optional: it is present on the Linux collector and absent on the sysinfo-based macOS/Windows collectors. Filesystem rows and pressure data are included when present, `load.runnable`, `load.totalThreads`, and `load.lastPid` are omitted when their collector has no source, and `processes.length` is at most the configured `topProcessCount`.
+The example above is shortened. `filesystemsCapturedAtMs` is Unix time in milliseconds and can be older than `timestamp` between filesystem checks. `cpu.times` is optional: it is present on the Linux collector and absent on the sysinfo-based macOS/Windows collectors. Filesystem rows and pressure data are included when present, `load.runnable`, `load.totalThreads`, and `load.lastPid` are omitted when their collector has no source, and `processes.length` is at most the configured `topProcessCount`. `gpus` is absent when no adapter is detected. Each GPU row always carries `id`, `vendor`, `name`, and `driver`; its metric fields are absent when unavailable. `busyPercent` is absent on the first fdinfo tick, on proprietary-NVIDIA identity-only adapters, and whenever the selected source cannot report it. On Linux, fdinfo-derived adapter busy is a lower bound over processes readable by the daemon's user, and `processes[].gpuPercent` covers only those readable processes; `gpuPercent` is absent when no per-process source is available.
 
 ### GET /api/settings
 
@@ -259,6 +280,10 @@ The Settings dialog separates browser-local choices from daemon defaults:
 | Active theme, graph mode, history window, visible series, process table state, filesystem system-mount toggle, and last section for this browser | `localStorage` |
 | Default theme, graph mode, refresh interval, retention/rollup defaults, target DB budget, warning/critical thresholds, and enabled sections | SQLite `app_settings` |
 
+### POST /api/settings/import
+
+Validates and applies a versioned settings envelope. With `?dryRun=true`, the endpoint performs no write and returns validation errors, warnings, changed keys, and `wouldDelete`. The deletion preview includes `l1Rows`, each enabled rollup tier, `processFastRows`, archive movement, and `gpuSampleRows`; GPU rows use the candidate L1 horizon, and an absent `gpuSampleRows` from an older daemon is equivalent to zero.
+
 ### GET /api/history
 
 Returns persisted recent history. The Rust daemon assembles each snapshot from typed tables; the legacy Bun collector remains a separate legacy runtime. The query parameters bound the read result only; they do not prune SQLite history.
@@ -297,7 +322,7 @@ Response:
 
 Samples are returned oldest first.
 
-Retention note: The API default window is 300 seconds when no explicit window is supplied. In Rust, `/api/history` is assembled from typed tables and returns assembleable L1 rows through the ladder horizon; `retentionHours` is only the derived L1 compatibility mirror. History snapshots omit `cpu.times` and every `pressure.*.{some,full}` line. `load.runnable`, `load.totalThreads`, and `load.lastPid` are absent keys—not `null`—when the collector has no source. The legacy Bun split path keeps raw SQLite rows until manual archive/reset.
+Retention note: The API default window is 300 seconds when no explicit window is supplied. In Rust, `/api/history` is assembled from typed tables and returns assembleable L1 rows through the ladder horizon; assembled samples carry the GPU rows stored for the same capture. `retentionHours` is only the derived L1 compatibility mirror. History snapshots omit `cpu.times` and every `pressure.*.{some,full}` line. `load.runnable`, `load.totalThreads`, and `load.lastPid` are absent keys—not `null`—when the collector has no source. The legacy Bun split path keeps raw SQLite rows until manual archive/reset.
 
 ### GET /api/history/points
 
@@ -347,9 +372,39 @@ Response:
 
 Rust daemon endpoint for typed filesystem history. Since schema v3, it returns the rows stored on change rather than one row per enumeration; `/api/history` separately uses those rows and mount-presence events to assemble each snapshot. It accepts inclusive `sinceMs` / `untilMs`, optional exact `mount`, and `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "filesystems": [...] }`, with each row containing `capturedAtMs`, `mount`, `filesystem`, `type`, byte/usage fields, and nullable inode fields.
 
+### GET /api/history/gpus
+
+Rust daemon endpoint for per-adapter GPU history. It accepts inclusive `sinceMs` / `untilMs`, `limit` from `1` through `10000`, and optional `adapter` as an exact stable-adapter-ID match. Snake-case time aliases are also accepted. Results are ordered oldest first.
+
+```bash
+curl -fsS 'http://127.0.0.1:4274/api/history/gpus?sinceMs=1782292546568&adapter=pci-0000%3A02%3A00.0&limit=1'
+```
+
+Response:
+
+```json
+{
+  "gpus": [
+    {
+      "capturedAtMs": 1782296146568,
+      "id": "pci-0000:02:00.0",
+      "vendor": "amd",
+      "name": "0x1002:0x6810",
+      "driver": "amdgpu",
+      "busyPercent": 37.0,
+      "memoryUsedBytes": 6000640,
+      "memoryTotalBytes": 2147483648,
+      "temperatureC": 44.0
+    }
+  ]
+}
+```
+
+Every row has `capturedAtMs`, `id`, `vendor`, `name`, and `driver`. `busyPercent`, `memoryUsedBytes`, `memoryTotalBytes`, and `temperatureC` are absent when the backend has no value. Linux fdinfo-derived busy has the same readable-process limitation as the live snapshot.
+
 ### GET /api/history/processes
 
-Rust daemon endpoint for typed process history. It accepts inclusive `sinceMs` / `untilMs` and a capture-group `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "source": "fast" | "minute", "captures": [{ "capturedAtMs": ..., "processes": [...] }] }`; each complete capture preserves rank, PID, command, CPU/memory percentages, RSS bytes, and nullable parent/start fields.
+Rust daemon endpoint for typed process history. It accepts inclusive `sinceMs` / `untilMs` and a capture-group `limit` clamped to `1..10000`; snake_case time aliases are also accepted. The response is `{ "source": "fast" | "minute", "captures": [{ "capturedAtMs": ..., "processes": [...] }] }`; each complete capture preserves rank, PID, command, CPU/memory percentages, RSS bytes, nullable parent/start fields, and `gpuPercent` when known.
 
 ```bash
 curl -fsS 'http://127.0.0.1:4274/api/history/processes?sinceMs=1782292546568&limit=1'
@@ -372,7 +427,8 @@ Response:
           "memoryPercent": 1.2,
           "rssBytes": 67108864,
           "parentPid": 1,
-          "startedAt": "2026-06-24T10:00:00Z"
+          "startedAt": "2026-06-24T10:00:00Z",
+          "gpuPercent": 18.5
         }
       ]
     }
@@ -380,7 +436,7 @@ Response:
 }
 ```
 
-The response uses `fast` only when `sinceMs` is present and falls within `processFastKeepHours` of the current time; an open-ended or older window uses `minute`.
+The response uses `fast` only when `sinceMs` is present and falls within `processFastKeepHours` of the current time; an open-ended or older window uses `minute`. `gpuPercent` is absent when unknown in both tiers.
 
 ### GET /api/history/markers
 
@@ -455,6 +511,10 @@ Response:
 ```
 
 `detailIntervalSec` is the filesystem check interval in seconds (`15`–`3,600`); cached filesystem rows are served between checks.
+
+### CLI: `db stats --json`
+
+`tinytop-agent db stats --json` reports the main database schema and ladder state. Its flattened store fields include `gpuAdapterCount` and `gpuSampleCount` alongside the existing raw-sample counts, bounds, `userVersion`, tier, archive, disk, and OTel state. Both GPU counts are zero on a fresh database or a host where no adapter was detected.
 
 ### GET /vendor/echarts.min.js
 

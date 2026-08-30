@@ -24,11 +24,12 @@ use sqlx::{
     AssertSqlSafe, Row, Sqlite, SqliteConnection, SqlitePool, Transaction,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 pub use tinytop_types::SystemSnapshot;
 use tinytop_types::{
-    CpuSnapshot, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot, PressureGroup,
-    PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection, RuntimeKind,
-    SwapSnapshot,
+    CpuSnapshot, FilesystemSnapshot, GpuSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
+    PressureGroup, PressureSnapshot, ProcessSnapshot, RuntimeConfidence, RuntimeDetection,
+    RuntimeKind, SwapSnapshot,
 };
 
 pub use crate::disk::{
@@ -54,6 +55,8 @@ pub struct StoreStats {
     pub sample_count: i64,
     pub oldest_captured_at_ms: Option<i64>,
     pub newest_captured_at_ms: Option<i64>,
+    pub gpu_adapter_count: i64,
+    pub gpu_sample_count: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -435,6 +438,24 @@ pub struct HistoryFilesystemSample {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HistoryGpuSample {
+    pub captured_at_ms: i64,
+    pub id: String,
+    pub vendor: String,
+    pub name: String,
+    pub driver: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy_percent: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_used_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_total_bytes: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_c: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HistoryProcessSample {
     pub rank: i64,
     pub pid: i64,
@@ -444,6 +465,8 @@ pub struct HistoryProcessSample {
     pub rss_bytes: i64,
     pub parent_pid: Option<i64>,
     pub started_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -623,15 +646,23 @@ pub struct SqliteHistoryStore {
     database_path: PathBuf,
     writer_gate: Arc<WriterGate>,
     current_identity: Arc<Mutex<Option<CurrentIdentity>>>,
+    gpu_adapters: Arc<Mutex<HashMap<String, CachedAdapter>>>,
     filesystem_state: Arc<Mutex<FilesystemState>>,
     filesystem_warning_last_ms: Arc<Mutex<Option<i64>>>,
     process_warning_last_ms: Arc<Mutex<Option<i64>>>,
+    started_at_warning_last_ms: Arc<Mutex<Option<i64>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CurrentIdentity {
     identity_id: i64,
     strings: [String; 8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CachedAdapter {
+    adapter_id: i64,
+    last_seen_written_ms: i64,
 }
 
 #[derive(Debug, Default)]
@@ -1138,9 +1169,11 @@ impl SqliteHistoryStore {
             database_path: db_path.clone(),
             writer_gate: Arc::new(WriterGate::default()),
             current_identity: Arc::new(Mutex::new(None)),
+            gpu_adapters: Arc::new(Mutex::new(HashMap::new())),
             filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
             filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
             process_warning_last_ms: Arc::new(Mutex::new(None)),
+            started_at_warning_last_ms: Arc::new(Mutex::new(None)),
         };
         store.apply_pragmas().await?;
         let _migration_report = migration::ensure_schema(&store.pool, &db_path, now_ms()).await?;
@@ -1179,9 +1212,11 @@ impl SqliteHistoryStore {
             database_path,
             writer_gate: Arc::new(WriterGate::default()),
             current_identity: Arc::new(Mutex::new(None)),
+            gpu_adapters: Arc::new(Mutex::new(HashMap::new())),
             filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
             filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
             process_warning_last_ms: Arc::new(Mutex::new(None)),
+            started_at_warning_last_ms: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -1221,6 +1256,25 @@ impl SqliteHistoryStore {
         *self.current_identity.lock().map_err(|_| {
             StoreError::Validation("identity cache mutex is poisoned".to_string())
         })? = identity;
+
+        let mut gpu_adapters = HashMap::new();
+        for row in sqlx::query(
+            "SELECT adapter_id, stable_id, last_seen_ms FROM gpu_adapters ORDER BY adapter_id",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        {
+            gpu_adapters.insert(
+                row.try_get("stable_id")?,
+                CachedAdapter {
+                    adapter_id: row.try_get("adapter_id")?,
+                    last_seen_written_ms: row.try_get("last_seen_ms")?,
+                },
+            );
+        }
+        *self.gpu_adapters.lock().map_err(|_| {
+            StoreError::Validation("GPU adapter cache mutex is poisoned".to_string())
+        })? = gpu_adapters;
 
         let mut state = FilesystemState {
             last_key_ms: sqlx::query_scalar(
@@ -1425,6 +1479,18 @@ impl SqliteHistoryStore {
             .lock()
             .map_err(|_| StoreError::Validation("filesystem cache mutex is poisoned".to_string()))?
             .clone();
+        let cached_gpu_adapters = if snapshot.gpus.is_empty() {
+            None
+        } else {
+            Some(
+                self.gpu_adapters
+                    .lock()
+                    .map_err(|_| {
+                        StoreError::Validation("GPU adapter cache mutex is poisoned".to_string())
+                    })?
+                    .clone(),
+            )
+        };
         let fs_key_ms = snapshot
             .filesystems_captured_at_ms
             .unwrap_or(captured_at_ms);
@@ -1619,6 +1685,88 @@ impl SqliteHistoryStore {
             next_fs_state.last_key_ms = Some(fs_key_ms);
             next_fs_state.present = current_mounts;
         }
+        let mut next_gpu_adapters = cached_gpu_adapters;
+        if let Some(adapters) = next_gpu_adapters.as_mut() {
+            for gpu in &snapshot.gpus {
+                let cached = if let Some(cached) = adapters.get(&gpu.id).copied() {
+                    if captured_at_ms.saturating_sub(cached.last_seen_written_ms) >= 60_000 {
+                        sqlx::query(
+                            "UPDATE gpu_adapters SET last_seen_ms = ? WHERE adapter_id = ?",
+                        )
+                        .bind(captured_at_ms)
+                        .bind(cached.adapter_id)
+                        .execute(&mut *transaction)
+                        .await?;
+                        let updated = CachedAdapter {
+                            last_seen_written_ms: captured_at_ms,
+                            ..cached
+                        };
+                        adapters.insert(gpu.id.clone(), updated);
+                        updated
+                    } else {
+                        cached
+                    }
+                } else {
+                    sqlx::query(
+                        r#"
+                        INSERT OR IGNORE INTO gpu_adapters (
+                          stable_id, vendor, name, driver, first_seen_ms, last_seen_ms
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        "#,
+                    )
+                    .bind(&gpu.id)
+                    .bind(&gpu.vendor)
+                    .bind(&gpu.name)
+                    .bind(&gpu.driver)
+                    .bind(captured_at_ms)
+                    .bind(captured_at_ms)
+                    .execute(&mut *transaction)
+                    .await?;
+                    let row = sqlx::query(
+                        "SELECT adapter_id, last_seen_ms FROM gpu_adapters WHERE stable_id = ?",
+                    )
+                    .bind(&gpu.id)
+                    .fetch_one(&mut *transaction)
+                    .await?;
+                    let cached = CachedAdapter {
+                        adapter_id: row.try_get("adapter_id")?,
+                        last_seen_written_ms: row.try_get("last_seen_ms")?,
+                    };
+                    adapters.insert(gpu.id.clone(), cached);
+                    cached
+                };
+
+                sqlx::query(
+                    r#"
+                    INSERT INTO gpu_samples (
+                      captured_at_ms, adapter_id, busy_percent, memory_used_bytes,
+                      memory_total_bytes, temperature_c
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(captured_at_ms, adapter_id) DO UPDATE SET
+                      busy_percent = excluded.busy_percent,
+                      memory_used_bytes = excluded.memory_used_bytes,
+                      memory_total_bytes = excluded.memory_total_bytes,
+                      temperature_c = excluded.temperature_c
+                    "#,
+                )
+                .bind(captured_at_ms)
+                .bind(cached.adapter_id)
+                .bind(gpu.busy_percent)
+                .bind(
+                    gpu.memory_used_bytes
+                        .map(|value| to_i64(value, "GPU memory used bytes"))
+                        .transpose()?,
+                )
+                .bind(
+                    gpu.memory_total_bytes
+                        .map(|value| to_i64(value, "GPU memory total bytes"))
+                        .transpose()?,
+                )
+                .bind(gpu.temperature_c)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
         transaction.commit().await?;
         *self.current_identity.lock().map_err(|_| {
             StoreError::Validation("identity cache mutex is poisoned".to_string())
@@ -1629,6 +1777,11 @@ impl SqliteHistoryStore {
         *self.filesystem_state.lock().map_err(|_| {
             StoreError::Validation("filesystem cache mutex is poisoned".to_string())
         })? = next_fs_state;
+        if let Some(adapters) = next_gpu_adapters {
+            *self.gpu_adapters.lock().map_err(|_| {
+                StoreError::Validation("GPU adapter cache mutex is poisoned".to_string())
+            })? = adapters;
+        }
 
         if filesystem_stamp_regressed && let Some(last_key_ms) = previous_fs_state.last_key_ms {
             let mut last_warning = self.filesystem_warning_last_ms.lock().map_err(|_| {
@@ -1915,6 +2068,7 @@ impl SqliteHistoryStore {
             return Ok(0);
         }
         let detail_rows = to_i64(snapshot.processes.len(), "detail row count")?;
+        let mut unparsable_started_at = None;
 
         let mut transaction = self.pool.begin().await?;
         sqlx::query("DELETE FROM process_samples WHERE captured_at_ms = ?")
@@ -1926,17 +2080,24 @@ impl SqliteHistoryStore {
             // interning must never acquire a second connection.
             #[allow(clippy::explicit_auto_deref)]
             let command_id = intern_command(&mut *transaction, &process.command).await?;
+            let started_at_ms = started_at_ms_from_rfc3339(process.started_at.as_deref());
+            if started_at_ms.is_none()
+                && let Some(text) = process.started_at.as_deref()
+            {
+                unparsable_started_at.get_or_insert((process.pid, text.to_string()));
+            }
             sqlx::query(
                 r#"
                 INSERT INTO process_samples (
                   captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
-                  rss_bytes, parent_pid, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  rss_bytes, parent_pid, started_at_ms, gpu_percent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(captured_at_ms, rank) DO UPDATE SET
                   pid = excluded.pid, command_id = excluded.command_id,
                   cpu_percent = excluded.cpu_percent, memory_percent = excluded.memory_percent,
                   rss_bytes = excluded.rss_bytes, parent_pid = excluded.parent_pid,
-                  started_at = excluded.started_at
+                  started_at_ms = excluded.started_at_ms,
+                  gpu_percent = excluded.gpu_percent
                 "#,
             )
             .bind(captured_at_ms)
@@ -1952,7 +2113,8 @@ impl SqliteHistoryStore {
                     .map(|value| to_i64(value, "process parent pid"))
                     .transpose()?,
             )
-            .bind(&process.started_at)
+            .bind(started_at_ms)
+            .bind(process.gpu_percent)
             .execute(&mut *transaction)
             .await?;
         }
@@ -1970,6 +2132,9 @@ impl SqliteHistoryStore {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
+        if let Some((pid, text)) = unparsable_started_at {
+            self.warn_unparsable_started_at(captured_at_ms, pid, &text)?;
+        }
         Ok(detail_rows)
     }
 
@@ -1995,6 +2160,7 @@ impl SqliteHistoryStore {
         captured_at_ms: i64,
         processes: &[tinytop_types::ProcessSnapshot],
     ) -> Result<i64, StoreError> {
+        let mut unparsable_started_at = None;
         let mut transaction = self.pool.begin().await?;
         sqlx::query("DELETE FROM process_samples_fast WHERE captured_at_ms = ?")
             .bind(captured_at_ms)
@@ -2005,12 +2171,18 @@ impl SqliteHistoryStore {
             // interning must never acquire a second connection.
             #[allow(clippy::explicit_auto_deref)]
             let command_id = intern_command(&mut *transaction, &process.command).await?;
+            let started_at_ms = started_at_ms_from_rfc3339(process.started_at.as_deref());
+            if started_at_ms.is_none()
+                && let Some(text) = process.started_at.as_deref()
+            {
+                unparsable_started_at.get_or_insert((process.pid, text.to_string()));
+            }
             sqlx::query(
                 r#"
                 INSERT INTO process_samples_fast (
                   captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
-                  rss_bytes, parent_pid, started_at, gpu_percent
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                  rss_bytes, parent_pid, started_at_ms, gpu_percent
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(captured_at_ms)
@@ -2026,12 +2198,34 @@ impl SqliteHistoryStore {
                     .map(|value| to_i64(value, "process parent pid"))
                     .transpose()?,
             )
-            .bind(&process.started_at)
+            .bind(started_at_ms)
+            .bind(process.gpu_percent)
             .execute(&mut *transaction)
             .await?;
         }
         transaction.commit().await?;
+        if let Some((pid, text)) = unparsable_started_at {
+            self.warn_unparsable_started_at(captured_at_ms, pid, &text)?;
+        }
         to_i64(processes.len(), "fast process row count")
+    }
+
+    fn warn_unparsable_started_at(
+        &self,
+        captured_at_ms: i64,
+        pid: u32,
+        text: &str,
+    ) -> Result<(), StoreError> {
+        let mut last_warning = self.started_at_warning_last_ms.lock().map_err(|_| {
+            StoreError::Validation("startedAt warning mutex is poisoned".to_string())
+        })?;
+        if last_warning.is_none_or(|last| captured_at_ms.saturating_sub(last) >= 60_000) {
+            eprintln!(
+                "history writer warning: process {pid} startedAt {text:?} is not RFC 3339; stored as NULL"
+            );
+            *last_warning = Some(captured_at_ms);
+        }
+        Ok(())
     }
 
     pub async fn read_history(
@@ -2129,7 +2323,8 @@ impl SqliteHistoryStore {
         let fast_rows = sqlx::query(
             r#"
             SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
-                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at
+                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at_ms,
+                   p.gpu_percent
             FROM process_samples_fast p
             JOIN process_commands c ON c.command_id = p.command_id
             WHERE p.captured_at_ms >= ? AND p.captured_at_ms <= ?
@@ -2155,7 +2350,8 @@ impl SqliteHistoryStore {
         let minute_rows = sqlx::query(
             r#"
             SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
-                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at
+                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at_ms,
+                   p.gpu_percent
             FROM process_samples p
             JOIN process_commands c ON c.command_id = p.command_id
             WHERE p.captured_at_ms >= ? AND p.captured_at_ms <= ?
@@ -2176,6 +2372,38 @@ impl SqliteHistoryStore {
                 .entry(row.try_get("captured_at_ms")?)
                 .or_default()
                 .push(process_snapshot_from_row(&row)?);
+        }
+
+        let mut gpus_by_capture = HashMap::<i64, Vec<GpuSnapshot>>::new();
+        for row in sqlx::query(
+            r#"
+            SELECT s.captured_at_ms, a.stable_id, a.vendor, a.name, a.driver,
+                   s.busy_percent, s.memory_used_bytes, s.memory_total_bytes,
+                   s.temperature_c
+            FROM gpu_samples s
+            JOIN gpu_adapters a ON a.adapter_id = s.adapter_id
+            WHERE s.captured_at_ms BETWEEN ? AND ?
+            ORDER BY s.captured_at_ms, a.stable_id
+            "#,
+        )
+        .bind(first_ms)
+        .bind(last_ms)
+        .fetch_all(&self.pool)
+        .await?
+        {
+            gpus_by_capture
+                .entry(row.try_get("captured_at_ms")?)
+                .or_default()
+                .push(GpuSnapshot {
+                    id: row.try_get("stable_id")?,
+                    vendor: row.try_get("vendor")?,
+                    name: row.try_get("name")?,
+                    driver: row.try_get("driver")?,
+                    busy_percent: row.try_get("busy_percent")?,
+                    memory_used_bytes: optional_u64(&row, "memory_used_bytes")?,
+                    memory_total_bytes: optional_u64(&row, "memory_total_bytes")?,
+                    temperature_c: row.try_get("temperature_c")?,
+                });
         }
 
         let mut filesystems_by_key = HashMap::<i64, Vec<FilesystemSnapshot>>::new();
@@ -2392,6 +2620,10 @@ impl SqliteHistoryStore {
                         },
                         filesystems: filesystems_by_key.get(&fs_key).cloned().unwrap_or_default(),
                         processes,
+                        gpus: gpus_by_capture
+                            .get(&captured_at_ms)
+                            .cloned()
+                            .unwrap_or_default(),
                     },
                 })
             })
@@ -2502,6 +2734,52 @@ impl SqliteHistoryStore {
         Ok(samples)
     }
 
+    pub async fn read_history_gpus(
+        &self,
+        query: HistoryQuery,
+        adapter: Option<&str>,
+    ) -> Result<Vec<HistoryGpuSample>, StoreError> {
+        let limit = query.limit.unwrap_or(120).clamp(1, 10_000);
+        let rows = sqlx::query(
+            r#"
+            SELECT s.captured_at_ms, a.stable_id, a.vendor, a.name, a.driver,
+                   s.busy_percent, s.memory_used_bytes, s.memory_total_bytes,
+                   s.temperature_c
+            FROM gpu_samples s
+            JOIN gpu_adapters a ON a.adapter_id = s.adapter_id
+            WHERE (?1 IS NULL OR s.captured_at_ms >= ?1)
+              AND (?2 IS NULL OR s.captured_at_ms <= ?2)
+              AND (?3 IS NULL OR a.stable_id = ?3)
+            ORDER BY s.captured_at_ms DESC, a.stable_id DESC
+            LIMIT ?4
+            "#,
+        )
+        .bind(query.since_ms)
+        .bind(query.until_ms)
+        .bind(adapter)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut samples = rows
+            .into_iter()
+            .map(|row| {
+                Ok(HistoryGpuSample {
+                    captured_at_ms: row.try_get("captured_at_ms")?,
+                    id: row.try_get("stable_id")?,
+                    vendor: row.try_get("vendor")?,
+                    name: row.try_get("name")?,
+                    driver: row.try_get("driver")?,
+                    busy_percent: row.try_get("busy_percent")?,
+                    memory_used_bytes: row.try_get("memory_used_bytes")?,
+                    memory_total_bytes: row.try_get("memory_total_bytes")?,
+                    temperature_c: row.try_get("temperature_c")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        samples.reverse();
+        Ok(samples)
+    }
+
     /// Reads per-tick rows only when the requested lower bound is wholly inside
     /// the configured fast-retention window; older and open-ended requests use
     /// the once-a-minute process tier.
@@ -2543,7 +2821,8 @@ impl SqliteHistoryStore {
               LIMIT ?3
             )
             SELECT p.captured_at_ms, p.rank, p.pid, c.command AS command, p.cpu_percent,
-                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at
+                   p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at_ms,
+                   p.gpu_percent
             FROM {table} p
             INNER JOIN capture_times t ON t.captured_at_ms = p.captured_at_ms
             INNER JOIN process_commands c ON c.command_id = p.command_id
@@ -2577,7 +2856,10 @@ impl SqliteHistoryStore {
                 memory_percent: row.try_get("memory_percent")?,
                 rss_bytes: row.try_get("rss_bytes")?,
                 parent_pid: row.try_get("parent_pid")?,
-                started_at: row.try_get("started_at")?,
+                started_at: row
+                    .try_get::<Option<i64>, _>("started_at_ms")?
+                    .and_then(rfc3339_from_ms),
+                gpu_percent: row.try_get("gpu_percent")?,
             };
             let Some(capture) = captures.last_mut() else {
                 return Err(StoreError::Validation(
@@ -2647,7 +2929,9 @@ impl SqliteHistoryStore {
             SELECT
               COUNT(*) AS sample_count,
               MIN(captured_at_ms) AS oldest_captured_at_ms,
-              MAX(captured_at_ms) AS newest_captured_at_ms
+              MAX(captured_at_ms) AS newest_captured_at_ms,
+              (SELECT COUNT(*) FROM gpu_adapters) AS gpu_adapter_count,
+              (SELECT COUNT(*) FROM gpu_samples) AS gpu_sample_count
             FROM metric_samples
             "#,
         )
@@ -2658,6 +2942,8 @@ impl SqliteHistoryStore {
             sample_count: row.try_get::<i64, _>("sample_count")?,
             oldest_captured_at_ms: row.try_get::<Option<i64>, _>("oldest_captured_at_ms")?,
             newest_captured_at_ms: row.try_get::<Option<i64>, _>("newest_captured_at_ms")?,
+            gpu_adapter_count: row.try_get("gpu_adapter_count")?,
+            gpu_sample_count: row.try_get("gpu_sample_count")?,
         })
     }
 
@@ -2812,6 +3098,14 @@ impl SqliteHistoryStore {
         Ok(result.rows_affected())
     }
 
+    pub async fn prune_gpu_history(&self, cutoff_ms: i64) -> Result<u64, StoreError> {
+        let result = sqlx::query("DELETE FROM gpu_samples WHERE captured_at_ms < ?")
+            .bind(cutoff_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn count_rows_older_than(
         &self,
         tier: Tier,
@@ -2848,6 +3142,15 @@ impl SqliteHistoryStore {
             .bind(cutoff_ms)
             .fetch_one(&self.pool)
             .await?,
+        )
+    }
+
+    pub async fn count_gpu_rows_older_than(&self, cutoff_ms: i64) -> Result<i64, StoreError> {
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM gpu_samples WHERE captured_at_ms < ?")
+                .bind(cutoff_ms)
+                .fetch_one(&self.pool)
+                .await?,
         )
     }
 
@@ -3585,7 +3888,10 @@ fn process_snapshot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ProcessSna
                 })
             })
             .transpose()?,
-        started_at: row.try_get("started_at")?,
+        started_at: row
+            .try_get::<Option<i64>, _>("started_at_ms")?
+            .and_then(rfc3339_from_ms),
+        gpu_percent: row.try_get("gpu_percent")?,
     })
 }
 
@@ -3690,6 +3996,18 @@ fn to_i64(value: impl TryInto<i64>, field: &'static str) -> Result<i64, StoreErr
     value
         .try_into()
         .map_err(|_| StoreError::IntegerOverflow { field })
+}
+
+fn started_at_ms_from_rfc3339(text: Option<&str>) -> Option<i64> {
+    let parsed = OffsetDateTime::parse(text?, &Rfc3339).ok()?;
+    i64::try_from(parsed.unix_timestamp_nanos() / 1_000_000).ok()
+}
+
+fn rfc3339_from_ms(ms: i64) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms).saturating_mul(1_000_000))
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
 }
 
 fn now_ms() -> i64 {

@@ -140,6 +140,7 @@ impl SysinfoCollector {
             },
             filesystems: slow.filesystems.clone(),
             processes,
+            gpus: Vec::new(),
         })
     }
 
@@ -210,6 +211,7 @@ fn native_processes(system: &System, top_process_count: usize) -> Vec<ProcessSna
                 rss_bytes: process.memory(),
                 parent_pid: process.parent().map(|pid| pid.as_u32()),
                 started_at: process_started_at(process),
+                gpu_percent: None,
             }
         })
         .collect::<Vec<_>>();

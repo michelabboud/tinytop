@@ -3,6 +3,7 @@
     all(feature = "windows-collector", target_os = "windows"),
 ))]
 mod common;
+pub mod gpu;
 #[cfg(all(feature = "linux-collector", target_os = "linux"))]
 pub mod linux;
 #[cfg(all(feature = "macos-collector", target_os = "macos"))]

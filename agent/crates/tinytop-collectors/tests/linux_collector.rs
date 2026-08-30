@@ -84,6 +84,7 @@ fn parses_linux_sources_into_the_existing_snapshot_contract() {
         0.3
     );
     assert_eq!(snapshot.processes[0].command, "bun");
+    assert!(snapshot.gpus.is_empty());
 
     let json = serde_json::to_value(snapshot).expect("json");
     assert_eq!(json["cpu"]["usagePercent"], 50.0);
@@ -149,13 +150,38 @@ fn live_linux_collector_returns_a_real_snapshot_on_linux_hosts() {
         return;
     }
 
-    let mut collector = LinuxCollector::default();
+    let mut collector = LinuxCollector::with_clock(Instant::now);
     let snapshot = collector.collect().expect("live linux snapshot");
 
     assert!(!snapshot.identity.hostname.is_empty());
     assert_eq!(snapshot.identity.platform, "linux");
     assert!(snapshot.cpu.cores > 0);
     assert!(snapshot.memory.total_bytes > 0);
+}
+
+#[test]
+#[ignore = "rule-8 live scan-cost instrument; run explicitly on GPU acceptance hosts"]
+fn live_gpu_scan_cost_on_this_host() {
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+
+    let mut collector = LinuxCollector::default();
+    collector.collect().expect("first live GPU collection");
+    std::thread::sleep(Duration::from_secs(1));
+    let snapshot = collector.collect().expect("second live GPU collection");
+    println!("gpu adapter count: {}", snapshot.gpus.len());
+    println!(
+        "gpu snapshot: {}",
+        serde_json::to_string(&snapshot.gpus).expect("serialize live GPU snapshot")
+    );
+    match collector.last_gpu_scan() {
+        Some(stats) => println!(
+            "gpu scan stats: duration={:?} pids_scanned={} pids_denied={} clients={}",
+            stats.duration, stats.pids_scanned, stats.pids_denied, stats.clients
+        ),
+        None => println!("gpu scan stats: none (no detected adapter)"),
+    }
 }
 
 #[test]
@@ -296,7 +322,7 @@ fn top_process_count_is_honoured() {
         return;
     }
 
-    let mut collector = LinuxCollector::default();
+    let mut collector = LinuxCollector::with_clock(Instant::now);
     collector.configure(CollectorConfig {
         top_process_count: 1,
         ..CollectorConfig::default()

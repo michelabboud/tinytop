@@ -314,12 +314,8 @@ async fn db(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     headers_env_var_set: std::env::var_os(&settings.otel.headers_env_var).is_some(),
                     service_name: settings.otel.service_name.clone(),
                 };
+                let stats = store.stats().await?;
                 let coverage = store.history_coverage(&settings).await?;
-                let stats = StoreStats {
-                    sample_count: coverage.sample_count,
-                    oldest_captured_at_ms: coverage.oldest_captured_at_ms,
-                    newest_captured_at_ms: coverage.newest_captured_at_ms,
-                };
                 Ok(serde_json::to_string_pretty(&DbStatus {
                     status: "ok",
                     value: DbStatsOutput {
