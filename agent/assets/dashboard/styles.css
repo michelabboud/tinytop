@@ -813,6 +813,99 @@ h1 {
   white-space: nowrap;
 }
 
+.thermal-panel {
+  padding: 1rem;
+}
+
+.thermal-chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0.8rem;
+  margin-top: 1rem;
+}
+
+.thermal-chip {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg-strong);
+  padding: 1rem;
+}
+
+.thermal-chip-name {
+  overflow: hidden;
+  margin: 0 0 0.75rem;
+  color: var(--text);
+  font-size: 0.92rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thermal-readings {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.thermal-reading {
+  --thermal-accent: var(--cyan);
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) auto minmax(0, auto);
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+  border-left: 3px solid var(--thermal-accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface-3) 42%, transparent);
+  padding: 0.55rem 0.65rem;
+}
+
+.thermal-reading--warn {
+  --thermal-accent: var(--amber);
+}
+
+.thermal-reading--critical {
+  --thermal-accent: var(--red);
+}
+
+.thermal-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thermal-value,
+.thermal-threshold {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.thermal-value {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.thermal-threshold {
+  min-height: 1em;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.thermal-bar {
+  display: block;
+  grid-column: 1 / -1;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 64%, transparent);
+}
+
+.thermal-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--thermal-accent);
+}
+
 .gauge-panel {
   --accent: var(--green);
   display: grid;
@@ -1031,8 +1124,17 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
-.otel-settings-group textarea {
+.otel-settings-group textarea,
+.thermal-settings-group textarea {
   min-height: 8rem;
+}
+
+.thermal-settings-group {
+  grid-column: 1 / -1;
+}
+
+.thermal-settings-group .settings-wide-field {
+  grid-column: 1 / -1;
 }
 
 .settings-runtime-note {
@@ -1061,7 +1163,8 @@ h1 {
 
 .settings-group select,
 .settings-group input[type="number"],
-.settings-group input[type="text"] {
+.settings-group input[type="text"],
+.settings-group textarea {
   width: 100%;
   min-width: 0;
   min-height: 36px;
@@ -1076,7 +1179,8 @@ h1 {
 
 .settings-group select:focus,
 .settings-group input[type="number"]:focus,
-.settings-group input[type="text"]:focus {
+.settings-group input[type="text"]:focus,
+.settings-group textarea:focus {
   border-color: var(--cyan);
   outline: 0;
 }
@@ -2055,6 +2159,19 @@ td {
 
   .filesystem-item {
     grid-template-columns: 1fr;
+  }
+
+  .thermal-chips {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .thermal-reading {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .thermal-threshold {
+    grid-column: 1 / -1;
+    white-space: normal;
   }
 
   .settings-group,

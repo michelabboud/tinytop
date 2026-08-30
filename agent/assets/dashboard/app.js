@@ -9,8 +9,12 @@ import {
   formatCount,
   describeGpuAdapter,
   formatGpuPercent,
+  formatSensorThreshold,
+  formatSensorValue,
+  formatThermalExtraChips,
   gpuColumnVisible,
   gpuPercentSortValue,
+  groupSensorsByChip,
   formatPressureValue,
   formatResourceAttributes,
   historyWindowFor,
@@ -19,11 +23,16 @@ import {
   normalizeHistorySamples,
   otelCapabilityFrom,
   parseResourceAttributes,
+  parseThermalExtraChips,
   pressureMaximum,
+  sensorBarPercent,
+  sensorSeverity,
   settingsPutPayload,
   shouldFetchCoverage,
+  thermalCapabilityFrom,
   validateOtelSettings,
   validateRetentionLadder,
+  validateThermalSettings,
 } from "./ladder-rules.js";
 
 const DEFAULT_POLL_MS = 1500;
@@ -160,6 +169,10 @@ const DEFAULT_DAEMON_SETTINGS = {
     serviceName: "tinytop",
     resourceAttributes: {},
   },
+  thermal: {
+    enabled: false,
+    extraChips: [],
+  },
   targetDatabaseBytes: 128 * 1024 * 1024,
   topProcessCount: 8,
   redactionDefault: false,
@@ -239,6 +252,7 @@ const state = {
   settingsErrors: [],
   retentionLadderAvailable: false,
   otelAvailable: false,
+  thermalAvailable: false,
   otelResourceAttributeErrors: [],
   theme: "midnight",
   graphMode: "line",
@@ -316,6 +330,9 @@ const elements = {
   gpuPanel: document.querySelector("#gpu-panel"),
   gpuCount: document.querySelector("#gpu-count"),
   gpuAdapters: document.querySelector("#gpu-adapters"),
+  thermalPanel: document.querySelector("#thermal-panel"),
+  thermalCount: document.querySelector("#thermal-count"),
+  thermalGroups: document.querySelector("#thermal-groups"),
   loadOne: document.querySelector("#load-one"),
   loadContext: document.querySelector("#load-context"),
   threadCount: document.querySelector("#thread-count"),
@@ -346,6 +363,7 @@ const elements = {
   historyDiskPressure: document.querySelector("#history-disk-pressure"),
   historyArchiveStatus: document.querySelector("#history-archive-status"),
   historyOtelStatus: document.querySelector("#history-otel-status"),
+  historyThermalStatus: document.querySelector("#thermal-status"),
   historyMarkerList: document.querySelector("#history-marker-list"),
   historySeriesInputs: Array.from(document.querySelectorAll("[data-history-series]")),
   sampleCount: document.querySelector("#sample-count"),
@@ -416,6 +434,9 @@ const elements = {
   daemonOtelHeadersEnvVar: document.querySelector("#daemon-otel-headers-env-var"),
   daemonOtelServiceName: document.querySelector("#daemon-otel-service-name"),
   daemonOtelResourceAttributes: document.querySelector("#daemon-otel-resource-attributes"),
+  thermalSettingsGroup: document.querySelector("#thermal-settings-group"),
+  daemonThermalEnabled: document.querySelector("#daemon-thermal-enabled"),
+  daemonThermalExtraChips: document.querySelector("#daemon-thermal-extra-chips"),
   daemonDbBudgetMib: document.querySelector("#daemon-db-budget-mib"),
   daemonTopProcessCount: document.querySelector("#daemon-top-process-count"),
   daemonCpuWarn: document.querySelector("#daemon-cpu-warn"),
@@ -545,6 +566,10 @@ function cloneSettings(settings = DEFAULT_DAEMON_SETTINGS) {
       ...settings.otel,
       resourceAttributes: { ...(settings.otel?.resourceAttributes ?? {}) },
     },
+    thermal: {
+      ...settings.thermal,
+      extraChips: [...(settings.thermal?.extraChips ?? [])],
+    },
   };
 }
 
@@ -590,6 +615,13 @@ function normalizeSettings(settings) {
       ...(settings.otel?.resourceAttributes ?? {}),
     },
   };
+  const thermal = {
+    ...fallback.thermal,
+    ...(settings.thermal ?? {}),
+    extraChips: Array.isArray(settings.thermal?.extraChips)
+      ? [...settings.thermal.extraChips]
+      : [...fallback.thermal.extraChips],
+  };
 
   return {
     ...fallback,
@@ -603,6 +635,7 @@ function normalizeSettings(settings) {
       : Number(settings.rollupRetentionDays ?? fallback.rollupRetentionDays),
     retentionLadder,
     otel,
+    thermal,
     thresholds: normalizeThresholds(settings.thresholds),
     enabledSections: {
       ...fallback.enabledSections,
@@ -641,6 +674,8 @@ function settingsFormControls() {
     elements.daemonOtelHeadersEnvVar,
     elements.daemonOtelServiceName,
     elements.daemonOtelResourceAttributes,
+    elements.daemonThermalEnabled,
+    elements.daemonThermalExtraChips,
     elements.daemonDbBudgetMib,
     elements.daemonTopProcessCount,
     elements.daemonCpuWarn,
@@ -2164,6 +2199,69 @@ function renderGpus(gpus) {
   );
 }
 
+function renderThermals(sensors) {
+  const list = Array.isArray(sensors) ? sensors : [];
+  if (!elements.thermalPanel) return;
+  elements.thermalPanel.hidden = list.length === 0;
+  elements.thermalPanel.dataset.hasThermal = String(list.length > 0);
+  if (state.daemonSettings.enabledSections.overview === false) elements.thermalPanel.hidden = true;
+  setText(elements.thermalCount, `${list.length} ${list.length === 1 ? "sensor" : "sensors"}`);
+  if (!elements.thermalGroups) return;
+
+  elements.thermalGroups.replaceChildren(
+    ...groupSensorsByChip(list).map((group) => {
+      const chip = document.createElement("section");
+      const heading = document.createElement("h3");
+      const readings = document.createElement("div");
+      chip.className = "thermal-chip";
+      heading.className = "thermal-chip-name";
+      heading.textContent = group.chip;
+      readings.className = "thermal-readings";
+
+      readings.replaceChildren(
+        ...group.readings.map((sensor) => {
+          const severity = sensorSeverity(sensor.value, sensor.max, sensor.crit);
+          const severityLabel = severity === "warn" ? "warning" : severity;
+          const valueText = formatSensorValue(sensor.value);
+          const thresholdText = formatSensorThreshold(sensor.max, sensor.crit);
+          const percent = sensorBarPercent(sensor.value, sensor.max, sensor.crit);
+          const row = document.createElement("div");
+          const label = document.createElement("strong");
+          const value = document.createElement("span");
+          const threshold = document.createElement("span");
+          row.className = `thermal-reading thermal-reading--${severity}`;
+          row.dataset.severity = severity;
+          row.setAttribute(
+            "aria-label",
+            `${group.chip} ${sensor.label}: ${valueText}${thresholdText ? `; ${thresholdText}` : ""}; state ${severityLabel}`,
+          );
+          label.className = "thermal-label";
+          label.textContent = sensor.label;
+          value.className = "thermal-value";
+          value.textContent = valueText;
+          threshold.className = "thermal-threshold";
+          threshold.textContent = thresholdText;
+          row.append(label, value, threshold);
+
+          if (percent !== null) {
+            const bar = document.createElement("span");
+            const fill = document.createElement("span");
+            bar.className = "thermal-bar";
+            bar.setAttribute("aria-hidden", "true");
+            fill.className = `thermal-bar-fill thermal-bar-fill--${severity}`;
+            fill.style.setProperty("width", `${percent}%`);
+            bar.append(fill);
+            row.append(bar);
+          }
+          return row;
+        }),
+      );
+      chip.append(heading, readings);
+      return chip;
+    }),
+  );
+}
+
 function renderProcesses(processes) {
   const hasGpu = gpuColumnVisible(processes);
   if (elements.processTable) elements.processTable.dataset.hasGpu = String(hasGpu);
@@ -2440,6 +2538,7 @@ function renderSnapshotDetails(snapshot) {
   renderFilesystemFreshness(snapshot);
   renderPressure(snapshot);
   renderGpus(snapshot.gpus);
+  renderThermals(snapshot.sensors);
   renderProcesses(snapshot.processes);
 }
 
@@ -2591,6 +2690,9 @@ function validateDaemonSettings(settings = collectDaemonSettingsFromForm()) {
   if (state.otelAvailable) {
     errors.push(...state.otelResourceAttributeErrors, ...validateOtelSettings(settings.otel));
   }
+  if (state.thermalAvailable) {
+    errors.push(...validateThermalSettings(settings.thermal));
+  }
   for (const [label, warnKey, criticalKey] of [
     ["CPU", "cpuWarn", "cpuCritical"],
     ["RAM", "memoryWarn", "memoryCritical"],
@@ -2711,7 +2813,8 @@ function applyEnabledSections(settings) {
     const enabled = Boolean(enabledSections[section]);
     for (const node of nodes) {
       const gpuUnavailable = node === elements.gpuPanel && node.dataset.hasGpu !== "true";
-      setHidden(node, !enabled || gpuUnavailable);
+      const thermalUnavailable = node === elements.thermalPanel && node.dataset.hasThermal !== "true";
+      setHidden(node, !enabled || gpuUnavailable || thermalUnavailable);
     }
   }
 
@@ -2745,6 +2848,10 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
     setControlValue(elements.daemonOtelServiceName, nextSettings.otel.serviceName);
     setControlValue(elements.daemonOtelResourceAttributes, formatResourceAttributes(nextSettings.otel.resourceAttributes));
     state.otelResourceAttributeErrors = [];
+  }
+  if (state.thermalAvailable) {
+    setCheckboxValue(elements.daemonThermalEnabled, nextSettings.thermal.enabled);
+    setControlValue(elements.daemonThermalExtraChips, formatThermalExtraChips(nextSettings.thermal.extraChips));
   }
   if (state.retentionLadderAvailable) {
     setControlValue(elements.daemonL1KeepDays, nextSettings.retentionLadder.l1.keepDays);
@@ -2830,6 +2937,7 @@ function syncRetentionLadderAvailability() {
   setHidden(elements.daemonRetentionHoursDerived, !state.retentionLadderAvailable);
   setHidden(elements.daemonRollupRetentionDaysDerived, !state.retentionLadderAvailable);
   setHidden(elements.otelSettingsGroup, !state.otelAvailable);
+  setHidden(elements.thermalSettingsGroup, !state.thermalAvailable);
 }
 
 function collectDaemonSettingsFromForm() {
@@ -2883,6 +2991,13 @@ function collectDaemonSettingsFromForm() {
       resourceAttributes: parsedAttributes.attributes,
     };
   }
+  let thermal = cloneSettings(state.daemonSettings).thermal;
+  if (state.thermalAvailable) {
+    thermal = {
+      enabled: Boolean(elements.daemonThermalEnabled?.checked),
+      extraChips: parseThermalExtraChips(elements.daemonThermalExtraChips?.value ?? ""),
+    };
+  }
   return {
     ...cloneSettings(state.daemonSettings),
     defaultTheme: elements.daemonDefaultTheme?.value ?? "midnight",
@@ -2893,6 +3008,7 @@ function collectDaemonSettingsFromForm() {
     rollupRetentionDays,
     retentionLadder,
     otel,
+    thermal,
     targetDatabaseBytes: numberControlValue(elements.daemonDbBudgetMib, 128) * 1024 * 1024,
     topProcessCount: numberControlValue(elements.daemonTopProcessCount, 8),
     redactionDefault: Boolean(elements.daemonRedactionDefault?.checked),
@@ -2973,6 +3089,7 @@ async function fetchSettings() {
     const document = await response.json();
     state.retentionLadderAvailable = ladderCapabilityFrom(document);
     state.otelAvailable = otelCapabilityFrom(document);
+    state.thermalAvailable = thermalCapabilityFrom(document);
     const settings = normalizeSettings(document);
     populateDaemonSettings(settings);
     if (!state.retentionLadderAvailable) {
@@ -2983,6 +3100,7 @@ async function fetchSettings() {
   } catch (error) {
     state.retentionLadderAvailable = ladderCapabilityFrom(null);
     state.otelAvailable = otelCapabilityFrom(null);
+    state.thermalAvailable = thermalCapabilityFrom(null);
     const settings = cloneSettings(DEFAULT_DAEMON_SETTINGS);
     populateDaemonSettings(settings);
     setText(elements.historyLadderUnavailable, "Settings unavailable — ladder controls hidden.");
@@ -3047,7 +3165,7 @@ async function saveDaemonSettings() {
     try {
       const plan = await previewSettingsImport({
         tinytopConfigVersion: 1,
-        settings: settingsPutPayload(settings, true, state.otelAvailable),
+        settings: settingsPutPayload(settings, true, state.otelAvailable, state.thermalAvailable),
       });
       if (plan.valid === false) {
         renderSettingsValidation(Array.isArray(plan.errors) ? plan.errors : []);
@@ -3087,12 +3205,20 @@ async function saveDaemonSettings() {
       headers: {
         "content-type": "application/json",
       },
-      body: JSON.stringify(settingsPutPayload(settings, state.retentionLadderAvailable, state.otelAvailable)),
+      body: JSON.stringify(
+        settingsPutPayload(
+          settings,
+          state.retentionLadderAvailable,
+          state.otelAvailable,
+          state.thermalAvailable,
+        ),
+      ),
     });
     if (!response.ok) throw new Error(`Settings save failed with HTTP ${response.status}`);
     const savedDocument = await response.json();
     state.retentionLadderAvailable = ladderCapabilityFrom(savedDocument);
     state.otelAvailable = otelCapabilityFrom(savedDocument);
+    state.thermalAvailable = thermalCapabilityFrom(savedDocument);
     const saved = normalizeSettings(savedDocument);
     populateDaemonSettings(saved);
     state.settingsDirty = false;
@@ -3189,6 +3315,7 @@ async function importSettingsFile(file) {
     const result = await response.json();
     state.retentionLadderAvailable = ladderCapabilityFrom(result.settings);
     state.otelAvailable = otelCapabilityFrom(result.settings);
+    state.thermalAvailable = thermalCapabilityFrom(result.settings);
     populateDaemonSettings(normalizeSettings(result.settings));
     state.settingsDirty = false;
     renderSettingsDirtyIndicator();
@@ -3338,6 +3465,19 @@ function renderOtelCoverage(otel) {
   setHidden(elements.historyOtelStatus, false);
 }
 
+function renderThermalCoverage(thermal) {
+  if (!elements.historyThermalStatus) return;
+  if (!thermal || typeof thermal !== "object" || thermal.enabled !== true) {
+    setHidden(elements.historyThermalStatus, true);
+    return;
+  }
+  const count = formatCount(thermal.sensorCount);
+  elements.historyThermalStatus.textContent =
+    `Thermals — ${count} ${thermal.sensorCount === 1 ? "sensor" : "sensors"} · ` +
+    `${formatCoverageTime(thermal.oldestCapturedAtMs)} → ${formatCoverageTime(thermal.newestCapturedAtMs)}`;
+  setHidden(elements.historyThermalStatus, false);
+}
+
 function renderHistoryCoverage(coverage) {
   state.historyCoverage = coverage;
   setText(elements.historyOldest, formatCoverageTime(coverage?.oldestCapturedAtMs));
@@ -3353,6 +3493,7 @@ function renderHistoryCoverage(coverage) {
   renderDiskCoverage(coverage?.disk);
   renderArchiveCoverage(coverage?.archive);
   renderOtelCoverage(coverage?.otel);
+  renderThermalCoverage(coverage?.thermal);
   syncHistoryWindowAvailability(coverage);
 }
 

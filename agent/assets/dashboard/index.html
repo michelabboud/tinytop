@@ -187,6 +187,17 @@
           <ul class="gpu-adapters" id="gpu-adapters"></ul>
         </section>
 
+        <section class="panel thermal-panel" id="thermal-panel" data-section="overview" aria-label="Thermals" hidden>
+          <div class="section-heading">
+            <div>
+              <h2>Thermals</h2>
+              <p>Opt-in CPU chip temperature readings.</p>
+            </div>
+            <span class="mini-stat" id="thermal-count">0 sensors</span>
+          </div>
+          <div class="thermal-chips" id="thermal-groups"></div>
+        </section>
+
         <section class="panel history-panel" id="history" data-section="history">
           <div class="section-heading">
             <div>
@@ -272,6 +283,7 @@
             <section class="history-ladder-coverage" id="history-ladder-coverage" aria-label="History ladder coverage" hidden></section>
             <div class="history-archive-status" id="history-archive-status" hidden></div>
             <div class="history-archive-status" id="history-otel-status" role="status" hidden></div>
+            <div class="history-archive-status" id="thermal-status" role="status" hidden></div>
             <div class="history-marker-list" id="history-marker-list" aria-live="polite"></div>
             <div class="history-sample-values" id="history-sample-values"></div>
           </div>
@@ -663,6 +675,18 @@
                 <textarea id="daemon-otel-resource-attributes" class="settings-wide-field" placeholder="key=value, one per line"></textarea>
               </label>
               <p class="settings-help settings-runtime-note">Headers (e.g. authorization) are read from the environment variable named here — never stored in settings.</p>
+            </fieldset>
+            <fieldset class="settings-group thermal-settings-group" id="thermal-settings-group" hidden>
+              <legend>CPU thermals</legend>
+              <label class="toggle-row">
+                <input id="daemon-thermal-enabled" type="checkbox" />
+                <span>Collect CPU thermals (off by default)</span>
+              </label>
+              <label class="settings-wide-field">
+                <span>Additional hwmon chips</span>
+                <textarea id="daemon-thermal-extra-chips" placeholder="Comma- or newline-separated chip names"></textarea>
+              </label>
+              <p class="settings-help settings-runtime-note">coretemp and k10temp are built in. Add only trusted CPU chip names that match lowercase letters, numbers, or underscores.</p>
             </fieldset>
           </div>
           <div class="settings-validation-summary" id="settings-validation-summary" role="status" hidden></div>
