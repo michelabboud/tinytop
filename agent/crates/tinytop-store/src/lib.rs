@@ -624,6 +624,7 @@ pub struct SqliteHistoryStore {
     writer_gate: Arc<WriterGate>,
     current_identity: Arc<Mutex<Option<CurrentIdentity>>>,
     filesystem_state: Arc<Mutex<FilesystemState>>,
+    filesystem_warning_last_ms: Arc<Mutex<Option<i64>>>,
     process_warning_last_ms: Arc<Mutex<Option<i64>>>,
 }
 
@@ -1138,6 +1139,7 @@ impl SqliteHistoryStore {
             writer_gate: Arc::new(WriterGate::default()),
             current_identity: Arc::new(Mutex::new(None)),
             filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
+            filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
             process_warning_last_ms: Arc::new(Mutex::new(None)),
         };
         store.apply_pragmas().await?;
@@ -1178,6 +1180,7 @@ impl SqliteHistoryStore {
             writer_gate: Arc::new(WriterGate::default()),
             current_identity: Arc::new(Mutex::new(None)),
             filesystem_state: Arc::new(Mutex::new(FilesystemState::default())),
+            filesystem_warning_last_ms: Arc::new(Mutex::new(None)),
             process_warning_last_ms: Arc::new(Mutex::new(None)),
         })
     }
@@ -1580,6 +1583,9 @@ impl SqliteHistoryStore {
 
         let mut next_fs_state = previous_fs_state.clone();
         let mut filesystem_rows_written = 0_i64;
+        let filesystem_stamp_regressed = previous_fs_state
+            .last_key_ms
+            .is_some_and(|last_key_ms| fs_key_ms < last_key_ms);
         // A late snapshot must not rewrite the current presence state: an event
         // inserted behind the cached key cannot retroactively add its matching
         // disappearance at the already-processed successor key.
@@ -1623,6 +1629,18 @@ impl SqliteHistoryStore {
         *self.filesystem_state.lock().map_err(|_| {
             StoreError::Validation("filesystem cache mutex is poisoned".to_string())
         })? = next_fs_state;
+
+        if filesystem_stamp_regressed && let Some(last_key_ms) = previous_fs_state.last_key_ms {
+            let mut last_warning = self.filesystem_warning_last_ms.lock().map_err(|_| {
+                StoreError::Validation("filesystem warning mutex is poisoned".to_string())
+            })?;
+            if last_warning.is_none_or(|last| captured_at_ms.saturating_sub(last) >= 60_000) {
+                eprintln!(
+                    "history writer warning: filesystem enumeration stamp {fs_key_ms} is older than the last processed stamp {last_key_ms}; the sample's filesystems were not stored (metric row kept)"
+                );
+                *last_warning = Some(captured_at_ms);
+            }
+        }
 
         let mut detail_rows = filesystem_rows_written;
         let mut process_error = None;

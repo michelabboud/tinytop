@@ -1172,8 +1172,7 @@ fn migration_u64_to_i64(
         reason: format!(
             "metric_samples row {sample_id} holds {field} value {value} that does not fit SQLite INTEGER"
         ),
-        remedy: "the row was written by an unknown writer; inspect it with `db check`; the database was not modified"
-            .to_string(),
+        remedy: "a row this version cannot decode — back up the database, then clear that row's payload (UPDATE metric_samples SET snapshot_json = NULL WHERE sample_id = <n>; see INSTALL.md, Upgrade) and start again; the database was not modified".to_string(),
     })
 }
 

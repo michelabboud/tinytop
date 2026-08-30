@@ -301,7 +301,7 @@ Retention note: The API default window is 300 seconds when no explicit window is
 
 ### GET /api/history/points
 
-Rust daemon endpoint that returns chart-ready metric points from L1 raw, L2 one-minute, L3 five-minute, L4 hourly, or the queryable archive. This is additive; `/api/history` still returns recent full raw snapshots.
+Rust daemon endpoint that returns chart-ready metric points from L1 raw, L2 one-minute, L3 five-minute, L4 hourly, or the queryable archive. This is additive; `/api/history` returns recent snapshots assembled from the typed tables (no `cpu.times`, no pressure lines; `load.runnable`/`totalThreads`/`lastPid` are absent when the collector has no source).
 
 Query parameters:
 

@@ -489,13 +489,31 @@ async fn filesystems_carry_forward_until_the_mount_disappears() {
         .read_history(HistoryQuery::default())
         .await
         .expect("history");
-    assert!(
-        history[1]
-            .snapshot
-            .filesystems
-            .iter()
-            .any(|row| row.mount == "/data")
-    );
+    let carried_data = history[1]
+        .snapshot
+        .filesystems
+        .iter()
+        .find(|row| row.mount == "/data")
+        .expect("the unchanged /data mount should carry forward");
+    let at_zero_data = at_zero
+        .filesystems
+        .iter()
+        .find(|row| row.mount == "/data")
+        .expect("the initial snapshot should contain /data");
+    assert_eq!(carried_data, at_zero_data);
+
+    let carried_root = history[1]
+        .snapshot
+        .filesystems
+        .iter()
+        .find(|row| row.mount == "/")
+        .expect("the unchanged root mount should be assembled");
+    let unchanged_root = unchanged
+        .filesystems
+        .iter()
+        .find(|row| row.mount == "/")
+        .expect("the unchanged snapshot should contain the root mount");
+    assert_eq!(carried_root, unchanged_root);
     assert!(
         !history[2]
             .snapshot

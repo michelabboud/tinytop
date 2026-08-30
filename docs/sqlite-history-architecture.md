@@ -235,7 +235,7 @@ CREATE TABLE IF NOT EXISTS history_state (
 );
 
 CREATE TABLE IF NOT EXISTS fs_samples (
-  fs_key_ms INTEGER NOT NULL,
+  captured_at_ms INTEGER NOT NULL,
   mount TEXT NOT NULL,
   filesystem TEXT NOT NULL,
   fs_type TEXT NOT NULL,
@@ -246,11 +246,11 @@ CREATE TABLE IF NOT EXISTS fs_samples (
   inode_used_percent REAL,
   inode_used INTEGER,
   inode_total INTEGER,
-  PRIMARY KEY (fs_key_ms, mount)
+  PRIMARY KEY (captured_at_ms, mount)
 );
 
 CREATE INDEX IF NOT EXISTS idx_fs_samples_mount_time
-  ON fs_samples (mount, fs_key_ms DESC);
+  ON fs_samples (mount, captured_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS fs_mount_events (
   captured_at_ms INTEGER NOT NULL,
@@ -313,6 +313,10 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
 
 PRAGMA user_version = 3;
 ```
+
+The value written into `fs_samples.captured_at_ms` is the enumeration key
+`fs_key_ms`: the snapshot's `filesystemsCapturedAtMs`, or the sample's
+`captured_at_ms` when the snapshot has no filesystem stamp.
 
 `process_samples_fast` is the per-tick process history table. Its `command_id`
 references the dictionary, so repeated command text is stored once. The fast
@@ -385,8 +389,11 @@ same affected-row count. The decode guard remains fail-closed for every other
 unknown field shape or value, leaving the database untouched for operator
 recovery.
 
-The migration guard refuses an in-progress v3 migration rather than allowing a
-second writer to rebuild the same table. Any failure rolls the transaction back.
+The v2→v3 table creation and backfill run in one transaction. A second writer is
+serialised by SQLite's write lock, and any failure or crash rolls the transaction
+back. The explicit guard is the post-backfill identity-count check: the migration
+refuses to commit unless the number of assembleable rows equals the number of
+decoded JSON rows.
 The v0 path still performs its existing pre-image/VACUUM migration first and
 then chains into v1→v2→v3. Unsupported schema versions are refused with
 `unsupported SQLite schema version <version> at <path> (supported version is
@@ -401,7 +408,11 @@ The filesystem key is `fs_key_ms`: the snapshot's
 `filesystemsCapturedAtMs`, or the sample capture time when a collector does not
 provide a stamp. A row is written only for a new enumeration and only when a
 mount is new or its filesystem/type, size, used, available, or inode values
-changed. `fs_mount_events` records each appearance and disappearance. Reads use
+changed. Enumeration stamps are monotonic: a stamp older than the last processed
+stamp keeps the metric row, stores no filesystem rows or events, and warns at
+most once per minute of `captured_at_ms`; a stamp equal to the last one is the
+steady state and writes or warns nothing. `fs_mount_events` records each
+appearance and disappearance. Reads use
 the selected sample's stored stamp, include a mount only when its latest event
 at or before that stamp says present, and take its latest values at or before
 that stamp. Retention keeps each mount's newest row and newest event as a
@@ -515,7 +526,7 @@ The Rust daemon returns persisted `daemonStart`, `settingsChange`, and one-time 
 
 ## Rollups And Coverage
 
-The Rust daemon maintains a fixed-resolution ladder: L1 raw samples, L2 one-minute rollups, L3 five-minute rollups, and L4 hourly rollups. Rollups are additive to the raw history table; `/api/history` still returns recent complete raw snapshots.
+The Rust daemon maintains a fixed-resolution ladder: L1 raw samples, L2 one-minute rollups, L3 five-minute rollups, and L4 hourly rollups. Rollups are additive to the raw history table; `/api/history` returns recent snapshots assembled from the typed tables (no `cpu.times`, no pressure lines; `load.runnable`/`totalThreads`/`lastPid` are absent when the collector has no source).
 
 Every rung uses the same `fold` rule. `sample_count` is the sum of the finer rows' counts, averages are weighted by those counts, minima are the minimum of minima, and maxima are the maximum of maxima. Root-filesystem utilization ignores finer buckets that have no root value and becomes `NULL` only when none of them reported one. This preserves all represented measurements instead of selecting one sample or averaging already-aggregated averages. Legacy L2 rows whose v1 minimum/root-maximum columns are `NULL` read their corresponding average as the missing bound, so they remain promotable without claiming reconstructed detail.
 

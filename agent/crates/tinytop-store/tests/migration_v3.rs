@@ -59,6 +59,52 @@ struct MigratedMetricRow {
     filesystems_captured_at_ms: Option<i64>,
 }
 
+type TableInfoRow = (i64, String, String, i64, Option<String>, i64);
+
+async fn table_info(pool: &SqlitePool, table: &str) -> Vec<TableInfoRow> {
+    let sql = match table {
+        "metric_samples" => "PRAGMA table_info(metric_samples)",
+        "host_identity" => "PRAGMA table_info(host_identity)",
+        "fs_mount_events" => "PRAGMA table_info(fs_mount_events)",
+        "fs_samples" => "PRAGMA table_info(fs_samples)",
+        "process_samples" => "PRAGMA table_info(process_samples)",
+        "process_samples_fast" => "PRAGMA table_info(process_samples_fast)",
+        "process_commands" => "PRAGMA table_info(process_commands)",
+        other => panic!("unsupported table_info fixture table {other}"),
+    };
+    sqlx::query(sql)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_else(|error| panic!("{table} table_info should read: {error}"))
+        .into_iter()
+        .map(|row| {
+            (
+                row.get("cid"),
+                row.get("name"),
+                row.get("type"),
+                row.get("notnull"),
+                row.get("dflt_value"),
+                row.get("pk"),
+            )
+        })
+        .collect()
+}
+
+async fn index_names(pool: &SqlitePool, table: &str) -> Vec<String> {
+    let sql = match table {
+        "metric_samples" => "PRAGMA index_list(metric_samples)",
+        "fs_samples" => "PRAGMA index_list(fs_samples)",
+        other => panic!("unsupported index_list fixture table {other}"),
+    };
+    sqlx::query(sql)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_else(|error| panic!("{table} index_list should read: {error}"))
+        .into_iter()
+        .map(|row| row.get("name"))
+        .collect()
+}
+
 #[tokio::test]
 async fn v2_fixture_with_json_rows_migrates_to_v3() {
     // Break caught: the v2 rebuild loses sample ids, borrows scalar values from
@@ -328,6 +374,92 @@ async fn fresh_database_is_created_at_v3() {
         "ok"
     );
     pool.close().await;
+}
+
+#[tokio::test]
+async fn migrated_and_fresh_v3_schemas_are_identical() {
+    // Break caught: fresh-v3 DDL and the v2-to-v3 rebuild drift in any column
+    // attribute or required index while both still report user_version 3.
+    let migrated_fixture = TempDatabase::new("migrated-schema");
+    let migrated_seed = seed_v2_schema(&migrated_fixture).await;
+    insert_v2_metric(
+        &migrated_seed,
+        21,
+        1_000,
+        legacy_snapshot("kernel-a", 121, 621, 721, Some(821), Some(1_000), json!([])).as_deref(),
+    )
+    .await;
+    insert_filesystem(&migrated_seed, 1_000, "/").await;
+    migrated_seed.close().await;
+    SqliteHistoryStore::connect(&migrated_fixture.url)
+        .await
+        .expect("v2 fixture should migrate")
+        .close()
+        .await
+        .expect("migrated store should close");
+
+    let fresh_fixture = TempDatabase::new("fresh-schema");
+    SqliteHistoryStore::connect(&fresh_fixture.url)
+        .await
+        .expect("fresh v3 database should connect")
+        .close()
+        .await
+        .expect("fresh store should close");
+
+    let migrated_pool = migrated_fixture.raw_pool().await;
+    let fresh_pool = fresh_fixture.raw_pool().await;
+    for table in [
+        "metric_samples",
+        "host_identity",
+        "fs_mount_events",
+        "fs_samples",
+        "process_samples",
+        "process_samples_fast",
+        "process_commands",
+    ] {
+        let migrated_rows = table_info(&migrated_pool, table).await;
+        let fresh_rows = table_info(&fresh_pool, table).await;
+        let first_difference = migrated_rows
+            .iter()
+            .zip(&fresh_rows)
+            .position(|(migrated, fresh)| migrated != fresh)
+            .unwrap_or_else(|| migrated_rows.len().min(fresh_rows.len()));
+        assert_eq!(
+            migrated_rows,
+            fresh_rows,
+            "schema mismatch for {table}; first differing row {first_difference}: migrated {:?}, fresh {:?}",
+            migrated_rows.get(first_difference),
+            fresh_rows.get(first_difference),
+        );
+    }
+
+    let migrated_metric_indexes = index_names(&migrated_pool, "metric_samples").await;
+    let fresh_metric_indexes = index_names(&fresh_pool, "metric_samples").await;
+    assert_eq!(
+        migrated_metric_indexes, fresh_metric_indexes,
+        "metric_samples index names differ"
+    );
+    assert_eq!(
+        fresh_metric_indexes,
+        [
+            "idx_metric_samples_runtime_captured_at",
+            "idx_metric_samples_captured_at",
+            "sqlite_autoindex_metric_samples_1",
+        ]
+    );
+
+    let migrated_fs_indexes = index_names(&migrated_pool, "fs_samples").await;
+    let fresh_fs_indexes = index_names(&fresh_pool, "fs_samples").await;
+    assert_eq!(
+        migrated_fs_indexes, fresh_fs_indexes,
+        "fs_samples index names differ"
+    );
+    assert_eq!(
+        fresh_fs_indexes,
+        ["idx_fs_samples_mount_time", "sqlite_autoindex_fs_samples_1"]
+    );
+    migrated_pool.close().await;
+    fresh_pool.close().await;
 }
 
 #[tokio::test]
