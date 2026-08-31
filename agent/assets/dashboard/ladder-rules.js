@@ -113,6 +113,44 @@ export function formatGpuTemperature(value) {
   return Number.isFinite(value) ? `${Math.round(value)} °C` : "";
 }
 
+export function formatSensorValue(value) {
+  return Number.isFinite(value) ? `${value.toFixed(1)} °C` : "—";
+}
+
+export function formatSensorThreshold(max, crit) {
+  const thresholds = [];
+  if (Number.isFinite(max)) thresholds.push(`max ${Math.round(max)} °C`);
+  if (Number.isFinite(crit)) thresholds.push(`crit ${Math.round(crit)} °C`);
+  return thresholds.join(" · ");
+}
+
+function usableSensorThreshold(value) {
+  return Number.isFinite(value) && value > 0;
+}
+
+export function sensorBarPercent(value, max, crit) {
+  const ceiling = usableSensorThreshold(crit) ? crit : usableSensorThreshold(max) ? max : null;
+  if (ceiling === null || !Number.isFinite(value)) return null;
+  return Math.min(100, Math.max(0, (value / ceiling) * 100));
+}
+
+export function sensorSeverity(value, max, crit) {
+  if (usableSensorThreshold(crit) && Number.isFinite(value) && value >= crit) return "critical";
+  if (usableSensorThreshold(max) && Number.isFinite(value) && value >= max) return "warn";
+  return "normal";
+}
+
+export function groupSensorsByChip(sensors) {
+  if (!Array.isArray(sensors) || sensors.length === 0) return [];
+  const groups = new Map();
+  for (const sensor of sensors) {
+    const chip = sensor?.chip;
+    if (!groups.has(chip)) groups.set(chip, []);
+    groups.get(chip).push(sensor);
+  }
+  return Array.from(groups, ([chip, readings]) => ({ chip, readings }));
+}
+
 export function describeGpuAdapter(adapter) {
   const name = typeof adapter?.name === "string" && adapter.name.length > 0 ? adapter.name : adapter?.id;
   return {
@@ -237,11 +275,59 @@ export function otelCapabilityFrom(settingsOrNull) {
   );
 }
 
-export function settingsPutPayload(settings, retentionLadderAvailable, otelAvailable = retentionLadderAvailable) {
+export function thermalCapabilityFrom(settingsOrNull) {
+  return Boolean(
+    settingsOrNull &&
+      typeof settingsOrNull === "object" &&
+      settingsOrNull.thermal &&
+      typeof settingsOrNull.thermal === "object" &&
+      !Array.isArray(settingsOrNull.thermal),
+  );
+}
+
+export function settingsPutPayload(
+  settings,
+  retentionLadderAvailable,
+  otelAvailable = retentionLadderAvailable,
+  thermalAvailable = false,
+) {
   const payload = { ...settings };
   if (!retentionLadderAvailable) delete payload.retentionLadder;
   if (!otelAvailable) delete payload.otel;
+  if (thermalAvailable) {
+    payload.thermal = {
+      enabled: Boolean(settings?.thermal?.enabled),
+      extraChips: Array.isArray(settings?.thermal?.extraChips) ? [...settings.thermal.extraChips] : [],
+    };
+  } else {
+    delete payload.thermal;
+  }
   return payload;
+}
+
+const THERMAL_CHIP_ERROR = "thermal.extraChips entries must match ^[a-z0-9_]{1,32}$";
+const THERMAL_CHIP_COUNT_ERROR = "thermal.extraChips must hold at most 16 entries";
+const THERMAL_CHIP_DUPLICATE_ERROR = "thermal.extraChips must not contain duplicates";
+
+export function validateThermalSettings(thermal) {
+  const extraChips = Array.isArray(thermal?.extraChips) ? thermal.extraChips : [];
+  if (extraChips.length > 16) return [THERMAL_CHIP_COUNT_ERROR];
+  if (extraChips.some((chip) => typeof chip !== "string" || !/^[a-z0-9_]{1,32}$/u.test(chip))) {
+    return [THERMAL_CHIP_ERROR];
+  }
+  if (new Set(extraChips).size !== extraChips.length) return [THERMAL_CHIP_DUPLICATE_ERROR];
+  return [];
+}
+
+export function parseThermalExtraChips(text) {
+  return String(text ?? "")
+    .split(/[,\r\n]+/u)
+    .map((chip) => chip.trim())
+    .filter((chip) => chip.length > 0);
+}
+
+export function formatThermalExtraChips(extraChips) {
+  return Array.isArray(extraChips) ? extraChips.join("\n") : "";
 }
 
 const OTEL_PROTOCOL_ERROR = "otel.protocol must be one of http/protobuf";

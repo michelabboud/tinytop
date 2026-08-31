@@ -32,10 +32,11 @@ The dashboard is organized for quick scanning:
 3. Display controls: theme selection.
 4. Operator strip: current Healthy, Warning, Critical, or Stale state, worst offender, last-sample age, and a detail drawer.
 5. Overview gauges: CPU, RAM, swap, and load.
-6. History: graph-type nav, range presets, ECharts chart, timeline rail, coverage, and selected sample values.
-7. Metric band: load, thread count, root filesystem, runtime.
-8. Filesystem and pressure panels.
-9. Process table.
+6. Optional GPU and CPU thermals panels when the serving daemon reports those readings.
+7. History: graph-type nav, range presets, ECharts chart, timeline rail, coverage, and selected sample values.
+8. Metric band: load, thread count, root filesystem, runtime.
+9. Filesystem and pressure panels.
+10. Process table.
 
 ## Live Status
 
@@ -55,6 +56,8 @@ The operator strip shows:
 Click the operator strip or its `Details` button to open the alert detail drawer. It lists the current metric values, warning/critical thresholds, sample age, recent trend, and what changed recently for the worst offender.
 
 The GPU panel appears only when the daemon detects an adapter. It shows each adapter's name, busy percentage, VRAM used/total when the driver reports it, and temperature when the GPU node has a sensor. Busy is the busiest engine, matching Task Manager's rule; it is `—` on the first sample, on NVIDIA proprietary adapters, and wherever the kernel exposes no source. On Linux, fdinfo-derived busy is computed over only the processes the daemon's user can see. The Bun runtime and WSL2 never show the panel.
+
+The Thermals panel is separate from the four overview gauges and appears only when the Rust daemon reports at least one opted-in CPU temperature. Readings are grouped by the kernel's chip name. Each row shows its label, value, and any sane maximum/critical thresholds supplied by the kernel. A row with no usable threshold shows the temperature without a bar; it never treats a missing threshold as zero. The Bun runtime, WSL2, disabled collection, and sensorless hosts show no panel or empty-state message.
 
 The sidebar version line shows the serving runtime and product version, for example `Rust collector/dashboard v0.1.34`. The same identity is available from:
 
@@ -99,6 +102,8 @@ The dialog validates ranges before saving, including the ladder's monotonic tier
 On the Rust daemon, `Export JSON` downloads a versioned settings document and `Import JSON…` uploads one for a server dry-run before confirmation. The file contains the daemon settings and transfer metadata, never a secret; credentials remain outside settings. Invalid envelopes and settings show the server's validation messages, and retention growth may be refused while disk pressure is active. Shell operators can use `tinytop-agent config export [--out FILE]` and `tinytop-agent config import FILE --dry-run` before applying with `config import FILE`; CLI application records the import but leaves pruning to the daemon's next tick so a second process does not run maintenance beside it.
 
 The Rust-only `OpenTelemetry` settings group controls push export over HTTP/protobuf: enabled, endpoint, interval, service name, resource attributes, and the `headersEnvVar` name. The referenced environment variable contains OTLP request headers such as `authorization=Bearer <token>` and is read by the daemon; header values never enter settings exports. Header values are read when the exporter pipeline is built, so apply a rotated value by toggling export off and on, changing the `otel` settings block, or restarting the daemon. Settings changes are picked up on the exporter's next 5-second tick; an export already in flight (bounded by its 10-second timeout) can delay that tick, so a change is applied within 10 seconds at worst and within 5 seconds when the receiver answers promptly. Changing only the environment does not rebuild an already-running pipeline. An absent `otel` block in an imported version-1 document keeps the daemon's persisted OTel settings. Bun has no exporter.
+
+The Rust-only `CPU thermals` settings group is intentionally opt-in and visibly off by default. Enable it to collect `coretemp` and `k10temp` CPU readings. `Additional hwmon chips` accepts comma- or newline-separated lowercase chip names containing only letters, numbers, and underscores; it is limited to 16 unique names. The group is absent when the server does not advertise a `thermal` settings block, so the Bun runtime cannot accidentally overwrite persisted Rust thermal settings. Disabling thermals removes the snapshot field and stops hardware-monitor discovery rather than recording zeroes.
 
 Browser validation of archive and database paths is advisory; the server validates the authoritative host-native path.
 
@@ -149,7 +154,7 @@ The timeline row sits below the chart.
 - Drag the timeline rail to inspect the nearest loaded sample by timestamp.
 - The main gauges and detail panels update to the selected raw sample. Rollup points update the History readout without replacing live filesystem/process detail with aggregate placeholders.
 - The position label shows the selected local datetime.
-- The coverage card shows oldest/newest samples, database size and budget, each available ladder tier's horizon/count/range, disk pressure, and archive status when the Rust daemon serves those `/api/history/coverage` fields. Older runtimes omit the newer portions without breaking the card.
+- The coverage card shows oldest/newest samples, database size and budget, each available ladder tier's horizon/count/range, disk pressure, archive status, and the opted-in thermal sensor count/range when the Rust daemon serves those `/api/history/coverage` fields. Thermal coverage never exposes a sensor value. Older runtimes omit the newer portions without breaking the card.
 - Timeline markers show daemon starts, settings changes, disk-pressure/recovery transitions, and coverage gaps from `/api/history/markers`.
 - Click `Now` beside the rail to return to the newest sample in the loaded range.
 - Click `Clear` to empty the current tab's session buffer after confirming.
@@ -203,6 +208,7 @@ Not persisted:
 - Load percent is derived from 1-minute load divided by CPU core count, capped to 100 for overview gauge and chart display.
 - Pressure values come from `/proc/pressure/*` when available.
 - GPU busy is the busiest engine's percentage over the sampling interval, capped at 100%.
+- CPU thermals are degrees Celsius from opted-in hwmon chips. Warning and critical styling is derived only from present kernel `max` and `crit` thresholds; a missing or nonsensical threshold is omitted.
 - Per-process GPU percentage is shown only when at least one process row has a value.
 - In the Rust daemon, filesystem and process data come from Rust crates instead of shelling out.
 - Process detail rows include parent PID and start time when the active collector can provide them. The copy command uses a redacted command string to avoid copying obvious token/password values.
