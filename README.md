@@ -271,7 +271,9 @@ page, or include `"thermal": { "enabled": true, "extraChips": [] }` in a
 `config import` document. When enabled on Linux, TinyTop records the CPU package
 and per-core temperatures exposed by `coretemp` or `k10temp`; the kernel chip
 name is kept verbatim. `thermal.extraChips` can opt another CPU thermal driver
-into the same reader.
+into the same reader. It rejects `amdgpu`, `i915`, and `nvme`: GPU temperatures
+already have the dedicated `gpus[].temperatureC` surface, and NVMe temperatures
+belong to the later disk-temperature slice.
 
 This first slice does not collect fans, PWM, power, or disk temperatures; those
 remain later sensor slices. GPU temperature already appears as

@@ -4,6 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::StoreError;
 
+/// Chips excluded from the collector's `extraChips` allow-list: `amdgpu` and
+/// `i915` already feed `gpus[].temperatureC` (ADR 0022/0025), while `nvme`
+/// belongs to the parent sensors plan's later disk-temperature slice.
+pub const RESERVED_EXTRA_CHIPS: [&str; 3] = ["amdgpu", "i915", "nvme"];
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThermalSettings {
@@ -34,6 +39,12 @@ impl ThermalSettings {
             {
                 return Err(StoreError::Validation(
                     "thermal.extraChips entries must match ^[a-z0-9_]{1,32}$".to_string(),
+                ));
+            }
+            if RESERVED_EXTRA_CHIPS.contains(&chip.as_str()) {
+                return Err(StoreError::Validation(
+                    "thermal.extraChips must not name a chip already reported elsewhere: amdgpu, i915, nvme"
+                        .to_string(),
                 ));
             }
             if !seen.insert(chip.as_str()) {
@@ -113,6 +124,31 @@ mod tests {
             validation_message(&settings),
             "thermal.extraChips contains duplicate chip name \"cpu_thermal\""
         );
+    }
+
+    #[test]
+    fn reserved_extra_chip_names_are_rejected() {
+        // Break caught: thermal overrides duplicate temperatures reported by dedicated surfaces.
+        let message = "thermal.extraChips must not name a chip already reported elsewhere: amdgpu, i915, nvme";
+        for value in ["amdgpu", "i915", "nvme"] {
+            let settings = ThermalSettings {
+                enabled: true,
+                extra_chips: vec![value.to_string()],
+            };
+            assert_eq!(validation_message(&settings), message, "{value}");
+        }
+    }
+
+    #[test]
+    fn normal_extra_chip_name_is_accepted() {
+        // Break caught: the reserved-name guard rejects legitimate opt-in CPU drivers.
+        let settings = ThermalSettings {
+            enabled: true,
+            extra_chips: vec!["cpu_thermal".to_string()],
+        };
+        settings
+            .validate()
+            .expect("normal chip name should validate");
     }
 
     #[test]

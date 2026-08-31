@@ -63,6 +63,14 @@ pub struct StoreStats {
     pub sensor_sample_count: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OptionalHistoryTables {
+    gpu_adapters: bool,
+    gpu_samples: bool,
+    sensor_dim: bool,
+    sensor_samples: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardSettings {
@@ -3094,19 +3102,40 @@ impl SqliteHistoryStore {
     }
 
     pub async fn stats(&self) -> Result<StoreStats, StoreError> {
-        let row = sqlx::query(
+        let tables = self.optional_history_tables().await?;
+        let gpu_adapter_count = if tables.gpu_adapters {
+            "(SELECT COUNT(*) FROM gpu_adapters)"
+        } else {
+            "0"
+        };
+        let gpu_sample_count = if tables.gpu_samples {
+            "(SELECT COUNT(*) FROM gpu_samples)"
+        } else {
+            "0"
+        };
+        let sensor_count = if tables.sensor_dim {
+            "(SELECT COUNT(*) FROM sensor_dim)"
+        } else {
+            "0"
+        };
+        let sensor_sample_count = if tables.sensor_samples {
+            "(SELECT COUNT(*) FROM sensor_samples)"
+        } else {
+            "0"
+        };
+        let row = sqlx::query(AssertSqlSafe(format!(
             r#"
             SELECT
               COUNT(*) AS sample_count,
               MIN(captured_at_ms) AS oldest_captured_at_ms,
               MAX(captured_at_ms) AS newest_captured_at_ms,
-              (SELECT COUNT(*) FROM gpu_adapters) AS gpu_adapter_count,
-              (SELECT COUNT(*) FROM gpu_samples) AS gpu_sample_count,
-              (SELECT COUNT(*) FROM sensor_dim) AS sensor_count,
-              (SELECT COUNT(*) FROM sensor_samples) AS sensor_sample_count
+              {gpu_adapter_count} AS gpu_adapter_count,
+              {gpu_sample_count} AS gpu_sample_count,
+              {sensor_count} AS sensor_count,
+              {sensor_sample_count} AS sensor_sample_count
             FROM metric_samples
             "#,
-        )
+        )))
         .fetch_one(&self.pool)
         .await?;
 
@@ -3118,6 +3147,29 @@ impl SqliteHistoryStore {
             gpu_sample_count: row.try_get("gpu_sample_count")?,
             sensor_count: row.try_get("sensor_count")?,
             sensor_sample_count: row.try_get("sensor_sample_count")?,
+        })
+    }
+
+    async fn optional_history_tables(&self) -> Result<OptionalHistoryTables, StoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT
+              COALESCE(SUM(name = 'gpu_adapters'), 0) AS gpu_adapters,
+              COALESCE(SUM(name = 'gpu_samples'), 0) AS gpu_samples,
+              COALESCE(SUM(name = 'sensor_dim'), 0) AS sensor_dim,
+              COALESCE(SUM(name = 'sensor_samples'), 0) AS sensor_samples
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('gpu_adapters', 'gpu_samples', 'sensor_dim', 'sensor_samples')
+            "#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(OptionalHistoryTables {
+            gpu_adapters: row.try_get::<i64, _>("gpu_adapters")? != 0,
+            gpu_samples: row.try_get::<i64, _>("gpu_samples")? != 0,
+            sensor_dim: row.try_get::<i64, _>("sensor_dim")? != 0,
+            sensor_samples: row.try_get::<i64, _>("sensor_samples")? != 0,
         })
     }
 

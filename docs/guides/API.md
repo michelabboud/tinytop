@@ -281,6 +281,11 @@ Response:
 
 `topProcessCount` accepts `1`–`50` and becomes effective on the daemon's next collection tick.
 
+Each `thermal.extraChips` entry must match `^[a-z0-9_]{1,32}$`. The reserved
+names `amdgpu`, `i915`, and `nvme` are rejected because those temperatures have
+dedicated GPU or later disk-temperature surfaces; validation returns
+`thermal.extraChips must not name a chip already reported elsewhere: amdgpu, i915, nvme`.
+
 ### PUT /api/settings
 
 Persists daemon dashboard defaults. The payload must use the same shape returned by `GET /api/settings`. Invalid enum values or out-of-range numbers return HTTP `400`.
@@ -302,7 +307,7 @@ The Settings dialog separates browser-local choices from daemon defaults:
 
 ### POST /api/settings/import
 
-Validates and applies a versioned settings envelope. With `?dryRun=true`, the endpoint performs no write and returns validation errors, warnings, changed keys, and `wouldDelete`. The deletion preview includes `l1Rows`, each enabled rollup tier, `processFastRows`, archive movement, `gpuSampleRows`, and `sensorSampleRows`; GPU and sensor rows use the candidate L1 horizon, and either absent field from an older daemon is equivalent to zero.
+Validates and applies a versioned settings envelope. With `?dryRun=true`, the endpoint performs no write and returns validation errors, warnings, changed keys, and `wouldDelete`. The deletion preview includes `l1Rows`, each enabled rollup tier, `processFastRows`, archive movement, `gpuSampleRows`, and `sensorSampleRows`; GPU and sensor rows use the candidate L1 horizon. When planning against an existing schema-v3 or schema-v4 database without migrating it, the corresponding absent GPU or sensor sample table is reported as zero rows rather than failing or omitting the field. Either absent field from an older daemon is also equivalent to zero.
 
 ### GET /api/history
 
@@ -535,7 +540,7 @@ Response:
 
 ### CLI: `db stats --json`
 
-`tinytop-agent db stats --json` reports the main database schema and ladder state. Its flattened store fields include `gpuAdapterCount`, `gpuSampleCount`, `sensorCount`, and `sensorSampleCount` alongside the existing raw-sample counts, bounds, `userVersion`, tier, archive, disk, and OTel state. These are presence/count fields only; no sensor value is included.
+`tinytop-agent db stats --json` reports the main database schema and ladder state. Its flattened store fields include `gpuAdapterCount`, `gpuSampleCount`, `sensorCount`, and `sensorSampleCount` alongside the existing raw-sample counts, bounds, `userVersion`, tier, archive, disk, and OTel state. These are presence/count fields only; no sensor value is included. Inspection does not migrate an existing database, so a schema-v3 database reports both GPU counts as `0` and a schema-v4 database reports both sensor counts as `0` while retaining all four fields.
 
 ### GET /vendor/echarts.min.js
 

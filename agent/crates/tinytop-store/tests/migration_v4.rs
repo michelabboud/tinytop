@@ -5,11 +5,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde_json::Value as JsonValue;
+use serde_json::{Value as JsonValue, json};
 use sqlx::{AssertSqlSafe, Row, SqlitePool, sqlite::SqliteConnectOptions};
 use tinytop_store::{
-    SqliteHistoryStore,
-    migration::{CREATE_SCHEMA_V2_SQL, CREATE_SCHEMA_V3_SQL},
+    DashboardSettings, SqliteHistoryStore,
+    migration::{CREATE_SCHEMA_V2_SQL, CREATE_SCHEMA_V3_SQL, CREATE_SCHEMA_V4_SQL},
+    settings_transfer::{MAX_CONFIG_VERSION, plan_import},
 };
 
 struct TempDatabase {
@@ -103,6 +104,15 @@ async fn apply_groups(pool: &SqlitePool, groups: impl IntoIterator<Item = &'stat
             .await
             .expect("schema group");
     }
+}
+
+fn settings_document() -> JsonValue {
+    json!({
+        "tinytopConfigVersion": MAX_CONFIG_VERSION,
+        "exportedAtMs": 1_700_000_000_000_i64,
+        "agentVersion": "test",
+        "settings": DashboardSettings::default(),
+    })
 }
 
 async fn seed_v3_process_rows(pool: &SqlitePool) {
@@ -317,4 +327,125 @@ async fn a_v0_fixture_chains_to_v4() {
         table_info(&pool, "process_samples").await[7].1,
         "started_at_ms"
     );
+}
+
+#[tokio::test]
+async fn db_stats_on_an_unmigrated_v4_file_reports_zero_sensors() {
+    // Break caught: inspection tries to count schema-v5 tables before migration.
+    let fixture = TempDatabase::new("inspect-v4-stats");
+    let pool = fixture.raw_pool(true).await;
+    apply_groups(&pool, CREATE_SCHEMA_V4_SQL).await;
+    pool.close().await;
+
+    let store = SqliteHistoryStore::connect_for_inspection(&fixture.url)
+        .await
+        .expect("unmigrated v4 store should open for inspection");
+    let stats = store
+        .stats()
+        .await
+        .expect("unmigrated v4 stats should remain inspectable");
+
+    assert_eq!(stats.sensor_count, 0);
+    assert_eq!(stats.sensor_sample_count, 0);
+}
+
+#[tokio::test]
+async fn import_dry_run_on_an_unmigrated_v4_file_reports_zero_sensor_rows() {
+    // Break caught: import planning counts sensor_samples before schema v5 exists.
+    let fixture = TempDatabase::new("inspect-v4-import");
+    let pool = fixture.raw_pool(true).await;
+    apply_groups(&pool, CREATE_SCHEMA_V4_SQL).await;
+    pool.close().await;
+
+    let store = SqliteHistoryStore::connect_for_inspection(&fixture.url)
+        .await
+        .expect("unmigrated v4 store should open for inspection");
+    let plan = plan_import(&store, &settings_document(), 1_700_000_000_000)
+        .await
+        .expect("unmigrated v4 import planning should remain inspectable");
+
+    assert!(plan.valid, "{:?}", plan.errors);
+    assert_eq!(plan.would_delete.sensor_sample_rows, 0);
+}
+
+#[tokio::test]
+async fn db_stats_on_an_unmigrated_v3_file_reports_zero_gpus_and_sensors() {
+    // Break caught: inspection tries to count schema-v4/v5 tables before migration.
+    let fixture = TempDatabase::new("inspect-v3-stats");
+    let pool = fixture.raw_pool(true).await;
+    apply_groups(&pool, CREATE_SCHEMA_V3_SQL).await;
+    pool.close().await;
+
+    let store = SqliteHistoryStore::connect_for_inspection(&fixture.url)
+        .await
+        .expect("unmigrated v3 store should open for inspection");
+    let stats = store
+        .stats()
+        .await
+        .expect("unmigrated v3 stats should remain inspectable");
+
+    assert_eq!(stats.gpu_adapter_count, 0);
+    assert_eq!(stats.gpu_sample_count, 0);
+    assert_eq!(stats.sensor_count, 0);
+    assert_eq!(stats.sensor_sample_count, 0);
+}
+
+#[tokio::test]
+async fn import_dry_run_on_an_unmigrated_v3_file_reports_zero_gpu_and_sensor_rows() {
+    // Break caught: import planning counts schema-v4/v5 sample tables before migration.
+    let fixture = TempDatabase::new("inspect-v3-import");
+    let pool = fixture.raw_pool(true).await;
+    apply_groups(&pool, CREATE_SCHEMA_V3_SQL).await;
+    pool.close().await;
+
+    let store = SqliteHistoryStore::connect_for_inspection(&fixture.url)
+        .await
+        .expect("unmigrated v3 store should open for inspection");
+    let plan = plan_import(&store, &settings_document(), 1_700_000_000_000)
+        .await
+        .expect("unmigrated v3 import planning should remain inspectable");
+
+    assert!(plan.valid, "{:?}", plan.errors);
+    assert_eq!(plan.would_delete.gpu_sample_rows, 0);
+    assert_eq!(plan.would_delete.sensor_sample_rows, 0);
+}
+
+#[tokio::test]
+async fn db_stats_on_a_v5_file_reports_true_gpu_and_sensor_counts() {
+    // Break caught: compatibility guards replace real v5 counts with zeroes.
+    let fixture = TempDatabase::new("v5-stats-counts");
+    let store = SqliteHistoryStore::connect(&fixture.url)
+        .await
+        .expect("fresh v5 store");
+    let pool = fixture.raw_pool(false).await;
+    sqlx::query(
+        "INSERT INTO gpu_adapters (stable_id, vendor, name, driver, first_seen_ms, last_seen_ms) VALUES ('pci-0000:02:00.0', 'amd', 'fixture', 'amdgpu', 1000, 1000)",
+    )
+    .execute(&pool)
+    .await
+    .expect("GPU dimension fixture");
+    sqlx::query(
+        "INSERT INTO gpu_samples (captured_at_ms, adapter_id, busy_percent) SELECT 1000, adapter_id, 25.0 FROM gpu_adapters",
+    )
+    .execute(&pool)
+    .await
+    .expect("GPU sample fixture");
+    sqlx::query(
+        "INSERT INTO sensor_dim (stable_id, chip, kind, label, first_seen_ms, last_seen_ms) VALUES ('hwmon-coretemp-0-temp1', 'coretemp', 'temp', 'Package id 0', 1000, 1000)",
+    )
+    .execute(&pool)
+    .await
+    .expect("sensor dimension fixture");
+    sqlx::query(
+        "INSERT INTO sensor_samples (captured_at_ms, sensor_id, value) SELECT 1000, sensor_id, 55.0 FROM sensor_dim",
+    )
+    .execute(&pool)
+    .await
+    .expect("sensor sample fixture");
+
+    let stats = store.stats().await.expect("v5 stats");
+    assert_eq!(stats.gpu_adapter_count, 1);
+    assert_eq!(stats.gpu_sample_count, 1);
+    assert_eq!(stats.sensor_count, 1);
+    assert_eq!(stats.sensor_sample_count, 1);
 }
