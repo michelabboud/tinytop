@@ -189,7 +189,7 @@ fn db_stats_json_reports_the_ladder() {
     assert!(value["sampleCount"].is_i64());
     assert!(value.contains_key("oldestCapturedAtMs"));
     assert!(value.contains_key("newestCapturedAtMs"));
-    assert_eq!(value["userVersion"], 4);
+    assert_eq!(value["userVersion"], 5);
     assert!(!value.contains_key("snapshotJsonSampleCount"));
 
     let tiers = value["tiers"]
@@ -268,7 +268,7 @@ async fn db_stats_json_reports_user_version_4() {
 
     assert_success(&output);
     let json = stdout_json(&output);
-    assert_eq!(json["value"]["userVersion"], 4);
+    assert_eq!(json["value"]["userVersion"], 5);
 }
 
 #[tokio::test]
@@ -774,7 +774,7 @@ fn pre_image_status_reports_absence_after_v2_migrates_to_v4() {
     assert_eq!(json["value"]["exists"], false);
     assert!(json["value"]["bytes"].is_null());
     assert_eq!(json["value"]["databaseExists"], true);
-    assert_eq!(json["value"]["userVersion"], 4);
+    assert_eq!(json["value"]["userVersion"], 5);
     assert_eq!(json["value"]["integrityCheck"], "ok");
 }
 
