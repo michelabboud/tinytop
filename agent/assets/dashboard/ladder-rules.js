@@ -285,6 +285,61 @@ export function thermalCapabilityFrom(settingsOrNull) {
   );
 }
 
+const SETTINGS_TAB_ORDER = ["general", "history", "metrics", "thermals", "advanced"];
+
+export function availableSettingsTabs(metricsAvailable, thermalAvailable) {
+  return SETTINGS_TAB_ORDER.filter((tab) => {
+    if (tab === "metrics") return Boolean(metricsAvailable);
+    if (tab === "thermals") return Boolean(thermalAvailable);
+    return true;
+  });
+}
+
+export function resolveSettingsTab(requested, availableTabs) {
+  return Array.isArray(availableTabs) && availableTabs.includes(requested) ? requested : "general";
+}
+
+export function moveSettingsTab(current, key, availableTabs) {
+  if (!Array.isArray(availableTabs) || availableTabs.length === 0) return "general";
+  if (key === "Home") return availableTabs[0];
+  if (key === "End") return availableTabs.at(-1);
+  const currentIndex = Math.max(0, availableTabs.indexOf(current));
+  if (key === "ArrowLeft") {
+    return availableTabs[(currentIndex - 1 + availableTabs.length) % availableTabs.length];
+  }
+  if (key === "ArrowRight") return availableTabs[(currentIndex + 1) % availableTabs.length];
+  return resolveSettingsTab(current, availableTabs);
+}
+
+export function groupMetricRegistry(metrics) {
+  const groups = [];
+  const byFamily = new Map();
+  for (const metric of Array.isArray(metrics) ? metrics : []) {
+    const family = typeof metric?.family === "string" && metric.family.length > 0 ? metric.family : "Other";
+    let group = byFamily.get(family);
+    if (!group) {
+      group = { family, metrics: [] };
+      byFamily.set(family, group);
+      groups.push(group);
+    }
+    group.metrics.push(metric);
+  }
+  return groups;
+}
+
+export function disabledMetricsFromSelection(metrics, enabledNames, unknownDisabledNames) {
+  const enabled = enabledNames instanceof Set ? enabledNames : new Set(enabledNames ?? []);
+  const unknown = Array.isArray(unknownDisabledNames) ? [...unknownDisabledNames] : [];
+  const disabledKnown = (Array.isArray(metrics) ? metrics : [])
+    .map((metric) => metric?.name)
+    .filter((name) => typeof name === "string" && !enabled.has(name));
+  return [...unknown, ...disabledKnown];
+}
+
+export function advancedDocumentApplyAllowed(currentText, validatedText, validationSucceeded) {
+  return validationSucceeded === true && validatedText !== null && currentText === validatedText;
+}
+
 export function settingsPutPayload(
   settings,
   retentionLadderAvailable,
@@ -308,12 +363,18 @@ export function settingsPutPayload(
 const THERMAL_CHIP_ERROR = "thermal.extraChips entries must match ^[a-z0-9_]{1,32}$";
 const THERMAL_CHIP_COUNT_ERROR = "thermal.extraChips must hold at most 16 entries";
 const THERMAL_CHIP_DUPLICATE_ERROR = "thermal.extraChips must not contain duplicates";
+export const THERMAL_RESERVED_CHIP_ERROR =
+  "thermal.extraChips must not contain reserved non-CPU chips: amdgpu, i915, nvme";
+const THERMAL_RESERVED_CHIPS = new Set(["amdgpu", "i915", "nvme"]);
 
 export function validateThermalSettings(thermal) {
   const extraChips = Array.isArray(thermal?.extraChips) ? thermal.extraChips : [];
   if (extraChips.length > 16) return [THERMAL_CHIP_COUNT_ERROR];
   if (extraChips.some((chip) => typeof chip !== "string" || !/^[a-z0-9_]{1,32}$/u.test(chip))) {
     return [THERMAL_CHIP_ERROR];
+  }
+  if (extraChips.some((chip) => THERMAL_RESERVED_CHIPS.has(chip))) {
+    return [THERMAL_RESERVED_CHIP_ERROR];
   }
   if (new Set(extraChips).size !== extraChips.length) return [THERMAL_CHIP_DUPLICATE_ERROR];
   return [];

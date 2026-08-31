@@ -1,9 +1,12 @@
 import {
   HISTORY_WINDOWS,
+  advancedDocumentApplyAllowed,
+  availableSettingsTabs,
   describeDiskCoverage,
   describeFilesystemFreshness,
   describeImportPlan,
   describeOtelCoverage,
+  disabledMetricsFromSelection,
   exportFilenameFrom,
   fallbackWindowKey,
   formatCount,
@@ -14,6 +17,7 @@ import {
   formatThermalExtraChips,
   gpuColumnVisible,
   gpuPercentSortValue,
+  groupMetricRegistry,
   groupSensorsByChip,
   formatPressureValue,
   formatResourceAttributes,
@@ -30,6 +34,8 @@ import {
   settingsPutPayload,
   shouldFetchCoverage,
   thermalCapabilityFrom,
+  moveSettingsTab,
+  resolveSettingsTab,
   validateOtelSettings,
   validateRetentionLadder,
   validateThermalSettings,
@@ -54,6 +60,7 @@ const STORAGE_KEYS = {
   processDensity: "tinytop.processDensity",
   filesystemShowSystem: "tinytop.filesystemShowSystem",
   lastSection: "tinytop.lastSection",
+  settingsTab: "tinytop.settingsTab",
 };
 const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
 const THEME_ALIASES = new Map([
@@ -168,6 +175,7 @@ const DEFAULT_DAEMON_SETTINGS = {
     headersEnvVar: "TINYTOP_OTEL_HEADERS",
     serviceName: "tinytop",
     resourceAttributes: {},
+    disabledMetrics: [],
   },
   thermal: {
     enabled: false,
@@ -253,6 +261,14 @@ const state = {
   retentionLadderAvailable: false,
   otelAvailable: false,
   thermalAvailable: false,
+  metricsAvailable: false,
+  settingsDocumentAvailable: false,
+  activeSettingsTab: "general",
+  pendingSettingsTab: null,
+  metricRegistry: [],
+  unknownDisabledMetrics: [],
+  advancedValidatedText: null,
+  advancedValidationSucceeded: false,
   otelResourceAttributeErrors: [],
   theme: "midnight",
   graphMode: "line",
@@ -396,6 +412,8 @@ const elements = {
   historyWindowButtons: Array.from(document.querySelectorAll("[data-history-window]")),
   settingsOpenButton: document.querySelector("#settings-open-button"),
   settingsDialog: document.querySelector("#settings-dialog"),
+  settingsTabs: Array.from(document.querySelectorAll("[data-settings-tab]")),
+  settingsPanels: Array.from(document.querySelectorAll("[data-settings-panel]")),
   closeSettingsButton: document.querySelector("#close-settings-button"),
   cancelSettingsButton: document.querySelector("#cancel-settings-button"),
   browserThemeSetting: document.querySelector("#browser-theme-setting"),
@@ -428,6 +446,9 @@ const elements = {
   historyLadderSettingsGroup: document.querySelector("#history-ladder-settings-group"),
   historyLadderUnavailable: document.querySelector("#history-ladder-unavailable"),
   otelSettingsGroup: document.querySelector("#otel-settings-group"),
+  metricsSettingsGroups: document.querySelector("#metrics-settings-groups"),
+  metricsSettingsUnknown: document.querySelector("#metrics-settings-unknown"),
+  metricsSettingsUnknownList: document.querySelector("#metrics-settings-unknown-list"),
   daemonOtelEnabled: document.querySelector("#daemon-otel-enabled"),
   daemonOtelEndpoint: document.querySelector("#daemon-otel-endpoint"),
   daemonOtelIntervalSec: document.querySelector("#daemon-otel-interval-sec"),
@@ -437,6 +458,11 @@ const elements = {
   thermalSettingsGroup: document.querySelector("#thermal-settings-group"),
   daemonThermalEnabled: document.querySelector("#daemon-thermal-enabled"),
   daemonThermalExtraChips: document.querySelector("#daemon-thermal-extra-chips"),
+  advancedDocumentSettingsGroup: document.querySelector("#advanced-document-settings-group"),
+  advancedSettingsUnavailable: document.querySelector("#advanced-settings-unavailable"),
+  advancedSettingsDocument: document.querySelector("#advanced-settings-document"),
+  validateAdvancedSettingsButton: document.querySelector("#validate-advanced-settings-button"),
+  applyAdvancedSettingsButton: document.querySelector("#apply-advanced-settings-button"),
   daemonDbBudgetMib: document.querySelector("#daemon-db-budget-mib"),
   daemonTopProcessCount: document.querySelector("#daemon-top-process-count"),
   daemonCpuWarn: document.querySelector("#daemon-cpu-warn"),
@@ -565,6 +591,7 @@ function cloneSettings(settings = DEFAULT_DAEMON_SETTINGS) {
     otel: {
       ...settings.otel,
       resourceAttributes: { ...(settings.otel?.resourceAttributes ?? {}) },
+      disabledMetrics: [...(settings.otel?.disabledMetrics ?? [])],
     },
     thermal: {
       ...settings.thermal,
@@ -614,6 +641,9 @@ function normalizeSettings(settings) {
       ...fallback.otel.resourceAttributes,
       ...(settings.otel?.resourceAttributes ?? {}),
     },
+    disabledMetrics: Array.isArray(settings.otel?.disabledMetrics)
+      ? [...settings.otel.disabledMetrics]
+      : [...fallback.otel.disabledMetrics],
   };
   const thermal = {
     ...fallback.thermal,
@@ -823,6 +853,50 @@ function setHidden(node, hidden) {
   if (node) node.hidden = hidden;
 }
 
+function readStoredSettingsTab() {
+  try {
+    return window.localStorage.getItem(STORAGE_KEYS.settingsTab) ?? "general";
+  } catch {
+    return "general";
+  }
+}
+
+function persistSettingsTab(tab) {
+  try {
+    window.localStorage.setItem(STORAGE_KEYS.settingsTab, tab);
+  } catch {
+    // A blocked storage API must not make settings navigation unusable.
+  }
+}
+
+function selectSettingsTab(requested, { focus = false, persist = true, userInitiated = false } = {}) {
+  if (userInitiated) state.pendingSettingsTab = null;
+  const available = availableSettingsTabs(state.metricsAvailable, state.thermalAvailable);
+  const selected = resolveSettingsTab(requested, available);
+  state.activeSettingsTab = selected;
+  for (const tab of elements.settingsTabs) {
+    const active = tab.dataset.settingsTab === selected;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus();
+  }
+  for (const panel of elements.settingsPanels) {
+    setHidden(panel, panel.dataset.settingsPanel !== selected);
+  }
+  if (persist) persistSettingsTab(selected);
+  return selected;
+}
+
+function syncSettingsTabAvailability() {
+  const available = availableSettingsTabs(state.metricsAvailable, state.thermalAvailable);
+  for (const tab of elements.settingsTabs) {
+    setHidden(tab, !available.includes(tab.dataset.settingsTab));
+  }
+  selectSettingsTab(state.pendingSettingsTab ?? state.activeSettingsTab, {
+    persist: state.pendingSettingsTab === null,
+  });
+}
+
 function setDatasetStatus(node, status) {
   if (node) node.setAttribute("data-status", status);
 }
@@ -888,12 +962,19 @@ function closeSettingsDialog() {
 function openSettingsDialog() {
   if (!elements.settingsDialog) return;
   state.settingsReturnFocus = document.activeElement;
+  state.pendingSettingsTab = readStoredSettingsTab();
+  syncSettingsTabAvailability();
   if (typeof elements.settingsDialog.showModal === "function") {
     elements.settingsDialog.showModal();
   } else {
     elements.settingsDialog.setAttribute("open", "");
   }
-  elements.closeSettingsButton?.focus();
+  selectSettingsTab(state.activeSettingsTab, {
+    focus: true,
+    persist: state.pendingSettingsTab === null,
+  });
+  void fetchMetricRegistry();
+  void loadAdvancedSettingsDocument();
 }
 
 function cssColor(name) {
@@ -2645,12 +2726,13 @@ function renderSettingsDirtyIndicator() {
   setHidden(elements.settingsDirtyIndicator, !state.settingsDirty);
 }
 
-function renderSettingsValidation(errors = state.settingsErrors) {
-  state.settingsErrors = errors;
-  const hasErrors = errors.length > 0;
-  setHidden(elements.settingsValidationSummary, !hasErrors);
+function renderSettingsValidation(errors = state.settingsErrors, { outcome = false } = {}) {
+  state.settingsErrors = outcome ? [] : errors;
+  const hasContent = errors.length > 0;
+  setHidden(elements.settingsValidationSummary, !hasContent);
   if (!elements.settingsValidationSummary) return;
-  elements.settingsValidationSummary.textContent = hasErrors ? errors.join(" ") : "";
+  elements.settingsValidationSummary.dataset.status = outcome ? "valid" : "error";
+  elements.settingsValidationSummary.textContent = hasContent ? errors.join(" ") : "";
 }
 
 function settingsThresholdPreset(settings) {
@@ -2938,6 +3020,96 @@ function syncRetentionLadderAvailability() {
   setHidden(elements.daemonRollupRetentionDaysDerived, !state.retentionLadderAvailable);
   setHidden(elements.otelSettingsGroup, !state.otelAvailable);
   setHidden(elements.thermalSettingsGroup, !state.thermalAvailable);
+  setHidden(elements.advancedDocumentSettingsGroup, !state.settingsDocumentAvailable);
+  setHidden(elements.advancedSettingsUnavailable, state.otelAvailable || state.settingsDocumentAvailable);
+  syncSettingsTabAvailability();
+}
+
+function renderMetricRegistry() {
+  if (!elements.metricsSettingsGroups) return;
+  elements.metricsSettingsGroups.replaceChildren();
+  for (const group of groupMetricRegistry(state.metricRegistry)) {
+    const fieldset = document.createElement("fieldset");
+    fieldset.className = "settings-group metric-family";
+    const legend = document.createElement("legend");
+    legend.textContent = group.family;
+    const toggle = document.createElement("button");
+    toggle.className = "mini-button secondary metric-family-toggle";
+    toggle.type = "button";
+    toggle.dataset.metricFamilyToggle = group.family;
+    toggle.textContent = "Select all / none";
+    legend.append(" ", toggle);
+    fieldset.append(legend);
+
+    for (const metric of group.metrics) {
+      const label = document.createElement("label");
+      label.className = "metric-setting-row";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = metric.disabled !== true;
+      checkbox.dataset.metricName = metric.name;
+      checkbox.addEventListener("input", markSettingsDirty);
+      const detail = document.createElement("span");
+      const name = document.createElement("code");
+      name.textContent = metric.name;
+      const unit = document.createElement("small");
+      unit.textContent = metric.unit ? ` ${metric.unit}` : "";
+      const description = document.createElement("small");
+      description.className = "metric-description";
+      description.textContent = metric.description ?? "";
+      detail.append(name, unit, description);
+      label.append(checkbox, detail);
+      fieldset.append(label);
+    }
+
+    toggle.addEventListener("click", () => {
+      const checkboxes = Array.from(fieldset.querySelectorAll("[data-metric-name]"));
+      const checked = !checkboxes.every((checkbox) => checkbox.checked);
+      for (const checkbox of checkboxes) checkbox.checked = checked;
+      markSettingsDirty();
+    });
+    elements.metricsSettingsGroups.append(fieldset);
+  }
+
+  const unknown = state.unknownDisabledMetrics;
+  setHidden(elements.metricsSettingsUnknown, unknown.length === 0);
+  if (elements.metricsSettingsUnknownList) {
+    elements.metricsSettingsUnknownList.replaceChildren();
+    for (const metricName of unknown) {
+      const item = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = metricName;
+      item.append(code);
+      elements.metricsSettingsUnknownList.append(item);
+    }
+  }
+}
+
+async function fetchMetricRegistry() {
+  try {
+    const response = await fetch(apiPath("/api/otel/metrics"), { cache: "no-store" });
+    if (!response.ok) throw new Error("metrics unavailable");
+    const document = await response.json();
+    if (!Array.isArray(document?.metrics)) throw new Error("invalid metrics response");
+    state.metricRegistry = document.metrics;
+    state.unknownDisabledMetrics = Array.isArray(document.unknown)
+      ? document.unknown
+          .map((entry) => typeof entry === "string" ? entry : entry?.name)
+          .filter((name) => typeof name === "string")
+      : [];
+    state.metricsAvailable = true;
+    renderMetricRegistry();
+  } catch {
+    state.metricsAvailable = false;
+    state.metricRegistry = [];
+    state.unknownDisabledMetrics = [];
+    elements.metricsSettingsGroups?.replaceChildren();
+  }
+  if (state.pendingSettingsTab !== null) {
+    state.activeSettingsTab = state.pendingSettingsTab;
+    state.pendingSettingsTab = null;
+  }
+  syncSettingsTabAvailability();
 }
 
 function collectDaemonSettingsFromForm() {
@@ -2989,6 +3161,15 @@ function collectDaemonSettingsFromForm() {
       headersEnvVar: elements.daemonOtelHeadersEnvVar?.value ?? "",
       serviceName: elements.daemonOtelServiceName?.value ?? "",
       resourceAttributes: parsedAttributes.attributes,
+      disabledMetrics: state.metricsAvailable
+        ? disabledMetricsFromSelection(
+            state.metricRegistry,
+            Array.from(elements.metricsSettingsGroups?.querySelectorAll("[data-metric-name]") ?? [])
+              .filter((checkbox) => checkbox.checked)
+              .map((checkbox) => checkbox.dataset.metricName),
+            state.unknownDisabledMetrics,
+          )
+        : [...(otel.disabledMetrics ?? [])],
     };
   }
   let thermal = cloneSettings(state.daemonSettings).thermal;
@@ -3153,6 +3334,126 @@ async function previewSettingsImport(document) {
   return response.json();
 }
 
+function invalidateAdvancedDocumentValidation() {
+  state.advancedValidatedText = null;
+  state.advancedValidationSucceeded = false;
+  if (elements.applyAdvancedSettingsButton) elements.applyAdvancedSettingsButton.disabled = true;
+  if (elements.settingsValidationSummary?.dataset.status === "valid") renderSettingsValidation([]);
+}
+
+async function loadAdvancedSettingsDocument() {
+  try {
+    const response = await fetch(apiPath("/api/settings/export"), { cache: "no-store" });
+    if (!response.ok) throw new Error("settings document unavailable");
+    const document = await response.json();
+    state.settingsDocumentAvailable = true;
+    setControlValue(elements.advancedSettingsDocument, JSON.stringify(document, null, 2));
+  } catch {
+    state.settingsDocumentAvailable = false;
+    setControlValue(elements.advancedSettingsDocument, "");
+  }
+  invalidateAdvancedDocumentValidation();
+  syncRetentionLadderAvailability();
+}
+
+async function validateAdvancedSettingsDocument() {
+  const text = elements.advancedSettingsDocument?.value ?? "";
+  invalidateAdvancedDocumentValidation();
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "unknown parse error";
+    renderSettingsValidation([`Advanced document is not JSON: ${detail}`]);
+    renderSettingsStatus("Document validation failed.");
+    return;
+  }
+
+  try {
+    const plan = await previewSettingsImport(document);
+    if (plan.valid === false) {
+      renderSettingsValidation(Array.isArray(plan.errors) ? plan.errors : ["The daemon rejected the document."]);
+      renderSettingsStatus("Document validation failed.");
+      return;
+    }
+    if (!isValidImportPlan(plan)) {
+      renderSettingsValidation(["The daemon returned an invalid validation response."]);
+      renderSettingsStatus("Document validation failed.");
+      return;
+    }
+    const changedKeys = Array.isArray(plan.changedKeys) ? plan.changedKeys : [];
+    renderSettingsValidation(
+      [changedKeys.length > 0 ? `Would apply: ${changedKeys.join(", ")}.` : "No settings changes."],
+      { outcome: true },
+    );
+    state.advancedValidatedText = text;
+    state.advancedValidationSucceeded = true;
+    if (elements.applyAdvancedSettingsButton) {
+      elements.applyAdvancedSettingsButton.disabled = !advancedDocumentApplyAllowed(
+        elements.advancedSettingsDocument?.value ?? "",
+        state.advancedValidatedText,
+        state.advancedValidationSucceeded,
+      );
+    }
+    renderSettingsStatus("Document validated by the daemon.");
+  } catch (error) {
+    renderSettingsValidation([error instanceof Error ? error.message : "Document validation failed."]);
+    renderSettingsStatus("Document validation failed.");
+  }
+}
+
+async function applyAdvancedSettingsDocument() {
+  const text = elements.advancedSettingsDocument?.value ?? "";
+  if (!advancedDocumentApplyAllowed(text, state.advancedValidatedText, state.advancedValidationSucceeded)) {
+    invalidateAdvancedDocumentValidation();
+    renderSettingsStatus("Validate the current document before applying it.");
+    return;
+  }
+  if (elements.applyAdvancedSettingsButton) elements.applyAdvancedSettingsButton.disabled = true;
+  let document;
+  try {
+    document = JSON.parse(text);
+  } catch (error) {
+    invalidateAdvancedDocumentValidation();
+    const detail = error instanceof Error ? error.message : "unknown parse error";
+    renderSettingsValidation([`Advanced document is not JSON: ${detail}`]);
+    return;
+  }
+  try {
+    const response = await fetch(apiPath("/api/settings/import"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(document),
+    });
+    if (!response.ok) {
+      invalidateAdvancedDocumentValidation();
+      renderSettingsValidation([
+        await responseErrorMessage(response, `Settings import failed with HTTP ${response.status}`),
+      ]);
+      return;
+    }
+    const result = await response.json();
+    state.retentionLadderAvailable = ladderCapabilityFrom(result.settings);
+    state.otelAvailable = otelCapabilityFrom(result.settings);
+    state.thermalAvailable = thermalCapabilityFrom(result.settings);
+    populateDaemonSettings(normalizeSettings(result.settings));
+    state.settingsDirty = false;
+    renderSettingsDirtyIndicator();
+    restartPollingTimer();
+    await fetchHistoryCoverage({ force: true });
+    const changedKeys = Array.isArray(result.changedKeys) ? result.changedKeys : [];
+    renderSettingsValidation([`Applied: ${changedKeys.length > 0 ? changedKeys.join(", ") : "no changes"}.`], {
+      outcome: true,
+    });
+    renderSettingsStatus("Settings document applied.");
+    await Promise.all([loadAdvancedSettingsDocument(), fetchMetricRegistry()]);
+  } catch (error) {
+    invalidateAdvancedDocumentValidation();
+    renderSettingsValidation([error instanceof Error ? error.message : "Settings import failed."]);
+    renderSettingsStatus("Settings document apply failed.");
+  }
+}
+
 async function saveDaemonSettings() {
   const settings = collectDaemonSettingsFromForm();
   if (validateDaemonSettings(settings).length > 0) {
@@ -3214,7 +3515,11 @@ async function saveDaemonSettings() {
         ),
       ),
     });
-    if (!response.ok) throw new Error(`Settings save failed with HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new Error(
+        await responseErrorMessage(response, `Settings save failed with HTTP ${response.status}`),
+      );
+    }
     const savedDocument = await response.json();
     state.retentionLadderAvailable = ladderCapabilityFrom(savedDocument);
     state.otelAvailable = otelCapabilityFrom(savedDocument);
@@ -3715,6 +4020,24 @@ for (const button of elements.historyWindowButtons) {
   });
 }
 
+for (const tab of elements.settingsTabs) {
+  tab.addEventListener("click", () => {
+    selectSettingsTab(tab.dataset.settingsTab, { focus: true, userInitiated: true });
+  });
+  tab.addEventListener("focus", () => {
+    selectSettingsTab(tab.dataset.settingsTab, { persist: state.pendingSettingsTab === null });
+  });
+  tab.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const available = availableSettingsTabs(state.metricsAvailable, state.thermalAvailable);
+    selectSettingsTab(moveSettingsTab(state.activeSettingsTab, event.key, available), {
+      focus: true,
+      userInitiated: true,
+    });
+  });
+}
+
 elements.settingsOpenButton?.addEventListener("click", () => {
   openSettingsDialog();
 });
@@ -3791,6 +4114,18 @@ elements.daemonL4Forever?.addEventListener("change", () => {
 
 elements.saveSettingsButton?.addEventListener("click", () => {
   saveDaemonSettings();
+});
+
+elements.advancedSettingsDocument?.addEventListener("input", () => {
+  invalidateAdvancedDocumentValidation();
+});
+
+elements.validateAdvancedSettingsButton?.addEventListener("click", () => {
+  validateAdvancedSettingsDocument();
+});
+
+elements.applyAdvancedSettingsButton?.addEventListener("click", () => {
+  applyAdvancedSettingsDocument();
 });
 
 for (const control of settingsFormControls()) {

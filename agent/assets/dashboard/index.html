@@ -408,7 +408,15 @@
         </div>
 
         <div class="settings-dialog-body">
+          <div class="settings-tabs" role="tablist" aria-label="Settings categories">
+            <button class="settings-tab" id="settings-tab-general" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-general" tabindex="0" data-settings-tab="general">General</button>
+            <button class="settings-tab" id="settings-tab-history" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-history" tabindex="-1" data-settings-tab="history">History</button>
+            <button class="settings-tab" id="settings-tab-metrics" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-metrics" tabindex="-1" data-settings-tab="metrics" hidden>Metrics</button>
+            <button class="settings-tab" id="settings-tab-thermals" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-thermals" tabindex="-1" data-settings-tab="thermals" hidden>Thermals</button>
+            <button class="settings-tab" id="settings-tab-advanced" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-advanced" tabindex="-1" data-settings-tab="advanced">Advanced</button>
+          </div>
           <div class="settings-grid">
+            <div class="settings-tab-panel" id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general" data-settings-panel="general">
             <fieldset class="settings-group">
               <legend>This Browser</legend>
               <label>
@@ -582,7 +590,9 @@
                 <span>Show processes</span>
               </label>
             </fieldset>
+            </div>
 
+            <div class="settings-tab-panel" id="settings-panel-history" role="tabpanel" aria-labelledby="settings-tab-history" data-settings-panel="history" hidden>
             <p class="settings-runtime-note" id="history-ladder-unavailable" hidden>History ladder — Rust daemon only</p>
             <fieldset class="settings-group history-ladder-settings-group" id="history-ladder-settings-group">
               <legend>History ladder</legend>
@@ -648,6 +658,16 @@
                 <input id="daemon-disk-check-min-free-gib" type="number" min="0.25" step="0.25" />
               </label>
             </fieldset>
+            </div>
+            <div class="settings-tab-panel" id="settings-panel-metrics" role="tabpanel" aria-labelledby="settings-tab-metrics" data-settings-panel="metrics" hidden>
+              <div class="metrics-settings-groups" id="metrics-settings-groups"></div>
+              <section class="metrics-unknown" id="metrics-settings-unknown" aria-labelledby="metrics-settings-unknown-title" hidden>
+                <h3 id="metrics-settings-unknown-title">unknown on this version (inert)</h3>
+                <ul id="metrics-settings-unknown-list"></ul>
+              </section>
+            </div>
+            <div class="settings-tab-panel" id="settings-panel-advanced" role="tabpanel" aria-labelledby="settings-tab-advanced" data-settings-panel="advanced" hidden>
+            <p class="settings-runtime-note" id="advanced-settings-unavailable">Advanced settings document — Rust daemon only</p>
             <fieldset class="settings-group otel-settings-group" id="otel-settings-group" hidden>
               <legend>OpenTelemetry export</legend>
               <label class="toggle-row">
@@ -676,6 +696,20 @@
               </label>
               <p class="settings-help settings-runtime-note">Headers (e.g. authorization) are read from the environment variable named here — never stored in settings.</p>
             </fieldset>
+              <fieldset class="settings-group advanced-document-settings-group" id="advanced-document-settings-group" hidden>
+                <legend>Raw settings document</legend>
+                <label class="settings-wide-field">
+                  <span>Versioned JSON document</span>
+                  <textarea id="advanced-settings-document" class="advanced-settings-document" spellcheck="false"></textarea>
+                </label>
+                <div class="advanced-document-actions">
+                  <button class="mini-button secondary" id="validate-advanced-settings-button" type="button">Validate</button>
+                  <button class="mini-button" id="apply-advanced-settings-button" type="button" disabled>Apply</button>
+                </div>
+                <p class="settings-help settings-runtime-note">Validation is authoritative on the daemon. Apply unlocks only for the exact text the daemon accepted.</p>
+              </fieldset>
+            </div>
+            <div class="settings-tab-panel" id="settings-panel-thermals" role="tabpanel" aria-labelledby="settings-tab-thermals" data-settings-panel="thermals" hidden>
             <fieldset class="settings-group thermal-settings-group" id="thermal-settings-group" hidden>
               <legend>CPU thermals</legend>
               <label class="toggle-row">
@@ -688,6 +722,7 @@
               </label>
               <p class="settings-help settings-runtime-note">coretemp and k10temp are built in. Add only trusted CPU chip names that match lowercase letters, numbers, or underscores.</p>
             </fieldset>
+            </div>
           </div>
           <div class="settings-validation-summary" id="settings-validation-summary" role="status" hidden></div>
         </div>

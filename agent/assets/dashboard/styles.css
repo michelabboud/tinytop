@@ -1079,6 +1079,42 @@ h1 {
   padding: 1rem;
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  flex: 0 0 auto;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  padding: 0.65rem 0.8rem;
+}
+
+.settings-tab[aria-selected="true"] {
+  border-bottom-color: var(--amber);
+  color: var(--text);
+}
+
+.settings-tab:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: -2px;
+}
+
+.settings-tab[hidden],
+.settings-tab-panel[hidden] {
+  display: none;
+}
+
 .settings-dialog-actions {
   justify-content: flex-end;
   border-top: 1px solid var(--border);
@@ -1091,6 +1127,113 @@ h1 {
   grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.4fr);
   gap: 1rem;
   min-width: 0;
+}
+
+.settings-tab-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.4fr);
+  gap: 1rem;
+  min-width: 0;
+}
+
+#settings-panel-history,
+#settings-panel-metrics,
+#settings-panel-thermals,
+#settings-panel-advanced {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#settings-panel-advanced .settings-group {
+  grid-column: 1 / -1;
+}
+
+.metrics-settings-groups {
+  display: grid;
+  gap: 1rem;
+}
+
+.metric-family {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.metric-family legend {
+  width: 100%;
+}
+
+.metric-family-toggle {
+  float: right;
+  margin: -0.35rem 0 0 0.75rem;
+}
+
+.metric-setting-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.7rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+  padding: 0.45rem 0;
+}
+
+.metric-setting-row:last-child {
+  border-bottom: 0;
+}
+
+.metric-setting-row input {
+  margin-top: 0.2rem;
+}
+
+.metric-setting-row > span {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.metric-setting-row code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+
+.metric-setting-row small,
+.metrics-unknown {
+  color: var(--muted);
+}
+
+.metric-setting-row .metric-description {
+  display: block;
+  line-height: 1.4;
+}
+
+.metrics-unknown {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem;
+}
+
+.metrics-unknown h3 {
+  margin-bottom: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.metrics-unknown ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.advanced-document-settings-group {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.advanced-settings-document {
+  min-height: 22rem !important;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  line-height: 1.45;
+}
+
+.advanced-document-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
 }
 
 .settings-group {
@@ -1285,6 +1428,11 @@ h1 {
   color: var(--text);
   padding: 0.8rem;
   line-height: 1.45;
+}
+
+.settings-validation-summary[data-status="valid"] {
+  border-color: color-mix(in srgb, var(--green) 46%, var(--border));
+  background: color-mix(in srgb, var(--green) 12%, transparent);
 }
 
 .settings-dirty-indicator {
@@ -2175,7 +2323,8 @@ td {
   }
 
   .settings-group,
-  .daemon-settings-group {
+  .daemon-settings-group,
+  .settings-tab-panel {
     grid-template-columns: 1fr;
   }
 

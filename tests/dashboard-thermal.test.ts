@@ -165,6 +165,16 @@ describe("dashboard thermal formatting rules", () => {
 });
 
 describe("dashboard thermal settings rules", () => {
+  test.each(["amdgpu", "i915", "nvme"])("rejects reserved non-CPU chip %s inline", (chip) => {
+    expect(rules.validateThermalSettings({ enabled: true, extraChips: [chip] })).toEqual([
+      rules.THERMAL_RESERVED_CHIP_ERROR,
+    ]);
+  });
+
+  test("still accepts an ordinary explicitly configured CPU chip", () => {
+    expect(rules.validateThermalSettings({ enabled: true, extraChips: ["cpu_thermal"] })).toEqual([]);
+  });
+
   test("rejects a thermal chip name with a bad character", () => {
     expect(rules.validateThermalSettings({ enabled: true, extraChips: ["CoreTemp"] })).toEqual([
       "thermal.extraChips entries must match ^[a-z0-9_]{1,32}$",
@@ -252,6 +262,8 @@ describe("dashboard thermal DOM contracts", () => {
       daemonRollupRetentionDaysDerived: new FakeElement(),
       otelSettingsGroup: new FakeElement(),
       thermalSettingsGroup: group,
+      advancedDocumentSettingsGroup: new FakeElement(),
+      advancedSettingsUnavailable: new FakeElement(),
     };
     const state = {
       retentionLadderAvailable: false,
@@ -264,11 +276,13 @@ describe("dashboard thermal DOM contracts", () => {
       "state",
       "setHidden",
       "renderTierCoverage",
+      "syncSettingsTabAvailability",
       `${extractFunction(app, "syncRetentionLadderAvailability")}; return syncRetentionLadderAvailability;`,
     )(
       elements,
       state,
       (node: FakeElement, hidden: boolean) => { node.hidden = hidden; },
+      () => {},
       () => {},
     ) as () => void;
     sync();
