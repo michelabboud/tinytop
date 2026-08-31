@@ -5,6 +5,7 @@ TinyTop's default persistent runtime is a single local Rust daemon. It serves th
 The original Bun dashboard and legacy collector remain in the repo for TypeScript development and fallback.
 
 OpenTelemetry export is Rust-daemon-only. The daemon pushes the latest snapshot over OTLP/HTTP; the Bun runtime neither exports to nor reads from OTel.
+`tinytop-agent`'s `METRIC_REGISTRY` is the single source for exported metric names, units, families, descriptions, semantic-convention status, and the selection API.
 
 ## Runtime Topology
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     io,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -35,8 +36,8 @@ use tokio::{
 };
 
 use crate::otel::{
-    OtelPipeline, OtelStatus, build_pipeline, disable_pipeline, parse_otlp_headers, record_failure,
-    record_success,
+    METRIC_REGISTRY, MetricDescriptor, OtelPipeline, OtelStatus, build_pipeline, disable_pipeline,
+    parse_otlp_headers, record_failure, record_success,
 };
 
 const DEFAULT_WINDOW_SECONDS: i64 = 300;
@@ -352,6 +353,7 @@ fn router(state: AppState) -> Router {
         .route("/version", get(version))
         .route("/api/version", get(version))
         .route("/api/settings", get(get_settings).put(update_settings))
+        .route("/api/otel/metrics", get(get_otel_metrics))
         .route("/api/settings/export", get(export_settings))
         .route("/api/settings/import", post(import_settings))
         .route("/api/snapshot", get(latest_snapshot))
@@ -398,6 +400,50 @@ async fn version(State(state): State<AppState>) -> Response {
 
 async fn get_settings(State(state): State<AppState>) -> Result<Response, ServeError> {
     Ok(no_store(Json(state.store.get_settings().await?)).into_response())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OtelMetricSelection {
+    #[serde(flatten)]
+    descriptor: MetricDescriptor,
+    disabled: bool,
+}
+
+#[derive(Serialize)]
+struct OtelMetricsResponse {
+    metrics: Vec<OtelMetricSelection>,
+    unknown: Vec<String>,
+}
+
+async fn get_otel_metrics(State(state): State<AppState>) -> Result<Response, ServeError> {
+    let settings = state.store.get_settings().await?;
+    let disabled = settings
+        .otel
+        .disabled_metrics
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
+    let registry_names = METRIC_REGISTRY
+        .iter()
+        .map(|metric| metric.name)
+        .collect::<HashSet<_>>();
+    let metrics = METRIC_REGISTRY
+        .iter()
+        .copied()
+        .map(|descriptor| OtelMetricSelection {
+            disabled: disabled.contains(descriptor.name),
+            descriptor,
+        })
+        .collect();
+    let unknown = settings
+        .otel
+        .disabled_metrics
+        .into_iter()
+        .filter(|name| !registry_names.contains(name.as_str()))
+        .collect();
+
+    Ok(no_store(Json(OtelMetricsResponse { metrics, unknown })).into_response())
 }
 
 async fn export_settings(State(state): State<AppState>) -> Result<Response, ServeError> {
@@ -867,8 +913,7 @@ pub(crate) fn spawn_otel_export_loop(state: AppState, tick: Duration) -> JoinHan
             {
                 let attempt_started_ms = now;
                 schedule.mark_attempt(attempt_started_ms);
-                current.record_snapshot(&snapshot);
-                let result = current.collect_and_export().await;
+                let result = current.collect_and_export(&snapshot, &settings).await;
                 let completed_ms = now_ms().unwrap_or(attempt_started_ms);
                 match result {
                     Ok(()) => {
@@ -1534,7 +1579,11 @@ pub(crate) mod tests {
         http::{Request, StatusCode},
     };
     use http_body_util::BodyExt;
-    use std::{collections::VecDeque, io, sync::Mutex as StdMutex};
+    use std::{
+        collections::{BTreeMap, VecDeque},
+        io,
+        sync::Mutex as StdMutex,
+    };
     use tinytop_store::{DiskTransition, FreeBytesProvider, check_disk};
     use tower::ServiceExt;
 
@@ -2303,6 +2352,108 @@ pub(crate) mod tests {
         assert_eq!(
             body["error"],
             "otel.endpoint must be an http:// or https:// URL with a host and without credentials"
+        );
+    }
+
+    #[tokio::test]
+    async fn otel_metrics_route_returns_registry_with_all_enabled_by_default() {
+        // Break caught: the route is missing, reorders the registry, or defaults a
+        // metric to disabled even though the stored disabled set is empty.
+        let (_fixture, state) = test_state("otel-metrics-default").await;
+        let (status, body) = request_json(router(state), "/api/otel/metrics").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["unknown"], json!([]));
+        let metrics = body["metrics"]
+            .as_array()
+            .expect("metrics should be an array");
+        assert_eq!(metrics.len(), 13);
+        assert_eq!(
+            metrics
+                .iter()
+                .map(|metric| metric["name"].as_str().expect("metric name"))
+                .collect::<Vec<_>>(),
+            [
+                "system.cpu.utilization",
+                "system.memory.utilization",
+                "system.memory.usage",
+                "system.memory.limit",
+                "system.paging.utilization",
+                "system.cpu.load_average.1m",
+                "system.cpu.load_average.5m",
+                "system.cpu.load_average.15m",
+                "system.filesystem.utilization",
+                "system.filesystem.usage",
+                "tinytop.load.percent",
+                "tinytop.pressure.some",
+                "tinytop.pressure.full",
+            ]
+        );
+        for metric in metrics {
+            assert_eq!(metric["disabled"], false, "{metric}");
+            assert!(metric["unit"].is_string(), "{metric}");
+            assert!(metric["family"].is_string(), "{metric}");
+            assert!(metric["description"].is_string(), "{metric}");
+            assert!(metric["semanticConvention"].is_boolean(), "{metric}");
+        }
+    }
+
+    #[tokio::test]
+    async fn otel_metrics_route_marks_exactly_two_persisted_metrics_disabled() {
+        // Break caught: persisted selections are ignored or applied to the wrong metric.
+        let (_fixture, state) = test_state("otel-metrics-two-disabled").await;
+        let disabled = ["system.filesystem.utilization", "system.filesystem.usage"];
+        let mut settings = state.store.get_settings().await.expect("default settings");
+        settings.otel.disabled_metrics = disabled.iter().map(|name| (*name).to_string()).collect();
+        state
+            .store
+            .put_settings(&settings)
+            .await
+            .expect("settings should persist");
+
+        let (status, body) = request_json(router(state), "/api/otel/metrics").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["unknown"], json!([]));
+        let flags = body["metrics"]
+            .as_array()
+            .expect("metrics should be an array")
+            .iter()
+            .map(|metric| {
+                (
+                    metric["name"].as_str().expect("metric name"),
+                    metric["disabled"].as_bool().expect("disabled flag"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(flags.len(), 13);
+        for (name, is_disabled) in flags {
+            assert_eq!(is_disabled, disabled.contains(&name), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn otel_metrics_route_reports_unknown_names_without_disabling_registry_entries() {
+        // Break caught: a portable future name is hidden or changes a current flag.
+        let (_fixture, state) = test_state("otel-metrics-unknown").await;
+        let unknown = "system.future.metric";
+        let mut settings = state.store.get_settings().await.expect("default settings");
+        settings.otel.disabled_metrics = vec![unknown.to_string()];
+        state
+            .store
+            .put_settings(&settings)
+            .await
+            .expect("settings should persist");
+
+        let (status, body) = request_json(router(state), "/api/otel/metrics").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["unknown"], json!([unknown]));
+        let metrics = body["metrics"]
+            .as_array()
+            .expect("metrics should be an array");
+        assert_eq!(metrics.len(), 13);
+        assert!(
+            metrics.iter().all(|metric| metric["disabled"] == false),
+            "{body}"
         );
     }
 

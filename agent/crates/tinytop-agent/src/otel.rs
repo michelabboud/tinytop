@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{Arc, Weak},
     time::Duration,
@@ -26,6 +26,117 @@ const MAX_ERROR_CHARS: usize = 200;
 const FIXED_RESOURCE_KEYS: [&str; 3] = ["service.name", "service.version", "host.name"];
 const OTLP_METRICS_HEADERS_ENV: &str = "OTEL_EXPORTER_OTLP_METRICS_HEADERS";
 const OTLP_HEADERS_ENV: &str = "OTEL_EXPORTER_OTLP_HEADERS";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricDescriptor {
+    pub name: &'static str,
+    pub unit: &'static str,
+    pub family: &'static str,
+    pub description: &'static str,
+    pub semantic_convention: bool,
+}
+
+pub const METRIC_REGISTRY: [MetricDescriptor; 13] = [
+    MetricDescriptor {
+        name: "system.cpu.utilization",
+        unit: "1",
+        family: "cpu",
+        description: "CPU utilization as a fraction of capacity.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.memory.utilization",
+        unit: "1",
+        family: "memory",
+        description: "Used memory as a fraction of total memory.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.memory.usage",
+        unit: "By",
+        family: "memory",
+        description: "Used memory in bytes.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.memory.limit",
+        unit: "By",
+        family: "memory",
+        description: "Total memory limit in bytes.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.paging.utilization",
+        unit: "1",
+        family: "swap",
+        description: "Used swap as a fraction of total swap.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.cpu.load_average.1m",
+        unit: "{thread}",
+        family: "cpu",
+        description: "One-minute system load average.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.cpu.load_average.5m",
+        unit: "{thread}",
+        family: "cpu",
+        description: "Five-minute system load average.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.cpu.load_average.15m",
+        unit: "{thread}",
+        family: "cpu",
+        description: "Fifteen-minute system load average.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.filesystem.utilization",
+        unit: "1",
+        family: "filesystem",
+        description: "Used filesystem capacity as a fraction of total capacity.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "system.filesystem.usage",
+        unit: "By",
+        family: "filesystem",
+        description: "Used and free filesystem capacity in bytes.",
+        semantic_convention: true,
+    },
+    MetricDescriptor {
+        name: "tinytop.load.percent",
+        unit: "%",
+        family: "load",
+        description: "One-minute load average as a percentage of CPU capacity.",
+        semantic_convention: false,
+    },
+    MetricDescriptor {
+        name: "tinytop.pressure.some",
+        unit: "%",
+        family: "pressure",
+        description: "Ten-second Linux PSI some-stall percentage by resource.",
+        semantic_convention: false,
+    },
+    MetricDescriptor {
+        name: "tinytop.pressure.full",
+        unit: "%",
+        family: "pressure",
+        description: "Ten-second Linux PSI full-stall percentage by resource.",
+        semantic_convention: false,
+    },
+];
+
+fn descriptor(name: &str) -> &'static MetricDescriptor {
+    METRIC_REGISTRY
+        .iter()
+        .find(|descriptor| descriptor.name == name)
+        .unwrap_or_else(|| panic!("metric registry is missing {name}"))
+}
 
 /// Operational state exposed by the daemon without retaining exporter secrets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -263,58 +374,71 @@ struct Instruments {
 impl Instruments {
     fn new(provider: &SdkMeterProvider) -> Self {
         let meter = provider.meter("tinytop-agent");
+        let cpu_utilization = descriptor("system.cpu.utilization");
+        let memory_utilization = descriptor("system.memory.utilization");
+        let memory_usage = descriptor("system.memory.usage");
+        let memory_limit = descriptor("system.memory.limit");
+        let paging_utilization = descriptor("system.paging.utilization");
+        let load_average_1m = descriptor("system.cpu.load_average.1m");
+        let load_average_5m = descriptor("system.cpu.load_average.5m");
+        let load_average_15m = descriptor("system.cpu.load_average.15m");
+        let filesystem_utilization = descriptor("system.filesystem.utilization");
+        let filesystem_usage = descriptor("system.filesystem.usage");
+        let load_percent = descriptor("tinytop.load.percent");
+        let pressure_some = descriptor("tinytop.pressure.some");
+        let pressure_full = descriptor("tinytop.pressure.full");
         Self {
             cpu_utilization: meter
-                .f64_gauge("system.cpu.utilization")
-                .with_unit("1")
+                .f64_gauge(cpu_utilization.name)
+                .with_unit(cpu_utilization.unit)
                 .build(),
             memory_utilization: meter
-                .f64_gauge("system.memory.utilization")
-                .with_unit("1")
+                .f64_gauge(memory_utilization.name)
+                .with_unit(memory_utilization.unit)
                 .build(),
             memory_usage: meter
-                .u64_gauge("system.memory.usage")
-                .with_unit("By")
+                .u64_gauge(memory_usage.name)
+                .with_unit(memory_usage.unit)
                 .build(),
             memory_limit: meter
-                .u64_gauge("system.memory.limit")
-                .with_unit("By")
+                .u64_gauge(memory_limit.name)
+                .with_unit(memory_limit.unit)
                 .build(),
             paging_utilization: meter
-                .f64_gauge("system.paging.utilization")
-                .with_unit("1")
+                .f64_gauge(paging_utilization.name)
+                .with_unit(paging_utilization.unit)
                 .build(),
             load_average_1m: meter
-                .f64_gauge("system.cpu.load_average.1m")
-                .with_unit("{thread}")
+                .f64_gauge(load_average_1m.name)
+                .with_unit(load_average_1m.unit)
                 .build(),
             load_average_5m: meter
-                .f64_gauge("system.cpu.load_average.5m")
-                .with_unit("{thread}")
+                .f64_gauge(load_average_5m.name)
+                .with_unit(load_average_5m.unit)
                 .build(),
             load_average_15m: meter
-                .f64_gauge("system.cpu.load_average.15m")
-                .with_unit("{thread}")
+                .f64_gauge(load_average_15m.name)
+                .with_unit(load_average_15m.unit)
                 .build(),
             filesystem_utilization: meter
-                .f64_gauge("system.filesystem.utilization")
-                .with_unit("1")
+                .f64_gauge(filesystem_utilization.name)
+                .with_unit(filesystem_utilization.unit)
                 .build(),
             filesystem_usage: meter
-                .u64_gauge("system.filesystem.usage")
-                .with_unit("By")
+                .u64_gauge(filesystem_usage.name)
+                .with_unit(filesystem_usage.unit)
                 .build(),
             load_percent: meter
-                .f64_gauge("tinytop.load.percent")
-                .with_unit("%")
+                .f64_gauge(load_percent.name)
+                .with_unit(load_percent.unit)
                 .build(),
             pressure_some: meter
-                .f64_gauge("tinytop.pressure.some")
-                .with_unit("%")
+                .f64_gauge(pressure_some.name)
+                .with_unit(pressure_some.unit)
                 .build(),
             pressure_full: meter
-                .f64_gauge("tinytop.pressure.full")
-                .with_unit("%")
+                .f64_gauge(pressure_full.name)
+                .with_unit(pressure_full.unit)
                 .build(),
         }
     }
@@ -384,101 +508,127 @@ fn fixed_resource(settings: &OtelSettings, hostname: &str) -> Resource {
 }
 
 impl OtelPipeline {
-    pub fn record_snapshot(&self, snapshot: &SystemSnapshot) {
-        self.instruments
-            .cpu_utilization
-            .record(snapshot.cpu.usage_percent / 100.0, &[]);
-        self.instruments
-            .memory_utilization
-            .record(snapshot.memory.used_percent / 100.0, &[]);
-        self.instruments.memory_usage.record(
-            snapshot.memory.used_bytes,
-            &[KeyValue::new("state", "used")],
-        );
-        self.instruments
-            .memory_limit
-            .record(snapshot.memory.total_bytes, &[]);
+    fn record_snapshot(&self, snapshot: &SystemSnapshot, disabled: &HashSet<&str>) {
+        if !disabled.contains(descriptor("system.cpu.utilization").name) {
+            self.instruments
+                .cpu_utilization
+                .record(snapshot.cpu.usage_percent / 100.0, &[]);
+        }
+        if !disabled.contains(descriptor("system.memory.utilization").name) {
+            self.instruments
+                .memory_utilization
+                .record(snapshot.memory.used_percent / 100.0, &[]);
+        }
+        if !disabled.contains(descriptor("system.memory.usage").name) {
+            self.instruments.memory_usage.record(
+                snapshot.memory.used_bytes,
+                &[KeyValue::new("state", "used")],
+            );
+        }
+        if !disabled.contains(descriptor("system.memory.limit").name) {
+            self.instruments
+                .memory_limit
+                .record(snapshot.memory.total_bytes, &[]);
+        }
         let paging_utilization = if snapshot.swap.total_bytes == 0 {
             0.0
         } else {
             snapshot.swap.used_percent / 100.0
         };
-        self.instruments
-            .paging_utilization
-            .record(paging_utilization, &[KeyValue::new("state", "used")]);
-        self.instruments
-            .load_average_1m
-            .record(snapshot.load.one, &[]);
-        self.instruments
-            .load_average_5m
-            .record(snapshot.load.five, &[]);
-        self.instruments
-            .load_average_15m
-            .record(snapshot.load.fifteen, &[]);
+        if !disabled.contains(descriptor("system.paging.utilization").name) {
+            self.instruments
+                .paging_utilization
+                .record(paging_utilization, &[KeyValue::new("state", "used")]);
+        }
+        if !disabled.contains(descriptor("system.cpu.load_average.1m").name) {
+            self.instruments
+                .load_average_1m
+                .record(snapshot.load.one, &[]);
+        }
+        if !disabled.contains(descriptor("system.cpu.load_average.5m").name) {
+            self.instruments
+                .load_average_5m
+                .record(snapshot.load.five, &[]);
+        }
+        if !disabled.contains(descriptor("system.cpu.load_average.15m").name) {
+            self.instruments
+                .load_average_15m
+                .record(snapshot.load.fifteen, &[]);
+        }
 
         for filesystem in &snapshot.filesystems {
             let dimensions = [
                 KeyValue::new("mountpoint", filesystem.mount.clone()),
                 KeyValue::new("type", filesystem.fs_type.clone()),
             ];
-            self.instruments
-                .filesystem_utilization
-                .record(filesystem.used_percent / 100.0, &dimensions);
-            let mut used_dimensions = dimensions.to_vec();
-            used_dimensions.push(KeyValue::new("state", "used"));
-            self.instruments
-                .filesystem_usage
-                .record(filesystem.used_bytes, &used_dimensions);
-            let mut free_dimensions = dimensions.to_vec();
-            free_dimensions.push(KeyValue::new("state", "free"));
-            self.instruments
-                .filesystem_usage
-                .record(filesystem.available_bytes, &free_dimensions);
+            if !disabled.contains(descriptor("system.filesystem.utilization").name) {
+                self.instruments
+                    .filesystem_utilization
+                    .record(filesystem.used_percent / 100.0, &dimensions);
+            }
+            if !disabled.contains(descriptor("system.filesystem.usage").name) {
+                let mut used_dimensions = dimensions.to_vec();
+                used_dimensions.push(KeyValue::new("state", "used"));
+                self.instruments
+                    .filesystem_usage
+                    .record(filesystem.used_bytes, &used_dimensions);
+                let mut free_dimensions = dimensions.to_vec();
+                free_dimensions.push(KeyValue::new("state", "free"));
+                self.instruments
+                    .filesystem_usage
+                    .record(filesystem.available_bytes, &free_dimensions);
+            }
         }
 
-        self.instruments
-            .load_percent
-            .record(tinytop_store::load_percent(snapshot), &[]);
-        record_pressure(
-            &self.instruments.pressure_some,
-            "cpu",
-            snapshot.pressure.cpu.some.as_ref().map(|line| line.avg10),
-        );
-        record_pressure(
-            &self.instruments.pressure_some,
-            "memory",
-            snapshot
-                .pressure
-                .memory
-                .some
-                .as_ref()
-                .map(|line| line.avg10),
-        );
-        record_pressure(
-            &self.instruments.pressure_some,
-            "io",
-            snapshot.pressure.io.some.as_ref().map(|line| line.avg10),
-        );
-        record_pressure(
-            &self.instruments.pressure_full,
-            "cpu",
-            snapshot.pressure.cpu.full.as_ref().map(|line| line.avg10),
-        );
-        record_pressure(
-            &self.instruments.pressure_full,
-            "memory",
-            snapshot
-                .pressure
-                .memory
-                .full
-                .as_ref()
-                .map(|line| line.avg10),
-        );
-        record_pressure(
-            &self.instruments.pressure_full,
-            "io",
-            snapshot.pressure.io.full.as_ref().map(|line| line.avg10),
-        );
+        if !disabled.contains(descriptor("tinytop.load.percent").name) {
+            self.instruments
+                .load_percent
+                .record(tinytop_store::load_percent(snapshot), &[]);
+        }
+        if !disabled.contains(descriptor("tinytop.pressure.some").name) {
+            record_pressure(
+                &self.instruments.pressure_some,
+                "cpu",
+                snapshot.pressure.cpu.some.as_ref().map(|line| line.avg10),
+            );
+            record_pressure(
+                &self.instruments.pressure_some,
+                "memory",
+                snapshot
+                    .pressure
+                    .memory
+                    .some
+                    .as_ref()
+                    .map(|line| line.avg10),
+            );
+            record_pressure(
+                &self.instruments.pressure_some,
+                "io",
+                snapshot.pressure.io.some.as_ref().map(|line| line.avg10),
+            );
+        }
+        if !disabled.contains(descriptor("tinytop.pressure.full").name) {
+            record_pressure(
+                &self.instruments.pressure_full,
+                "cpu",
+                snapshot.pressure.cpu.full.as_ref().map(|line| line.avg10),
+            );
+            record_pressure(
+                &self.instruments.pressure_full,
+                "memory",
+                snapshot
+                    .pressure
+                    .memory
+                    .full
+                    .as_ref()
+                    .map(|line| line.avg10),
+            );
+            record_pressure(
+                &self.instruments.pressure_full,
+                "io",
+                snapshot.pressure.io.full.as_ref().map(|line| line.avg10),
+            );
+        }
     }
 
     pub fn collect(&self) -> Result<ResourceMetrics, String> {
@@ -489,7 +639,17 @@ impl OtelPipeline {
         Ok(metrics)
     }
 
-    pub async fn collect_and_export(&self) -> Result<(), String> {
+    pub async fn collect_and_export(
+        &self,
+        snapshot: &SystemSnapshot,
+        settings: &OtelSettings,
+    ) -> Result<(), String> {
+        let disabled = settings
+            .disabled_metrics
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        self.record_snapshot(snapshot, &disabled);
         let metrics = self.collect()?;
         self.exporter
             .export(&metrics)
@@ -518,6 +678,13 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    use axum::{
+        Router as AxumRouter,
+        body::Bytes,
+        extract::State as AxumState,
+        http::{HeaderMap, StatusCode},
+        routing::post,
+    };
     use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
     use prost::Message as _;
     use serde_json::json;
@@ -647,6 +814,268 @@ mod tests {
         maps
     }
 
+    type CaptureSender =
+        Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<(HeaderMap, Bytes)>>>>;
+
+    async fn capture(
+        AxumState(sender): AxumState<CaptureSender>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> StatusCode {
+        if let Some(sender) = sender.lock().await.take() {
+            let _ = sender.send((headers, body));
+        }
+        StatusCode::OK
+    }
+
+    struct CapturedExport {
+        headers: HeaderMap,
+        body: Bytes,
+        request: ExportMetricsServiceRequest,
+    }
+
+    async fn capture_export(
+        mut settings: OtelSettings,
+        headers: HashMap<String, String>,
+    ) -> CapturedExport {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("OTLP receiver tests require sandbox permission to bind loopback");
+        let address = listener
+            .local_addr()
+            .expect("listener should have an address");
+        settings.enabled = true;
+        settings.endpoint = format!("http://{address}/v1/metrics");
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = Arc::new(tokio::sync::Mutex::new(Some(sender)));
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                AxumRouter::new()
+                    .route("/v1/metrics", post(capture))
+                    .with_state(sender),
+            )
+            .await
+        });
+        let pipeline = build_pipeline(&settings, headers, "fixture-host", Duration::from_secs(2))
+            .expect("receiver pipeline should build");
+
+        pipeline
+            .collect_and_export(&fixture_snapshot(), &settings)
+            .await
+            .expect("loopback receiver should accept one export");
+        let (headers, body) = receiver.await.expect("receiver should capture one request");
+        server.abort();
+        let request = ExportMetricsServiceRequest::decode(body.clone())
+            .expect("request body should be OTLP protobuf");
+        CapturedExport {
+            headers,
+            body,
+            request,
+        }
+    }
+
+    fn sorted_metric_names(request: &ExportMetricsServiceRequest) -> Vec<&str> {
+        let mut names = request
+            .resource_metrics
+            .iter()
+            .flat_map(|resource| &resource.scope_metrics)
+            .flat_map(|scope| &scope.metrics)
+            .map(|metric| metric.name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names
+    }
+
+    fn request_body_contains(body: &[u8], value: &str) -> bool {
+        body.windows(value.len())
+            .any(|window| window == value.as_bytes())
+    }
+
+    #[test]
+    fn metric_registry_is_complete_unique_and_well_formed() {
+        // Keep this count beside the complete field list so adding or removing an
+        // instrument cannot leave the registry and Instruments out of sync:
+        // cpu_utilization, memory_utilization, memory_usage, memory_limit,
+        // paging_utilization, load_average_1m, load_average_5m, load_average_15m,
+        // filesystem_utilization, filesystem_usage, load_percent, pressure_some,
+        // pressure_full.
+        assert_eq!(METRIC_REGISTRY.len(), 13);
+
+        let names = METRIC_REGISTRY
+            .iter()
+            .map(|metric| metric.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            names.len(),
+            METRIC_REGISTRY.len(),
+            "metric names must be unique"
+        );
+
+        for metric in METRIC_REGISTRY {
+            let mut characters = metric.name.chars();
+            assert!(
+                characters
+                    .next()
+                    .is_some_and(|first| first.is_ascii_lowercase())
+                    && characters.all(|character| {
+                        character.is_ascii_lowercase()
+                            || character.is_ascii_digit()
+                            || matches!(character, '.' | '_')
+                    }),
+                "metric name {} must match ^[a-z][a-z0-9._]*$",
+                metric.name
+            );
+            assert!(
+                matches!(
+                    metric.family,
+                    "cpu" | "memory" | "swap" | "filesystem" | "pressure" | "load"
+                ),
+                "metric {} has an unsupported family {}",
+                metric.name,
+                metric.family
+            );
+            assert!(
+                !metric.description.is_empty(),
+                "metric {} must have a description",
+                metric.name
+            );
+        }
+    }
+
+    #[test]
+    fn metric_registry_preserves_units_and_semantic_convention_split() {
+        let units = METRIC_REGISTRY
+            .iter()
+            .map(|metric| (metric.name, metric.unit))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            units,
+            BTreeMap::from([
+                ("system.cpu.load_average.15m", "{thread}"),
+                ("system.cpu.load_average.1m", "{thread}"),
+                ("system.cpu.load_average.5m", "{thread}"),
+                ("system.cpu.utilization", "1"),
+                ("system.filesystem.usage", "By"),
+                ("system.filesystem.utilization", "1"),
+                ("system.memory.limit", "By"),
+                ("system.memory.usage", "By"),
+                ("system.memory.utilization", "1"),
+                ("system.paging.utilization", "1"),
+                ("tinytop.load.percent", "%"),
+                ("tinytop.pressure.full", "%"),
+                ("tinytop.pressure.some", "%"),
+            ])
+        );
+
+        let semantic_names = METRIC_REGISTRY
+            .iter()
+            .filter(|metric| metric.semantic_convention)
+            .map(|metric| metric.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            semantic_names,
+            std::collections::BTreeSet::from([
+                "system.cpu.load_average.15m",
+                "system.cpu.load_average.1m",
+                "system.cpu.load_average.5m",
+                "system.cpu.utilization",
+                "system.filesystem.usage",
+                "system.filesystem.utilization",
+                "system.memory.limit",
+                "system.memory.usage",
+                "system.memory.utilization",
+                "system.paging.utilization",
+            ])
+        );
+
+        let product_names = METRIC_REGISTRY
+            .iter()
+            .filter(|metric| !metric.semantic_convention)
+            .map(|metric| metric.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            product_names,
+            std::collections::BTreeSet::from([
+                "tinytop.load.percent",
+                "tinytop.pressure.full",
+                "tinytop.pressure.some",
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_disabled_set_exports_all_thirteen_metric_names() {
+        // Break caught: the default disabled set suppresses a registered metric.
+        let captured = capture_export(OtelSettings::default(), HashMap::new()).await;
+        assert_eq!(
+            sorted_metric_names(&captured.request),
+            [
+                "system.cpu.load_average.15m",
+                "system.cpu.load_average.1m",
+                "system.cpu.load_average.5m",
+                "system.cpu.utilization",
+                "system.filesystem.usage",
+                "system.filesystem.utilization",
+                "system.memory.limit",
+                "system.memory.usage",
+                "system.memory.utilization",
+                "system.paging.utilization",
+                "tinytop.load.percent",
+                "tinytop.pressure.full",
+                "tinytop.pressure.some",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_filesystem_metrics_are_absent_from_the_entire_request() {
+        // Break caught: disabled metrics are recorded as empty or zero-valued entries.
+        let disabled = ["system.filesystem.utilization", "system.filesystem.usage"];
+        let settings = OtelSettings {
+            disabled_metrics: disabled.iter().map(|name| (*name).to_string()).collect(),
+            ..OtelSettings::default()
+        };
+        let captured = capture_export(settings, HashMap::new()).await;
+
+        assert_eq!(sorted_metric_names(&captured.request).len(), 11);
+        for name in disabled {
+            assert!(
+                !request_body_contains(&captured.body, name),
+                "disabled metric {name} remained in the OTLP request"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_disabled_metric_is_inert_during_export() {
+        // Break caught: a future metric name suppresses an unrelated current metric.
+        let settings = OtelSettings {
+            disabled_metrics: vec!["system.future.metric".to_string()],
+            ..OtelSettings::default()
+        };
+        let captured = capture_export(settings, HashMap::new()).await;
+        assert_eq!(sorted_metric_names(&captured.request).len(), 13);
+    }
+
+    #[tokio::test]
+    async fn disabling_all_metrics_exports_empty_without_a_failure() {
+        // Break caught: a deliberately empty export is treated as an exporter error.
+        let settings = OtelSettings {
+            disabled_metrics: METRIC_REGISTRY
+                .iter()
+                .map(|metric| metric.name.to_string())
+                .collect(),
+            ..OtelSettings::default()
+        };
+        let mut status = OtelStatus::from_settings(&settings);
+        let captured = capture_export(settings, HashMap::new()).await;
+        record_success(&mut status, 1_000);
+
+        assert!(sorted_metric_names(&captured.request).is_empty());
+        assert_eq!(status.failures, 0);
+    }
+
     #[test]
     fn parse_otlp_headers_matches_the_environment_contract() {
         assert!(parse_otlp_headers(None).unwrap().is_empty());
@@ -735,7 +1164,7 @@ mod tests {
         )
         .expect("pipeline should build without contacting the endpoint");
 
-        pipeline.record_snapshot(&fixture_snapshot());
+        pipeline.record_snapshot(&fixture_snapshot(), &HashSet::new());
         let resource_metrics = pipeline
             .collect()
             .expect("manual collection should succeed");
@@ -875,7 +1304,7 @@ mod tests {
         )
         .expect("pipeline should build");
         let first = fixture_snapshot();
-        pipeline.record_snapshot(&first);
+        pipeline.record_snapshot(&first, &HashSet::new());
         pipeline.collect().expect("first collection should succeed");
 
         let mut second = first;
@@ -883,7 +1312,7 @@ mod tests {
         second.filesystems.clear();
         second.pressure.cpu.some = None;
         second.pressure.memory.full = None;
-        pipeline.record_snapshot(&second);
+        pipeline.record_snapshot(&second, &HashSet::new());
         let second_metrics = pipeline
             .collect()
             .expect("second collection should succeed");
@@ -980,21 +1409,22 @@ mod tests {
             .expect("fixture header should parse");
         let pipeline = build_pipeline(&settings, headers, "fixture-host", Duration::from_secs(2))
             .expect("pipeline should build without connecting");
-        pipeline.record_snapshot(&fixture_snapshot());
         let (_fixture, state) = crate::writer::tests::test_state("otel-failure-collection").await;
+        let snapshot = fixture_snapshot();
 
-        let (failure, collections) = tokio::join!(pipeline.collect_and_export(), async {
-            crate::writer::collect_and_store(&state)
-                .await
-                .expect("first collection should complete");
-            crate::writer::collect_and_store(&state)
-                .await
-                .expect("second collection should complete");
-            crate::writer::tests::test_store(&state)
-                .stats()
-                .await
-                .expect("store stats should read")
-        });
+        let (failure, collections) =
+            tokio::join!(pipeline.collect_and_export(&snapshot, &settings), async {
+                crate::writer::collect_and_store(&state)
+                    .await
+                    .expect("first collection should complete");
+                crate::writer::collect_and_store(&state)
+                    .await
+                    .expect("second collection should complete");
+                crate::writer::tests::test_store(&state)
+                    .stats()
+                    .await
+                    .expect("store stats should read")
+            });
 
         let failure = failure.expect_err("port 1 should refuse the export");
         let mut status = OtelStatus::from_settings(&settings);
@@ -1052,13 +1482,14 @@ mod tests {
             .expect("fixture header should parse");
         let pipeline = build_pipeline(&settings, headers, "fixture-host", Duration::from_secs(2))
             .expect("pipeline should build without exporting");
-        pipeline.record_snapshot(&fixture_snapshot());
         let (_fixture, state) = crate::writer::tests::test_state("otel-hung-collection").await;
         let export_started = Instant::now();
 
         let ((failure, export_resolved), (second_collection_completed, stats)) = tokio::join!(
             async {
-                let failure = pipeline.collect_and_export().await;
+                let failure = pipeline
+                    .collect_and_export(&fixture_snapshot(), &settings)
+                    .await;
                 (failure, Instant::now())
             },
             async {
@@ -1130,79 +1561,19 @@ mod tests {
     #[tokio::test]
     async fn serve_otel_receiver_decodes_one_request() {
         // Break caught: real OTLP/HTTP output is not protobuf or changes decoded headers/metrics.
-        use axum::{
-            Router,
-            body::Bytes,
-            extract::State,
-            http::{HeaderMap, StatusCode},
-            routing::post,
-        };
-
-        type CaptureSender =
-            Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<(HeaderMap, Bytes)>>>>;
-
-        async fn capture(
-            State(sender): State<CaptureSender>,
-            headers: HeaderMap,
-            body: Bytes,
-        ) -> StatusCode {
-            if let Some(sender) = sender.lock().await.take() {
-                let _ = sender.send((headers, body));
-            }
-            StatusCode::OK
-        }
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("serve_ tests require sandbox permission to bind loopback");
-        let address = listener
-            .local_addr()
-            .expect("listener should have an address");
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        let sender = Arc::new(tokio::sync::Mutex::new(Some(sender)));
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                Router::new()
-                    .route("/v1/metrics", post(capture))
-                    .with_state(sender),
-            )
-            .await
-        });
-        let settings = OtelSettings {
-            enabled: true,
-            endpoint: format!("http://{address}/v1/metrics"),
-            ..OtelSettings::default()
-        };
         let headers = parse_otlp_headers(Some("authorization=Bearer%20fixture%2525"))
             .expect("encoded fixture header should parse once");
-        let pipeline = build_pipeline(&settings, headers, "fixture-host", Duration::from_secs(2))
-            .expect("receiver pipeline should build");
-        pipeline.record_snapshot(&fixture_snapshot());
-
-        pipeline
-            .collect_and_export()
-            .await
-            .expect("loopback receiver should accept one export");
-        let (headers, body) = receiver.await.expect("receiver should capture one request");
-        server.abort();
+        let captured = capture_export(OtelSettings::default(), headers).await;
 
         assert_eq!(
-            headers
+            captured
+                .headers
                 .get("authorization")
                 .expect("authorization header should be present"),
             "Bearer fixture%25"
         );
-        let request = ExportMetricsServiceRequest::decode(body)
-            .expect("request body should be OTLP protobuf");
-        let mut names = request.resource_metrics[0].scope_metrics[0]
-            .metrics
-            .iter()
-            .map(|metric| metric.name.as_str())
-            .collect::<Vec<_>>();
-        names.sort_unstable();
         assert_eq!(
-            names,
+            sorted_metric_names(&captured.request),
             [
                 "system.cpu.load_average.15m",
                 "system.cpu.load_average.1m",
