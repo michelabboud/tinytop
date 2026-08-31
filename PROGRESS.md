@@ -2,24 +2,32 @@
 
 ## Current Version
 
-- Version: `0.5.4`
-- Date: 2026-08-30
-- Status: Phase 5 (cadence classes + GPU, plan `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md`,
-  ADRs 0021–0025) IN PROGRESS. T15 landed as 0.5.4: the GPU collector on Linux (DRM sysfs +
-  `/proc/<pid>/fdinfo` engine deltas + hwmon; `gpu_busy_percent` preferred, a failed busy verdict
-  cached until re-detect, NVIDIA proprietary identity-only, WSL2 none, no subprocess or vendor
-  library) and schema v4 (ADR 0025: both process tables rebuilt with `started_at_ms`, `gpu_adapters`
-  interned, `gpu_samples` per adapter per tick, ONE guarded transaction — 34 ms over the live file's
-  11,987 minute rows), `GET /api/history/gpus`, `db stats` GPU counts; T15-fix1 after luna 675
-  (`drm-total-cycles-*` as the cycles form); the dashboard's GPU panel and row-gated column / sort /
-  detail (T15b; luna 673 clean). Hardware-proven on trashcan (2 × amdgpu, 96.8 % busy under load) and
-  sheep (i915, 97 %). Next = T16 (Windows PDH + DXGI, macOS IOKit — fact sheet first on the target
-  hosts, plan-only until Michel's go); T17 (thermals) proposed, awaiting his go → 0.6.0. The live
-  daemon still runs 0.3.1 — redeploy is an explicitly ordered step (the v1 file migrates v1→v4 in
-  ≈ 1.3–3.2 s, proven twice on copies; the pre-image law applies).
+- Version: `0.6.0`
+- Date: 2026-08-31
+- Status: Phase 5 (cadence classes + GPU + sensors, plans
+  `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md` and
+  `docs/plans/2026-08-28-tiered-history-ladder/`, ADRs 0021–0027) IN PROGRESS. T17 landed as 0.6.0:
+  opt-in CPU thermals (`coretemp`/`k10temp` plus `thermal.extraChips`, which refuses `amdgpu`/`i915`/
+  `nvme`) and schema v5 (ADR 0026: `sensor_dim` + `sensor_samples`, purely additive, 0–1 ms), with
+  `stable_id` deliberately free of the unstable `hwmonN` index — `coretemp` is `hwmon1` on sheep and
+  `hwmon0` on trashcan and both yield `hwmon-coretemp-0-temp1..5`. Thresholds are reported only when
+  present AND sane (`0 < t <= 200`), so sheep's 65261850 m°C `nvme` sentinel is absent, and the
+  dashboard renders an absent threshold as no bar at all. T17-fix1 fixed the one user-facing defect
+  luna's blind review found (`db stats` and import planning died on an un-migrated database) and its
+  demanded audit proved the same defect class was already live for the GPU tables on a v3 file; T17b
+  added the Thermals panel, settings group and coverage row (reviewed first-hand: 0 HIGH, 1 MED, 3
+  LOW). Hardware-proven on sheep (5 `coretemp`, 105/105) and trashcan (5 at 91/105, two `amdgpu`
+  chips correctly excluded, unnamed `hwmon1` skipped, `userVersion 5`, 35 sensor rows); `strace`
+  recorded zero `/sys/class/hwmon` opens while disabled on both. Rendered-page check passed in both
+  themes against sheep's live sensors through an ssh tunnel. Next = T18 + T18b (ADR 0027: tabbed
+  settings and per-metric OTel export selection stored as a DISABLED set — both briefs written and
+  ready to dispatch); T16 (Windows PDH + DXGI, macOS IOKit) still plan-only until Michel's go.
 
 ## Backlog
 
+- **`sensor_dim.stable_id` still forks when two SAME-NAME chips swap sysfs order across a reboot (T17, luna finding 4, validated)** — the `<k>` disambiguator is derived from scan ORDER, so on a dual-socket box a reboot that reorders the two `coretemp` paths makes the two sockets' histories *cross* rather than break, which is worse because nothing looks wrong. Unreachable on every current fleet host (`<k>` is only load-bearing when a chip name repeats; sheep and trashcan have exactly one `coretemp` each). The fix is to derive the disambiguator from the chip's stable device path — the ADR 0025 decision 2 `pci-<PCI_SLOT_NAME>` trick — which rewrites the identity of every stored sensor and therefore needs its own migration ADR. Recorded as a known limitation on ADR 0026.
+- **`tinytop-agent collect --json` ignores persisted settings (found in T17 hardware acceptance)** — `collect()` builds `NativeCollector::default()` (`main.rs:229`) and never loads the settings row, so thermals never appear on the CLI path no matter what is stored; `collect --sqlite` therefore also inserts sensor-less rows. Thermal is the first *settings-gated* collector (GPU is detection-gated), which is why nothing caught it. The daemon path is correct and is what the product uses. Documented in README; the fix is to load settings in `collect` and pass them into the collector options.
+- **T17-fix1's end-to-end test reaches the collector by `include!` (test-only debt)** — `tests/thermal_end_to_end.rs` textually includes `tinytop-collectors/src/thermal.rs`, which re-runs that file's own 10 unit tests inside the new target, so the workspace count double-counts them (385 today; removing the `include!` yields 375, **not** a loss of ten tests). `include!` appears nowhere else in the repo and rust-analyzer cannot resolve it. The clean route is closed today because `tinytop-collectors` declares `pub(crate) mod thermal`, so a path dev-dependency alone would not reach it; resolving this means deciding whether that module becomes public API to serve a test, which earns its own task.
 - **GPU `busyPercent` is `null` when no readable DRM client exists (T15 observation (a))** — idle, and again the tick after a load ends: ADR 0025 decision 5's "no evidence" reading rather than 0 %; the dashboard shows `—`. With 242 denied pids on trashcan that is the honest value. Reporting 0 % whenever an interval exists is a design change — Michel's call, then an ADR 0025 amendment.
 - **One `null` GPU busy sample per minute per fdinfo adapter (T15 observation (b))** — every slow-tick (60 s) re-detect resets the fdinfo client state, so the first tick after a re-detect reports `null` (ADR 0025 decision 5 says so explicitly). A future amendment could keep the client map while the adapter set is unchanged (a smoother chart). Not a defect.
 - **`gpu_samples` secondary index — measure first (luna run 675 ruling (d))** — adapter-filtered reads over a full 24 h window (luna's 345,600-row example) run without a secondary index today; measure `GET /api/history/gpus` on a populated file before adding one.

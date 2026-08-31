@@ -6,7 +6,7 @@ A standalone local dashboard for live WSL/Linux workstation status. The default 
 
 ## Current Status
 
-- Version: `0.5.4`
+- Version: `0.6.0`
 - Runtime: Rust collector/dashboard daemon for persistent installs; Bun remains available for development and fallback
 - Windows entrypoint: `.\tinytop.cmd` or process-scoped `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` before `.\tinytop.ps1`
 - Dashboard UI: Linux/WSL `http://127.0.0.1:4274`; native Windows defaults to `http://127.0.0.1:4275` to avoid loopback collisions with WSL
@@ -282,6 +282,26 @@ thresholds are shown only when the kernel reports values in the sane
 `0 < t <= 200 C` range. WSL2 and other sensorless hosts simply show no thermal
 readings. Nothing needs to be installed and no root access is required: hwmon
 is read directly and is normally world-readable, with no `sensors` subprocess.
+
+Three details are worth stating plainly, because each one looks like a bug until
+you know it is not:
+
+- **"Disabled" is a promise about the *thermal* collector, not about every
+  temperature TinyTop reads.** While `thermal.enabled` is false the thermal
+  collector performs no `read_dir` and opens nothing under `/sys/class/hwmon`
+  (verified with `strace` on two hosts: zero opens). The GPU backend
+  independently reads its *own* DRM device's hwmon node to produce
+  `gpus[].temperatureC`, and has done so since 0.5.4 — that read lives under
+  `/sys/class/drm/card*/device/hwmon/` and is unaffected by this setting.
+- **A settings change takes effect one collection late.** The daemon collects
+  and then reloads settings, so disabling thermals permits at most one more scan
+  (≤ 1.5 s) and enabling them takes effect on the following tick. Changes to
+  `extraChips` settle at the next slow tick, when chip discovery re-runs.
+- **`tinytop-agent collect --json` does not read persisted settings**, so it
+  never reports sensors regardless of what is stored — it builds a default
+  collector by design. Use the daemon (`serve` / `serve-writer`, or the
+  dashboard) to see thermals, and `db stats --json` to confirm rows are being
+  recorded.
 
 ## Common Commands
 
