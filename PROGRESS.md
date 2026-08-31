@@ -2,9 +2,31 @@
 
 ## Current Version
 
-- Version: `0.6.0`
-- Date: 2026-08-31
+- Version: `0.7.0`
+- Date: 2026-09-01
 - Status: Phase 5 (cadence classes + GPU + sensors, plans
+  `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md` and
+  `docs/plans/2026-08-28-tiered-history-ladder/`, ADRs 0021–0028) IN PROGRESS. T18 + T18b landed as
+  0.7.0: the thirteen OTel instruments become one `METRIC_REGISTRY` the daemon builds from and
+  `GET /api/otel/metrics` serves (read-only, `no-store`, and deliberately carrying neither `endpoint`
+  nor `headersEnvVar`), with selection stored as the DISABLED set so a metric added later ships ON
+  rather than silently off, and an unknown well-formed name preserved inert for cross-version fleet
+  config. The cost lever ADR 0027 claims is now MEASURED rather than asserted: 98 series across 13
+  metrics with everything on, 14 across 11 with `system.filesystem.*` off — 84 removed, 85.7 %, and
+  the disabled pair absent from the request entirely rather than zero-valued. T18b made the settings
+  dialog five tabs with every panel permanently mounted (so switching a tab can never drop a field
+  the user already filled in), capability-driven tab visibility, and a validate-then-apply Advanced
+  document whose only authority is the server's dry-run. On Michel's instruction the dialog's
+  booleans then became switches (ADR 0028) — the native input restyled in place so the thirteen
+  static fields and the runtime-built metric rows cannot drift — with the `float: right` legend
+  button, the magic `margin-top` on the metric row and the unit that occupied its own line all
+  fixed. Both lanes were git-read-only by design and were committed by the orchestrator after every
+  claim was validated at source; T18b's ESCALATE was a containment artifact (a lane cannot bind a
+  socket) caused by a brief that demanded a server-starting gate, not a defect. Next = the settings
+  correctness plan (`docs/plans/2026-09-01-settings-correctness-plan.md`, S1–S3) AT MICHEL'S GATE
+  with three open questions; T16 (Windows PDH + DXGI, macOS IOKit) still plan-only until his go.
+
+- Superseded status (0.6.0): Phase 5 (cadence classes + GPU + sensors, plans
   `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md` and
   `docs/plans/2026-08-28-tiered-history-ladder/`, ADRs 0021–0027) IN PROGRESS. T17 landed as 0.6.0:
   opt-in CPU thermals (`coretemp`/`k10temp` plus `thermal.extraChips`, which refuses `amdgpu`/`i915`/
@@ -27,7 +49,7 @@
 
 - **`sensor_dim.stable_id` still forks when two SAME-NAME chips swap sysfs order across a reboot (T17, luna finding 4, validated)** — the `<k>` disambiguator is derived from scan ORDER, so on a dual-socket box a reboot that reorders the two `coretemp` paths makes the two sockets' histories *cross* rather than break, which is worse because nothing looks wrong. Unreachable on every current fleet host (`<k>` is only load-bearing when a chip name repeats; sheep and trashcan have exactly one `coretemp` each). The fix is to derive the disambiguator from the chip's stable device path — the ADR 0025 decision 2 `pci-<PCI_SLOT_NAME>` trick — which rewrites the identity of every stored sensor and therefore needs its own migration ADR. Recorded as a known limitation on ADR 0026.
 - **`tinytop-agent collect --json` ignores persisted settings (found in T17 hardware acceptance)** — `collect()` builds `NativeCollector::default()` (`main.rs:229`) and never loads the settings row, so thermals never appear on the CLI path no matter what is stored; `collect --sqlite` therefore also inserts sensor-less rows. Thermal is the first *settings-gated* collector (GPU is detection-gated), which is why nothing caught it. The daemon path is correct and is what the product uses. Documented in README; the fix is to load settings in `collect` and pass them into the collector options.
-- **T17-fix1's end-to-end test reaches the collector by `include!` (test-only debt)** — `tests/thermal_end_to_end.rs` textually includes `tinytop-collectors/src/thermal.rs`, which re-runs that file's own 10 unit tests inside the new target, so the workspace count double-counts them (385 today; removing the `include!` yields 375, **not** a loss of ten tests). `include!` appears nowhere else in the repo and rust-analyzer cannot resolve it. The clean route is closed today because `tinytop-collectors` declares `pub(crate) mod thermal`, so a path dev-dependency alone would not reach it; resolving this means deciding whether that module becomes public API to serve a test, which earns its own task.
+- **T17-fix1's end-to-end test reaches the collector by `include!` (test-only debt)** — `tests/thermal_end_to_end.rs` textually includes `tinytop-collectors/src/thermal.rs`, which re-runs that file's own 10 unit tests inside the new target, so the workspace count double-counts them (**411 today; removing the `include!` yields 401, not a loss of ten tests**). The count reconciles exactly as of 0.7.0: 403 test annotations + the 10 duplicated executions = 413 = 411 passed + 2 ignored + 0 filtered. Note that the **385 recorded for 0.6.0 does not reconcile against its own tree** (389 + 10 − 2 = 397), so the 385 → 411 step is mostly a stale baseline figure rather than 26 new tests — the source gained exactly 14, all of them T18's. `include!` appears nowhere else in the repo and rust-analyzer cannot resolve it. The clean route is closed today because `tinytop-collectors` declares `pub(crate) mod thermal`, so a path dev-dependency alone would not reach it; resolving this means deciding whether that module becomes public API to serve a test, which earns its own task.
 - **GPU `busyPercent` is `null` when no readable DRM client exists (T15 observation (a))** — idle, and again the tick after a load ends: ADR 0025 decision 5's "no evidence" reading rather than 0 %; the dashboard shows `—`. With 242 denied pids on trashcan that is the honest value. Reporting 0 % whenever an interval exists is a design change — Michel's call, then an ADR 0025 amendment.
 - **One `null` GPU busy sample per minute per fdinfo adapter (T15 observation (b))** — every slow-tick (60 s) re-detect resets the fdinfo client state, so the first tick after a re-detect reports `null` (ADR 0025 decision 5 says so explicitly). A future amendment could keep the client map while the adapter set is unchanged (a smoother chart). Not a defect.
 - **`gpu_samples` secondary index — measure first (luna run 675 ruling (d))** — adapter-filtered reads over a full 24 h window (luna's 345,600-row example) run without a secondary index today; measure `GET /api/history/gpus` on a populated file before adding one.
@@ -54,6 +76,14 @@
   OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
+
+### 0.7.0 - Cadence classes and GPU, Phase 5 (T18 + T18b + the settings switch pass)
+
+- [x] T18 / 0.7.0: `METRIC_REGISTRY` as a `[MetricDescriptor; 13]` (arity enforced by the type, `descriptor()` panics on a missing name, validation covering uniqueness/grammar/families/units and the 10/3 semantic split); `otel.disabledMetrics` as a validated SET (≤ 64 entries, `^[a-z][a-z0-9._]*$`, ≤ 128 chars, duplicates refused naming the repeat) with unknown names accepted and round-tripped byte-identically; record-time skipping in `collect_and_export` so a disabled metric is absent from the request rather than zero-valued, and an all-disabled export succeeding without advancing the failure counter; `GET /api/otel/metrics` read-only + `no-store`, carrying no `endpoint` and no `headersEnvVar`. No dependency added, `Cargo.lock` untouched by the lane (`ari-sol-deep`).
+- [x] T18b / 0.7.0: the five-tab settings dialog with permanently mounted panels (selection via `[hidden]` only, so `collectDaemonSettingsFromForm` keeps hidden-tab values), a real tablist (roving `tabindex`, wrapping arrows, Home/End), guarded `localStorage` tab memory resolving to General when unavailable, capability-driven Metrics/Thermals tabs, the registry-driven picker with inert unknown names, and the validate-then-apply Advanced document; client gaps closed (`extraChips` reserved-chip refusal, save errors preferring the server's message) (`ari-sol`).
+- [x] Settings UI/UX (ADR 0028), Michel's instruction: dialog booleans become switches (`role="switch"`, native input restyled in place so static and runtime-built controls cannot drift; on-state `--cyan`/`--surface` adopts each theme's accent and inverts correctly on light `solar`); checkboxes outside the dialog left as checkboxes because they select set members; the `float: right` legend button, the metric row's magic `margin-top` and the unit's stolen line all fixed.
+- Measured: **98 → 14 series** (13 → 11 metrics) when `system.filesystem.*` is disabled — 84 removed, 85.7 % — decoded from a real OTLP export captured off a scratch daemon, which quantifies (and exceeds) ADR 0027's cost-lever claim of "of the order of half" against "of the order of forty" series.
+- Gate on main, identical before and after the UI pass: Rust 28 suites / 411 passed / 0 failed / 2 ignored; Bun 254 passed / 0 failed across 22 files; fmt + clippy clean. Rendered-page check in both themes covering all five tabs, the keyboard path and the off-state rows. Gate detail: see `CHANGELOG.md`.
 
 ### 0.5.4 - Cadence classes and GPU, Phase 5 lane 4 (T15 + T15b)
 
