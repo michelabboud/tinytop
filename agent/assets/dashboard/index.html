@@ -566,27 +566,27 @@
                 <input id="daemon-pressure-critical" type="number" min="0" max="100" step="1" />
               </label>
               <label class="toggle-row">
-                <input id="daemon-redaction-default" type="checkbox" />
+                <input id="daemon-redaction-default" type="checkbox" role="switch" />
                 <span>Redact by default</span>
               </label>
               <label class="toggle-row">
-                <input id="daemon-section-overview" type="checkbox" />
+                <input id="daemon-section-overview" type="checkbox" role="switch" />
                 <span>Show overview</span>
               </label>
               <label class="toggle-row">
-                <input id="daemon-section-history" type="checkbox" />
+                <input id="daemon-section-history" type="checkbox" role="switch" />
                 <span>Show history</span>
               </label>
               <label class="toggle-row">
-                <input id="daemon-section-filesystem" type="checkbox" />
+                <input id="daemon-section-filesystem" type="checkbox" role="switch" />
                 <span>Show filesystem</span>
               </label>
               <label class="toggle-row">
-                <input id="daemon-section-pressure" type="checkbox" />
+                <input id="daemon-section-pressure" type="checkbox" role="switch" />
                 <span>Show pressure</span>
               </label>
               <label class="toggle-row">
-                <input id="daemon-section-processes" type="checkbox" />
+                <input id="daemon-section-processes" type="checkbox" role="switch" />
                 <span>Show processes</span>
               </label>
             </fieldset>
@@ -605,7 +605,7 @@
                 <input id="daemon-l2-keep-days" type="number" min="7" max="3650" step="1" />
               </label>
               <label class="toggle-row">
-                <input id="daemon-l3-enabled" type="checkbox" />
+                <input id="daemon-l3-enabled" type="checkbox" role="switch" />
                 <span>Enable L3 five-minute history</span>
               </label>
               <label>
@@ -613,7 +613,7 @@
                 <input id="daemon-l3-keep-days" type="number" min="0" max="3650" step="1" />
               </label>
               <label class="toggle-row">
-                <input id="daemon-l4-enabled" type="checkbox" />
+                <input id="daemon-l4-enabled" type="checkbox" role="switch" />
                 <span>Enable L4 hourly history</span>
               </label>
               <label>
@@ -621,7 +621,7 @@
                 <input id="daemon-l4-keep-days" type="number" min="0" max="36500" step="1" />
               </label>
               <label class="toggle-row">
-                <input id="daemon-l4-forever" type="checkbox" />
+                <input id="daemon-l4-forever" type="checkbox" role="switch" />
                 <span>Keep L4 forever</span>
               </label>
               <label>
@@ -634,11 +634,11 @@
                 <small>Per-tick process rows are kept this long; older windows use the once-a-minute rows.</small>
               </label>
               <label class="toggle-row">
-                <input id="daemon-archive-queryable" type="checkbox" />
+                <input id="daemon-archive-queryable" type="checkbox" role="switch" />
                 <span>Queryable archive</span>
               </label>
               <label class="toggle-row">
-                <input id="daemon-archive-cold" type="checkbox" />
+                <input id="daemon-archive-cold" type="checkbox" role="switch" />
                 <span>Cold CSV.gz archive</span>
               </label>
               <label>
@@ -671,7 +671,7 @@
             <fieldset class="settings-group otel-settings-group" id="otel-settings-group" hidden>
               <legend>OpenTelemetry export</legend>
               <label class="toggle-row">
-                <input id="daemon-otel-enabled" type="checkbox" />
+                <input id="daemon-otel-enabled" type="checkbox" role="switch" />
                 <span>Enable OpenTelemetry export</span>
               </label>
               <label class="settings-wide-field">
@@ -713,7 +713,7 @@
             <fieldset class="settings-group thermal-settings-group" id="thermal-settings-group" hidden>
               <legend>CPU thermals</legend>
               <label class="toggle-row">
-                <input id="daemon-thermal-enabled" type="checkbox" />
+                <input id="daemon-thermal-enabled" type="checkbox" role="switch" />
                 <span>Collect CPU thermals (off by default)</span>
               </label>
               <label class="settings-wide-field">

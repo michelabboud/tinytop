@@ -3037,8 +3037,8 @@ function renderMetricRegistry() {
     toggle.className = "mini-button secondary metric-family-toggle";
     toggle.type = "button";
     toggle.dataset.metricFamilyToggle = group.family;
-    toggle.textContent = "Select all / none";
-    legend.append(" ", toggle);
+    toggle.textContent = "Toggle all";
+    legend.append(toggle);
     fieldset.append(legend);
 
     for (const metric of group.metrics) {
@@ -3046,18 +3046,23 @@ function renderMetricRegistry() {
       label.className = "metric-setting-row";
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
+      // An on/off setting, not a member of a set: announce it as a switch.
+      checkbox.role = "switch";
       checkbox.checked = metric.disabled !== true;
       checkbox.dataset.metricName = metric.name;
       checkbox.addEventListener("input", markSettingsDirty);
       const detail = document.createElement("span");
+      const head = document.createElement("span");
+      head.className = "metric-head";
       const name = document.createElement("code");
       name.textContent = metric.name;
       const unit = document.createElement("small");
-      unit.textContent = metric.unit ? ` ${metric.unit}` : "";
+      unit.textContent = metric.unit ?? "";
+      head.append(name, unit);
       const description = document.createElement("small");
       description.className = "metric-description";
       description.textContent = metric.description ?? "";
-      detail.append(name, unit, description);
+      detail.append(head, description);
       label.append(checkbox, detail);
       fieldset.append(label);
     }

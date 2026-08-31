@@ -1157,13 +1157,19 @@ h1 {
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* The family name and its bulk control share one row. This was a float, which
+   took the button out of flow and left it unaligned with the legend text. */
 .metric-family legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   width: 100%;
 }
 
 .metric-family-toggle {
-  float: right;
-  margin: -0.35rem 0 0 0.75rem;
+  flex: none;
+  margin: 0;
 }
 
 .metric-setting-row {
@@ -1179,13 +1185,41 @@ h1 {
   border-bottom: 0;
 }
 
+/* The switch and the name line are both 1.2rem tall, so they align on the
+   first row with no magic offset and the description wraps freely beneath. */
 .metric-setting-row input {
-  margin-top: 0.2rem;
+  margin-block-start: 0;
 }
 
 .metric-setting-row > span {
   display: grid;
-  gap: 0.2rem;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.metric-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  min-block-size: 1.2rem;
+}
+
+/* The unit is a property of the metric, not prose: it reads as a small tag
+   beside the name instead of taking a line of its own. */
+.metric-head small {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface-3) 40%, transparent);
+  padding: 0 0.3rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.metric-head small:empty {
+  display: none;
 }
 
 .metric-setting-row code {
@@ -1326,6 +1360,78 @@ h1 {
 .settings-group textarea:focus {
   border-color: var(--cyan);
   outline: 0;
+}
+
+/* Every boolean in the settings dialog is an on/off setting, so it reads as a
+   switch. The native checkbox is restyled in place rather than replaced by
+   wrapper markup: one rule set then covers both the static fields and the
+   metric rows built at runtime, and the two can never drift apart. Checkboxes
+   outside this dialog (history series, filesystem filter) are deliberately
+   left alone -- those pick members of a set, which is what a checkbox means.
+
+   The on-state pairs --cyan with --surface so it inverts correctly in every
+   theme: a light track on the dark themes takes the dark surface as its knob,
+   and the dark cyan of the light "solar" theme takes a white one. */
+.settings-dialog input[type="checkbox"] {
+  appearance: none;
+  position: relative;
+  flex: none;
+  inline-size: 2.15rem;
+  block-size: 1.2rem;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--control-bg);
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease;
+}
+
+.settings-dialog input[type="checkbox"]::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 0.18rem;
+  inline-size: 0.8rem;
+  block-size: 0.8rem;
+  border-radius: 50%;
+  background: var(--muted);
+  translate: 0 -50%;
+  transition:
+    translate 160ms ease,
+    background-color 160ms ease;
+}
+
+.settings-dialog input[type="checkbox"]:checked {
+  border-color: var(--control-active-border);
+  background: var(--cyan);
+}
+
+.settings-dialog input[type="checkbox"]:checked::after {
+  background: var(--surface);
+  translate: calc(0.99rem - 2px) -50%;
+}
+
+.settings-dialog input[type="checkbox"]:hover:not(:disabled) {
+  border-color: var(--control-active-border);
+}
+
+.settings-dialog input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+.settings-dialog input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-dialog input[type="checkbox"],
+  .settings-dialog input[type="checkbox"]::after {
+    transition: none;
+  }
 }
 
 .settings-group .toggle-row {
