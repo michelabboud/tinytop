@@ -968,10 +968,7 @@ async fn apply_schema_v5(pool: &SqlitePool) -> Result<(), StoreError> {
     apply_schema_groups(pool, &CREATE_SCHEMA_V5_SQL).await
 }
 
-async fn migrate_v4_to_v5(
-    pool: &SqlitePool,
-    now_ms: i64,
-) -> Result<(), StoreError> {
+async fn migrate_v4_to_v5(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {
     let started = Instant::now();
     // ADR 0026 decision 1 is purely additive. No table is rebuilt, so the
     // row-count, pre-image, and in-flight guards required for rebuilds do not apply.
@@ -2261,12 +2258,11 @@ mod tests {
             "process_samples_fast",
             "process_samples",
         ] {
-            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                "SELECT COUNT(*) FROM {table}"
-            )))
-            .fetch_one(&pool)
-            .await
-            .expect("preserved row count");
+            let count: i64 =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("preserved row count");
             assert_eq!(count, 1, "row count changed for {table}");
         }
     }

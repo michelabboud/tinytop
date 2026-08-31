@@ -224,7 +224,7 @@ async fn v1_fixture_with_three_commands_migrates_through_v2_to_v4() {
             .fetch_one(&pool)
             .await
             .expect("version should read"),
-        4
+        5
     );
     assert_eq!(marker_count(&pool).await, 1);
     pool.close().await;
@@ -380,8 +380,11 @@ async fn newer_schema_version_is_refused() {
         .await
         .expect_err("newer schema should be refused")
         .to_string();
-    assert!(error.contains("unsupported SQLite schema version 5"));
-    assert!(error.contains("supported version is 4"));
+    assert!(error.contains(&format!(
+        "unsupported SQLite schema version {}",
+        SCHEMA_VERSION + 1
+    )));
+    assert!(error.contains(&format!("supported version is {SCHEMA_VERSION}")));
 }
 
 fn set_sqlite_user_version(path: &Path, user_version: u32) {

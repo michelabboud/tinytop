@@ -4,21 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::StoreError;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThermalSettings {
     pub enabled: bool,
     #[serde(default)]
     pub extra_chips: Vec<String>,
-}
-
-impl Default for ThermalSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            extra_chips: Vec::new(),
-        }
-    }
 }
 
 impl ThermalSettings {
@@ -127,10 +118,12 @@ mod tests {
     #[test]
     fn absent_thermal_key_keeps_the_persisted_block() {
         // Break caught: importing an older document silently disables configured thermals.
-        let mut persisted = DashboardSettings::default();
-        persisted.thermal = ThermalSettings {
-            enabled: true,
-            extra_chips: vec!["cpu_thermal".to_string()],
+        let persisted = DashboardSettings {
+            thermal: ThermalSettings {
+                enabled: true,
+                extra_chips: vec!["cpu_thermal".to_string()],
+            },
+            ..DashboardSettings::default()
         };
         let mut document = serde_json::to_value(DashboardSettings::default()).unwrap();
         document.as_object_mut().unwrap().remove("thermal");
@@ -148,16 +141,21 @@ mod tests {
         let mut next = previous.clone();
         next.thermal.enabled = true;
 
-        assert_eq!(DashboardSettings::changed_keys(&previous, &next), ["thermal"]);
+        assert_eq!(
+            DashboardSettings::changed_keys(&previous, &next),
+            ["thermal"]
+        );
     }
 
     #[test]
     fn export_document_round_trips_the_full_thermal_block() {
         // Break caught: config export/import drops the opt-in flag or chip overrides.
-        let mut settings = DashboardSettings::default();
-        settings.thermal = ThermalSettings {
-            enabled: true,
-            extra_chips: vec!["cpu_thermal".to_string()],
+        let settings = DashboardSettings {
+            thermal: ThermalSettings {
+                enabled: true,
+                extra_chips: vec!["cpu_thermal".to_string()],
+            },
+            ..DashboardSettings::default()
         };
         let document = export_document(&settings, 1_000, "test");
         let value = serde_json::to_value(&document).expect("export should serialize");

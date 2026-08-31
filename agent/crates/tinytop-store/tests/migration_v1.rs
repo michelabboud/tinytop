@@ -354,7 +354,7 @@ async fn reconnect_completes_an_interrupted_post_schema_vacuum() {
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count after resumed completion");
-    assert_eq!(marker_count, 4);
+    assert_eq!(marker_count, 5);
     let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
         .fetch_one(&pool)
         .await
@@ -418,7 +418,7 @@ async fn crash_after_schema_commit_is_recovered_on_next_connect() {
             .fetch_one(&pool)
             .await
             .expect("post-recovery schemaMigrated marker count");
-    assert_eq!(marker_count_after, 4);
+    assert_eq!(marker_count_after, 5);
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_one(&pool)
         .await
@@ -751,7 +751,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count");
-    assert_eq!(marker_count, 4);
+    assert_eq!(marker_count, 5);
     pool.close().await;
 
     let bytes_after = std::fs::metadata(&fixture.path)

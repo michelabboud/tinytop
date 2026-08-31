@@ -1563,7 +1563,7 @@ impl SqliteHistoryStore {
                         StoreError::Validation("GPU adapter cache mutex is poisoned".to_string())
                     })?
                     .clone(),
-                )
+            )
         };
         let cached_sensor_dim = if snapshot.sensors.is_empty() {
             None
@@ -4463,11 +4463,7 @@ mod thermal_store_tests {
             store
                 .insert_snapshot(
                     captured_at_ms,
-                    &snapshot(vec![sensor(
-                        "hwmon-coretemp-0-temp1",
-                        "Package id 0",
-                        55.0,
-                    )]),
+                    &snapshot(vec![sensor("hwmon-coretemp-0-temp1", "Package id 0", 55.0)]),
                 )
                 .await
                 .expect("thermal tick");
@@ -4484,11 +4480,7 @@ mod thermal_store_tests {
         store
             .insert_snapshot(
                 1_000,
-                &snapshot(vec![sensor(
-                    "hwmon-coretemp-0-temp1",
-                    "Package id 0",
-                    55.0,
-                )]),
+                &snapshot(vec![sensor("hwmon-coretemp-0-temp1", "Package id 0", 55.0)]),
             )
             .await
             .expect("first tick");
@@ -4504,11 +4496,7 @@ mod thermal_store_tests {
         store
             .insert_snapshot(
                 2_500,
-                &snapshot(vec![sensor(
-                    "hwmon-coretemp-0-temp1",
-                    "Package id 0",
-                    56.0,
-                )]),
+                &snapshot(vec![sensor("hwmon-coretemp-0-temp1", "Package id 0", 56.0)]),
             )
             .await
             .expect("second tick");
@@ -4530,11 +4518,7 @@ mod thermal_store_tests {
         store
             .insert_snapshot(
                 0,
-                &snapshot(vec![sensor(
-                    "hwmon-coretemp-0-temp1",
-                    "Package id 0",
-                    55.0,
-                )]),
+                &snapshot(vec![sensor("hwmon-coretemp-0-temp1", "Package id 0", 55.0)]),
             )
             .await
             .expect("first tick");
@@ -4579,11 +4563,7 @@ mod thermal_store_tests {
             store
                 .insert_snapshot(
                     captured_at_ms,
-                    &snapshot(vec![sensor(
-                        "hwmon-coretemp-0-temp1",
-                        "Package id 0",
-                        55.0,
-                    )]),
+                    &snapshot(vec![sensor("hwmon-coretemp-0-temp1", "Package id 0", 55.0)]),
                 )
                 .await
                 .expect("thermal tick");
@@ -4614,11 +4594,7 @@ mod thermal_store_tests {
         store
             .insert_snapshot(
                 0,
-                &snapshot(vec![sensor(
-                    "hwmon-coretemp-0-temp1",
-                    "Package id 0",
-                    55.0,
-                )]),
+                &snapshot(vec![sensor("hwmon-coretemp-0-temp1", "Package id 0", 55.0)]),
             )
             .await
             .expect("thermal tick");
@@ -4696,17 +4672,13 @@ mod thermal_store_tests {
             .expect("thermal tick");
         let mut settings = DashboardSettings::default();
         settings.thermal.enabled = true;
-        let coverage_json = serde_json::to_string(
-            &store
-                .history_coverage(&settings)
-                .await
-                .expect("coverage"),
-        )
-        .expect("coverage JSON");
-        let stats_json = serde_json::to_string(&store.stats().await.expect("stats"))
-            .expect("stats JSON");
-        let export_json = serde_json::to_string(&export_document(&settings, 2_000, "test"))
-            .expect("export JSON");
+        let coverage_json =
+            serde_json::to_string(&store.history_coverage(&settings).await.expect("coverage"))
+                .expect("coverage JSON");
+        let stats_json =
+            serde_json::to_string(&store.stats().await.expect("stats")).expect("stats JSON");
+        let export_json =
+            serde_json::to_string(&export_document(&settings, 2_000, "test")).expect("export JSON");
         for (surface, value) in [
             ("coverage", coverage_json),
             ("db stats", stats_json),
