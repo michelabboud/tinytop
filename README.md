@@ -451,7 +451,7 @@ Settings export is a versioned JSON document that contains daemon settings but n
 
 ## OpenTelemetry export
 
-The Rust daemon can push the latest collected snapshot as OTLP metrics over HTTP/protobuf. It is disabled by default and never reads from OpenTelemetry. Configure it in the Settings dialog, or include the `otel` block in a `config import` document. Request headers are secret-free by design: set `TINYTOP_OTEL_HEADERS="authorization=Bearer <token>"` in the daemon's service environment, using an environment variable named by `headersEnvVar`; the value is never stored in settings or an export. The exporter refuses to start while either `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_METRICS_HEADERS` is set, so TinyTop has one parser and one header source; neither reserved name may be selected as `headersEnvVar`.
+The Rust daemon can push the latest collected snapshot as OTLP metrics over HTTP/protobuf. It is disabled by default and never reads from OpenTelemetry. Configure it in the Settings dialog, or include the `otel` block in a `config import` document. All registered metrics are exported by default; `otel.disabledMetrics` turns individual metric names off. A well-formed name unknown to this build is preserved in settings and ignored by the exporter, so one fleet configuration round-trips across TinyTop versions without losing newer choices. Request headers are secret-free by design: set `TINYTOP_OTEL_HEADERS="authorization=Bearer <token>"` in the daemon's service environment, using an environment variable named by `headersEnvVar`; the value is never stored in settings or an export. The exporter refuses to start while either `OTEL_EXPORTER_OTLP_HEADERS` or `OTEL_EXPORTER_OTLP_METRICS_HEADERS` is set, so TinyTop has one parser and one header source; neither reserved name may be selected as `headersEnvVar`.
 
 For a user systemd service, create `~/.config/systemd/user/tinytop.service.d/otel.conf` with these three lines:
 
@@ -478,23 +478,23 @@ service:
       exporters: [debug]
 ```
 
-All exported instruments are gauges:
+All exported instruments are gauges. This list comes from the daemon's `METRIC_REGISTRY`, the single source used to build the instruments and serve the metric-selection API, so a future metric is added in one place:
 
-| Metric | Unit | Attributes |
-| --- | --- | --- |
-| `system.cpu.utilization` | `1` | — |
-| `system.memory.utilization` | `1` | — |
-| `system.memory.usage` | `By` | `state=used` |
-| `system.memory.limit` | `By` | — |
-| `system.paging.utilization` | `1` | `state=used` |
-| `system.cpu.load_average.1m` | `{thread}` | — |
-| `system.cpu.load_average.5m` | `{thread}` | — |
-| `system.cpu.load_average.15m` | `{thread}` | — |
-| `system.filesystem.utilization` | `1` | `mountpoint`, `type` |
-| `system.filesystem.usage` | `By` | `mountpoint`, `type`, `state=used\|free` |
-| `tinytop.load.percent` | `%` | — |
-| `tinytop.pressure.some` | `%` | `resource=cpu\|memory\|io`; emitted only when reported |
-| `tinytop.pressure.full` | `%` | `resource=cpu\|memory\|io`; emitted only when reported |
+| Metric | Unit | Family | Attributes |
+| --- | --- | --- | --- |
+| `system.cpu.utilization` | `1` | `cpu` | — |
+| `system.memory.utilization` | `1` | `memory` | — |
+| `system.memory.usage` | `By` | `memory` | `state=used` |
+| `system.memory.limit` | `By` | `memory` | — |
+| `system.paging.utilization` | `1` | `swap` | `state=used` |
+| `system.cpu.load_average.1m` | `{thread}` | `cpu` | — |
+| `system.cpu.load_average.5m` | `{thread}` | `cpu` | — |
+| `system.cpu.load_average.15m` | `{thread}` | `cpu` | — |
+| `system.filesystem.utilization` | `1` | `filesystem` | `mountpoint`, `type` |
+| `system.filesystem.usage` | `By` | `filesystem` | `mountpoint`, `type`, `state=used\|free` |
+| `tinytop.load.percent` | `%` | `load` | — |
+| `tinytop.pressure.some` | `%` | `pressure` | `resource=cpu\|memory\|io`; emitted only when reported |
+| `tinytop.pressure.full` | `%` | `pressure` | `resource=cpu\|memory\|io`; emitted only when reported |
 
 Resource attributes include `service.name`, `service.version` (the agent version), `host.name`, and configured `resourceAttributes`. Export runs in its own daemon task at the configured interval. Settings changes are picked up on the exporter's next 5-second tick; an export already in flight (bounded by its 10-second timeout) can delay that tick, so a change is applied within 10 seconds at worst and within 5 seconds when the receiver answers promptly. The header variable is read whenever the exporter pipeline is built: toggle export off and on or change the `otel` settings block to apply a rotated value; restarting the daemon also re-reads it. Changing only the environment of an already-running, unchanged pipeline does not. Failed exports increment `otel.failures` in `/api/history/coverage` and log at most one warning per minute; collection and persistence continue unaffected. The Bun runtime has no OTel exporter.
 

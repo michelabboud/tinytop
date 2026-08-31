@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,8 @@ pub struct OtelSettings {
     pub headers_env_var: String,
     pub service_name: String,
     #[serde(default)]
+    pub disabled_metrics: Vec<String>,
+    #[serde(default)]
     pub resource_attributes: BTreeMap<String, String>,
 }
 
@@ -39,6 +41,7 @@ impl Default for OtelSettings {
             interval_sec: 60,
             headers_env_var: "TINYTOP_OTEL_HEADERS".to_string(),
             service_name: "tinytop".to_string(),
+            disabled_metrics: Vec::new(),
             resource_attributes: BTreeMap::new(),
         }
     }
@@ -83,6 +86,25 @@ impl OtelSettings {
             return Err(StoreError::Validation(
                 "otel.serviceName must be 1–128 characters without control characters".to_string(),
             ));
+        }
+        if self.disabled_metrics.len() > 64 {
+            return Err(StoreError::Validation(
+                "otel.disabledMetrics accepts at most 64 entries".to_string(),
+            ));
+        }
+        let mut disabled_metrics = HashSet::with_capacity(self.disabled_metrics.len());
+        for name in &self.disabled_metrics {
+            if !valid_disabled_metric_name(name) {
+                return Err(StoreError::Validation(
+                    "otel.disabledMetrics entries must match ^[a-z][a-z0-9._]*$ and be at most 128 characters"
+                        .to_string(),
+                ));
+            }
+            if !disabled_metrics.insert(name.as_str()) {
+                return Err(StoreError::Validation(format!(
+                    "otel.disabledMetrics must not contain duplicate entry {name:?}"
+                )));
+            }
         }
         if self.resource_attributes.len() > 32
             || self.resource_attributes.iter().any(|(key, value)| {
@@ -164,6 +186,19 @@ fn valid_resource_attribute_key(key: &str) -> bool {
         })
 }
 
+fn valid_disabled_metric_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase())
+        && name.chars().count() <= 128
+        && characters.all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '.' | '_')
+        })
+}
+
 fn secret_shaped_resource_attribute_key(key: &str) -> bool {
     key.split('.').any(|segment| {
         SECRET_SHAPED_KEY_WORDS.contains(&segment)
@@ -201,8 +236,88 @@ mod tests {
                 interval_sec: 60,
                 headers_env_var: "TINYTOP_OTEL_HEADERS".to_string(),
                 service_name: "tinytop".to_string(),
+                disabled_metrics: Vec::new(),
                 resource_attributes: BTreeMap::new(),
             }
+        );
+    }
+
+    #[test]
+    fn default_settings_disable_no_metrics() {
+        // Break caught: a fresh or legacy document opts out of metrics by default.
+        assert!(OtelSettings::default().disabled_metrics.is_empty());
+    }
+
+    #[test]
+    fn disabled_metrics_rejects_more_than_64_entries() {
+        // Break caught: an unbounded disabled set makes the settings document an
+        // unnecessary storage and request-size sink.
+        let settings = OtelSettings {
+            disabled_metrics: (0..65)
+                .map(|index| format!("system.metric.{index}"))
+                .collect(),
+            ..OtelSettings::default()
+        };
+
+        assert_eq!(
+            validation_message(&settings),
+            "otel.disabledMetrics accepts at most 64 entries"
+        );
+    }
+
+    #[test]
+    fn disabled_metrics_rejects_entries_outside_the_name_shape() {
+        // Break caught: malformed names enter persisted fleet configuration.
+        let message = "otel.disabledMetrics entries must match ^[a-z][a-z0-9._]*$ and be at most 128 characters";
+        for name in [
+            String::new(),
+            "System.cpu.utilization".to_string(),
+            "system.cpu-utilization".to_string(),
+            format!("a{}", "b".repeat(128)),
+        ] {
+            let settings = OtelSettings {
+                disabled_metrics: vec![name.clone()],
+                ..OtelSettings::default()
+            };
+            assert_eq!(validation_message(&settings), message, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn disabled_metrics_rejects_duplicates_and_names_the_repeated_value() {
+        // Break caught: duplicate state makes a set-shaped setting ambiguous.
+        let repeated = "system.cpu.utilization";
+        let settings = OtelSettings {
+            disabled_metrics: vec![repeated.to_string(), repeated.to_string()],
+            ..OtelSettings::default()
+        };
+
+        assert_eq!(
+            validation_message(&settings),
+            format!("otel.disabledMetrics must not contain duplicate entry {repeated:?}")
+        );
+    }
+
+    #[test]
+    fn unknown_metric_name_is_accepted_and_preserved() {
+        // Break caught: an older tinytop rejects or drops a newer release's choice.
+        let unknown = "system.future.metric";
+        let mut settings = DashboardSettings::default();
+        settings.otel.disabled_metrics = vec![unknown.to_string()];
+        settings
+            .validate()
+            .expect("a well-formed unknown name is valid");
+
+        let before = serde_json::to_vec(&settings).expect("settings should serialize");
+        let document = serde_json::from_slice(&before).expect("settings JSON should decode");
+        let round_tripped = DashboardSettings::from_document(document, None)
+            .expect("settings document should round-trip");
+        let after = serde_json::to_vec(&round_tripped).expect("settings should reserialize");
+
+        assert_eq!(round_tripped.otel.disabled_metrics, [unknown]);
+        assert_eq!(
+            after, before,
+            "the unknown metric must survive byte-identically"
         );
     }
 

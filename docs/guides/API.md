@@ -249,6 +249,16 @@ Response:
   "topProcessCount": 8,
   "redactionDefault": false,
   "thermal": { "enabled": false, "extraChips": [] },
+  "otel": {
+    "enabled": false,
+    "endpoint": "http://127.0.0.1:4318/v1/metrics",
+    "protocol": "http/protobuf",
+    "intervalSec": 60,
+    "headersEnvVar": "TINYTOP_OTEL_HEADERS",
+    "serviceName": "tinytop",
+    "disabledMetrics": [],
+    "resourceAttributes": {}
+  },
   "retentionLadder": {
     "l1": { "keepDays": 3 },
     "l2": { "keepDays": 30 },
@@ -281,10 +291,136 @@ Response:
 
 `topProcessCount` accepts `1`–`50` and becomes effective on the daemon's next collection tick.
 
+`otel.disabledMetrics` is a list of metric names that the Rust daemon does not record or export. It accepts at most 64 unique entries; each must be 1–128 characters matching `^[a-z][a-z0-9._]*$`. An unknown but well-formed name is accepted and preserved so configuration documents can round-trip between different TinyTop versions. An absent `disabledMetrics` key defaults to an empty list, so all metrics are exported.
+
 Each `thermal.extraChips` entry must match `^[a-z0-9_]{1,32}$`. The reserved
 names `amdgpu`, `i915`, and `nvme` are rejected because those temperatures have
 dedicated GPU or later disk-temperature surfaces; validation returns
 `thermal.extraChips must not name a chip already reported elsewhere: amdgpu, i915, nvme`.
+
+### GET /api/otel/metrics
+
+Returns the Rust daemon's metric registry in registry order. Each entry includes its current persisted `disabled` state. `unknown` contains disabled names that are well-formed but have no matching metric in this build; those names are inert and preserved. The route is read-only, accepts no query parameters, and is not served by the legacy Bun runtime.
+
+Example:
+
+```bash
+curl -fsS http://127.0.0.1:4274/api/otel/metrics
+```
+
+Default response:
+
+```json
+{
+  "metrics": [
+    {
+      "name": "system.cpu.utilization",
+      "unit": "1",
+      "family": "cpu",
+      "description": "CPU utilization as a fraction of capacity.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.memory.utilization",
+      "unit": "1",
+      "family": "memory",
+      "description": "Used memory as a fraction of total memory.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.memory.usage",
+      "unit": "By",
+      "family": "memory",
+      "description": "Used memory in bytes.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.memory.limit",
+      "unit": "By",
+      "family": "memory",
+      "description": "Total memory limit in bytes.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.paging.utilization",
+      "unit": "1",
+      "family": "swap",
+      "description": "Used swap as a fraction of total swap.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.cpu.load_average.1m",
+      "unit": "{thread}",
+      "family": "cpu",
+      "description": "One-minute system load average.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.cpu.load_average.5m",
+      "unit": "{thread}",
+      "family": "cpu",
+      "description": "Five-minute system load average.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.cpu.load_average.15m",
+      "unit": "{thread}",
+      "family": "cpu",
+      "description": "Fifteen-minute system load average.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.filesystem.utilization",
+      "unit": "1",
+      "family": "filesystem",
+      "description": "Used filesystem capacity as a fraction of total capacity.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "system.filesystem.usage",
+      "unit": "By",
+      "family": "filesystem",
+      "description": "Used and free filesystem capacity in bytes.",
+      "semanticConvention": true,
+      "disabled": false
+    },
+    {
+      "name": "tinytop.load.percent",
+      "unit": "%",
+      "family": "load",
+      "description": "One-minute load average as a percentage of CPU capacity.",
+      "semanticConvention": false,
+      "disabled": false
+    },
+    {
+      "name": "tinytop.pressure.some",
+      "unit": "%",
+      "family": "pressure",
+      "description": "Ten-second Linux PSI some-stall percentage by resource.",
+      "semanticConvention": false,
+      "disabled": false
+    },
+    {
+      "name": "tinytop.pressure.full",
+      "unit": "%",
+      "family": "pressure",
+      "description": "Ten-second Linux PSI full-stall percentage by resource.",
+      "semanticConvention": false,
+      "disabled": false
+    }
+  ],
+  "unknown": []
+}
+```
 
 ### PUT /api/settings
 
