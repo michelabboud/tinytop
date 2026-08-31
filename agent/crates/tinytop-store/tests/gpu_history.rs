@@ -145,6 +145,7 @@ fn snapshot(
             gpu_percent,
         }],
         gpus,
+        sensors: Vec::new(),
     }
 }
 

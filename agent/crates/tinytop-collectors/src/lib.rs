@@ -8,6 +8,11 @@ pub mod gpu;
 pub mod linux;
 #[cfg(all(feature = "macos-collector", target_os = "macos"))]
 pub mod macos;
+#[cfg_attr(
+    not(all(feature = "linux-collector", target_os = "linux")),
+    allow(dead_code)
+)]
+pub(crate) mod thermal;
 #[cfg(all(feature = "windows-collector", target_os = "windows"))]
 pub mod windows;
 
@@ -25,6 +30,8 @@ pub type CollectorResult<T> = Result<T, CollectorError>;
 pub struct CollectorConfig {
     pub top_process_count: usize,
     pub filesystems_interval: Duration,
+    pub thermal_enabled: bool,
+    pub thermal_extra_chips: Vec<String>,
 }
 
 impl Default for CollectorConfig {
@@ -32,6 +39,8 @@ impl Default for CollectorConfig {
         Self {
             top_process_count: 8,
             filesystems_interval: Duration::from_secs(60),
+            thermal_enabled: false,
+            thermal_extra_chips: Vec::new(),
         }
     }
 }

@@ -12,7 +12,7 @@ use tinytop_types::SystemSnapshot;
 
 use crate::{StoreError, disk};
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Historical v0→v1 JSON retention window.
 ///
@@ -567,6 +567,27 @@ CREATE TABLE IF NOT EXISTS gpu_samples (
 ) WITHOUT ROWID;
 "#;
 
+const CREATE_SENSOR_TABLES_V5_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS sensor_dim (
+  sensor_id INTEGER PRIMARY KEY,
+  stable_id TEXT NOT NULL UNIQUE,
+  chip TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  max_c REAL,
+  crit_c REAL,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sensor_samples (
+  captured_at_ms INTEGER NOT NULL,
+  sensor_id INTEGER NOT NULL REFERENCES sensor_dim(sensor_id),
+  value REAL NOT NULL,
+  PRIMARY KEY (captured_at_ms, sensor_id)
+) WITHOUT ROWID;
+"#;
+
 const CREATE_SCHEMA_V4_TAIL_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS app_events (
   event_id INTEGER PRIMARY KEY,
@@ -591,6 +612,33 @@ pub const CREATE_SCHEMA_V4_SQL: [&str; 7] = [
     CREATE_PROCESS_SAMPLES_V4_SQL,
     CREATE_GPU_TABLES_V4_SQL,
     CREATE_SCHEMA_V4_TAIL_SQL,
+];
+
+const CREATE_SCHEMA_V5_TAIL_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS app_events (
+  event_id INTEGER PRIMARY KEY,
+  occurred_at_ms INTEGER NOT NULL,
+  marker_type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
+  ON app_events (occurred_at_ms DESC, marker_type);
+
+PRAGMA user_version = 5;
+"#;
+
+#[doc(hidden)]
+pub const CREATE_SCHEMA_V5_SQL: [&str; 8] = [
+    CREATE_SCHEMA_V3_HEAD_SQL,
+    CREATE_SCHEMA_V2_HEAD_SQL,
+    CREATE_PROCESS_COMMANDS_V2_SQL,
+    CREATE_PROCESS_SAMPLES_FAST_V4_SQL,
+    CREATE_PROCESS_SAMPLES_V4_SQL,
+    CREATE_GPU_TABLES_V4_SQL,
+    CREATE_SENSOR_TABLES_V5_SQL,
+    CREATE_SCHEMA_V5_TAIL_SQL,
 ];
 
 const CREATE_PROCESS_SAMPLES_FAST_V4_TEMP_SQL: &str = r#"
@@ -851,16 +899,22 @@ pub(crate) async fn ensure_schema(
 
     match user_version {
         SCHEMA_VERSION => {
-            apply_schema_v4(pool).await?;
+            apply_schema_v5(pool).await?;
+            complete_pending_migration(pool, db_path).await
+        }
+        4 => {
+            migrate_v4_to_v5(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         3 => {
             migrate_v3_to_v4(pool, now_ms).await?;
+            migrate_v4_to_v5(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         2 => {
             migrate_v2_to_v3(pool, now_ms).await?;
             migrate_v3_to_v4(pool, now_ms).await?;
+            migrate_v4_to_v5(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         1 => {
@@ -868,12 +922,13 @@ pub(crate) async fn ensure_schema(
             migrate_v1_to_v2(pool, db_path, now_ms).await?;
             migrate_v2_to_v3(pool, now_ms).await?;
             migrate_v3_to_v4(pool, now_ms).await?;
+            migrate_v4_to_v5(pool, now_ms).await?;
             Ok(report)
         }
         0 => {
             let metric_samples_exists = table_exists(pool, "metric_samples").await?;
             if !metric_samples_exists {
-                apply_schema_v4(pool).await?;
+                apply_schema_v5(pool).await?;
                 return Ok(None);
             }
 
@@ -885,6 +940,7 @@ pub(crate) async fn ensure_schema(
                 migrate_v1_to_v2(pool, db_path, now_ms).await?;
                 migrate_v2_to_v3(pool, now_ms).await?;
                 migrate_v3_to_v4(pool, now_ms).await?;
+                migrate_v4_to_v5(pool, now_ms).await?;
                 return Ok(None);
             }
 
@@ -893,6 +949,7 @@ pub(crate) async fn ensure_schema(
             migrate_v1_to_v2(pool, db_path, now_ms).await?;
             migrate_v2_to_v3(pool, now_ms).await?;
             migrate_v3_to_v4(pool, now_ms).await?;
+            migrate_v4_to_v5(pool, now_ms).await?;
             Ok(Some(report))
         }
         other => Err(StoreError::Migration {
@@ -907,8 +964,42 @@ pub(crate) async fn ensure_schema(
     }
 }
 
-async fn apply_schema_v4(pool: &SqlitePool) -> Result<(), StoreError> {
-    apply_schema_groups(pool, &CREATE_SCHEMA_V4_SQL).await
+async fn apply_schema_v5(pool: &SqlitePool) -> Result<(), StoreError> {
+    apply_schema_groups(pool, &CREATE_SCHEMA_V5_SQL).await
+}
+
+async fn migrate_v4_to_v5(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {
+    let started = Instant::now();
+    // ADR 0026 decision 1 is purely additive. No table is rebuilt, so the
+    // row-count, pre-image, and in-flight guards required for rebuilds do not apply.
+    let mut transaction = pool.begin().await?;
+    for statement_group in [CREATE_SENSOR_TABLES_V5_SQL, CREATE_SCHEMA_V5_TAIL_SQL] {
+        sqlx::raw_sql(statement_group)
+            .execute(&mut *transaction)
+            .await?;
+    }
+    let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    let details_json = serde_json::to_string(&serde_json::json!({
+        "fromVersion": 4,
+        "toVersion": 5,
+        "durationMs": duration_ms,
+    }))?;
+    sqlx::query(
+        r#"
+        INSERT INTO app_events (occurred_at_ms, marker_type, label, details_json)
+        VALUES (?, 'schemaMigrated', 'SQLite schema migrated from v4 to v5', ?)
+        "#,
+    )
+    .bind(now_ms)
+    .bind(details_json)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+
+    eprintln!(
+        "history migration info: schema v4 → v5 in {duration_ms} ms (sensor_dim and sensor_samples created)"
+    );
+    Ok(())
 }
 
 async fn apply_schema_groups(
@@ -2041,5 +2132,171 @@ mod tests {
 
         assert!(reason.contains("4096"), "missing database bytes: {reason}");
         assert!(reason.contains("4915"), "missing required bytes: {reason}");
+    }
+
+    type TableInfoRow = (i64, String, String, i64, Option<String>, i64);
+
+    async fn sensor_table_info(pool: &SqlitePool, table: &str) -> Vec<TableInfoRow> {
+        let query = match table {
+            "sensor_dim" => "PRAGMA table_info(sensor_dim)",
+            "sensor_samples" => "PRAGMA table_info(sensor_samples)",
+            other => panic!("unsupported sensor table {other}"),
+        };
+        use sqlx::Row as _;
+        sqlx::query(query)
+            .fetch_all(pool)
+            .await
+            .expect("sensor table_info")
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get("cid"),
+                    row.get("name"),
+                    row.get("type"),
+                    row.get("notnull"),
+                    row.get("dflt_value"),
+                    row.get("pk"),
+                )
+            })
+            .collect()
+    }
+
+    async fn memory_pool() -> SqlitePool {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory fixture should connect")
+    }
+
+    #[tokio::test]
+    async fn fresh_v5_and_migrated_v4_sensor_table_shapes_are_identical() {
+        // Break caught: fresh-v5 and v4→v5 DDL drift in order, nullability, or keys.
+        let fresh = memory_pool().await;
+        apply_schema_groups(&fresh, &CREATE_SCHEMA_V5_SQL)
+            .await
+            .expect("fresh v5 schema");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+                .fetch_one(&fresh)
+                .await
+                .expect("fresh version"),
+            5
+        );
+
+        let migrated = memory_pool().await;
+        apply_schema_groups(&migrated, &CREATE_SCHEMA_V4_SQL)
+            .await
+            .expect("v4 schema");
+        migrate_v4_to_v5(&migrated, 1_000)
+            .await
+            .expect("v4 to v5 migration");
+
+        for table in ["sensor_dim", "sensor_samples"] {
+            assert_eq!(
+                sensor_table_info(&migrated, table).await,
+                sensor_table_info(&fresh, table).await,
+                "table_info differs for {table}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn v4_to_v5_keeps_all_existing_row_counts() {
+        // Break caught: the additive migration rebuilds or deletes an existing history table.
+        let pool = memory_pool().await;
+        apply_schema_groups(&pool, &CREATE_SCHEMA_V4_SQL)
+            .await
+            .expect("v4 schema");
+        sqlx::query(
+            r#"INSERT INTO metric_samples (
+              captured_at_ms, snapshot_timestamp, hostname, runtime_kind,
+              cpu_usage_percent, cpu_cores, memory_used_percent, memory_used_bytes,
+              memory_total_bytes, swap_used_percent, swap_used_bytes, swap_total_bytes,
+              load_one, load_five, load_fifteen, load_percent
+            ) VALUES (1, 'fixture', 'host', 'linux', 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)"#,
+        )
+        .execute(&pool)
+        .await
+        .expect("metric row");
+        sqlx::query("INSERT INTO process_commands (command_id, command) VALUES (1, 'fixture')")
+            .execute(&pool)
+            .await
+            .expect("command row");
+        sqlx::query(
+            "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes) VALUES (1, 0, 1, 1, 1, 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("fast process row");
+        sqlx::query(
+            "INSERT INTO process_samples (captured_at_ms, rank, pid, cpu_percent, memory_percent, rss_bytes, command_id) VALUES (1, 0, 1, 1, 1, 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("minute process row");
+        sqlx::query(
+            "INSERT INTO gpu_adapters (adapter_id, stable_id, vendor, name, driver, first_seen_ms, last_seen_ms) VALUES (1, 'pci-test', 'test', 'test', 'test', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("GPU adapter");
+        sqlx::query(
+            "INSERT INTO gpu_samples (captured_at_ms, adapter_id, busy_percent) VALUES (1, 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("GPU sample");
+
+        migrate_v4_to_v5(&pool, 2_000)
+            .await
+            .expect("v4 to v5 migration");
+
+        for table in [
+            "metric_samples",
+            "gpu_samples",
+            "process_samples_fast",
+            "process_samples",
+        ] {
+            let count: i64 =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("preserved row count");
+            assert_eq!(count, 1, "row count changed for {table}");
+        }
+    }
+
+    #[tokio::test]
+    async fn v1_schema_chains_to_v5_and_v6_is_refused() {
+        // Break caught: the dispatcher stops at an intermediate version or accepts future DDL.
+        let pool = memory_pool().await;
+        sqlx::raw_sql(CREATE_SCHEMA_V1_SQL)
+            .execute(&pool)
+            .await
+            .expect("v1 schema");
+        ensure_schema(&pool, Path::new("migration-v1-fixture.sqlite"), 1_000)
+            .await
+            .expect("v1 migration chain");
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("PRAGMA user_version")
+                .fetch_one(&pool)
+                .await
+                .expect("migrated version"),
+            5
+        );
+
+        sqlx::query("PRAGMA user_version = 6")
+            .execute(&pool)
+            .await
+            .expect("future version fixture");
+        let error = ensure_schema(&pool, Path::new("migration-v6-fixture.sqlite"), 2_000)
+            .await
+            .expect_err("v6 must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported SQLite schema version 6")
+        );
     }
 }

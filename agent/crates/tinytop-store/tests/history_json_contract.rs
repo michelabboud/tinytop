@@ -111,5 +111,6 @@ fn minimal_snapshot() -> SystemSnapshot {
         filesystems: vec![],
         processes: vec![],
         gpus: Vec::new(),
+        sensors: Vec::new(),
     }
 }
