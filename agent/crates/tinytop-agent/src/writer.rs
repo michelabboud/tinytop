@@ -308,7 +308,7 @@ pub async fn serve(options: ServeOptions) -> Result<(), ServeError> {
         latest_snapshot: Arc::new(latest_snapshot),
     };
 
-    configure_collector_if_changed(&state, &settings).await;
+    configure_collector_if_changed(&state).await;
     collect_and_store(&state).await?;
     state
         .store
@@ -482,6 +482,7 @@ async fn import_settings(
         .store
         .record_event(now_ms()?, HistoryMarkerType::SettingsChange, label, details)
         .await?;
+    configure_collector_if_changed(&state).await;
     Ok(no_store(Json(ApplyImportResponse {
         applied: true,
         outcome,
@@ -504,6 +505,7 @@ async fn update_settings(
             json!({ "changed": changed }),
         )
         .await?;
+    configure_collector_if_changed(&state).await;
     Ok(no_store(Json(write.saved)).into_response())
 }
 
@@ -766,7 +768,7 @@ pub(crate) async fn collect_and_store(state: &AppState) -> Result<HistorySample,
         .map_err(ServeError::from)?;
     let settings = state.store.get_settings().await?;
     maintain_history(state, &settings).await?;
-    configure_collector_if_changed(state, &settings).await;
+    configure_collector_if_changed(state).await;
     Ok(sample)
 }
 
@@ -789,11 +791,20 @@ pub(crate) fn collector_config_from(settings: &DashboardSettings) -> CollectorCo
     }
 }
 
-async fn configure_collector_if_changed(state: &AppState, settings: &DashboardSettings) {
-    let desired = collector_config_from(settings);
+async fn configure_collector_if_changed(state: &AppState) {
     // Lock order is collector_config -> collector. Collection takes only the
     // collector lock, so no reverse acquisition path exists.
+    // The settings read stays inside this guard so racing callers converge on
+    // the newest persisted row (ADR 0031).
     let mut applied = state.collector_config.lock().await;
+    let settings = match state.store.get_settings().await {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("tinytop: failed to read settings while configuring collector: {error}");
+            return;
+        }
+    };
+    let desired = collector_config_from(&settings);
     if applied.as_ref() == Some(&desired) {
         return;
     }
@@ -2562,13 +2573,13 @@ pub(crate) mod tests {
         let (_fixture, state) = test_state("collector-first-config").await;
         let mut settings = state.store.get_settings().await.expect("default settings");
         settings.top_process_count = 3;
-        let settings = state
+        let _settings = state
             .store
             .put_settings(&settings)
             .await
             .expect("settings should persist");
 
-        configure_collector_if_changed(&state, &settings).await;
+        configure_collector_if_changed(&state).await;
         let sample = collect_and_store(&state)
             .await
             .expect("configured collection should succeed");
@@ -2580,7 +2591,7 @@ pub(crate) mod tests {
     async fn collect_and_store_reconfigures_only_when_the_settings_changed() {
         let (_fixture, state) = test_state("collector-config-change").await;
         let settings = state.store.get_settings().await.expect("default settings");
-        configure_collector_if_changed(&state, &settings).await;
+        configure_collector_if_changed(&state).await;
         assert_eq!(state.collector.lock().await.configure_calls(), 1);
 
         collect_and_store(&state).await.expect("first tick");
@@ -2645,6 +2656,106 @@ pub(crate) mod tests {
             .await
             .expect("unchanged thermal tick");
         assert_eq!(state.collector.lock().await.configure_calls(), 4);
+    }
+
+    #[tokio::test]
+    async fn saving_settings_through_the_router_configures_the_collector_immediately() {
+        // Break caught: PUT persists settings but leaves the collector on its old
+        // configuration until a collection tick finishes.
+        let (_fixture, state) = test_state("settings-put-configures-collector").await;
+        let mut settings =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        settings["topProcessCount"] = json!(3);
+
+        let (status, body) = put_json(router(state.clone()), "/api/settings", settings).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let applied = state
+            .collector_config
+            .lock()
+            .await
+            .clone()
+            .expect("the save should configure the collector before responding");
+        assert_eq!(applied.top_process_count, 3);
+        assert_eq!(state.collector.lock().await.configure_calls(), 1);
+
+        collect_and_store(&state)
+            .await
+            .expect("the following tick should succeed");
+        assert_eq!(state.collector.lock().await.configure_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn importing_settings_configures_the_collector_immediately() {
+        // Break caught: import either skips immediate configuration or lets a dry
+        // run mutate the live collector.
+        let (_fixture, state) = test_state("settings-import-configures-collector").await;
+        let mut candidate =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        candidate["topProcessCount"] = json!(3);
+        let document = json!({ "tinytopConfigVersion": 1, "settings": candidate });
+
+        let (dry_run_status, dry_run_body) = post_json(
+            router(state.clone()),
+            "/api/settings/import?dryRun=true",
+            document.clone(),
+        )
+        .await;
+        assert_eq!(dry_run_status, StatusCode::OK, "{dry_run_body}");
+        assert!(state.collector_config.lock().await.is_none());
+        assert_eq!(state.collector.lock().await.configure_calls(), 0);
+
+        let (status, body) =
+            post_json(router(state.clone()), "/api/settings/import", document).await;
+
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let applied = state
+            .collector_config
+            .lock()
+            .await
+            .clone()
+            .expect("the import should configure the collector before responding");
+        assert_eq!(applied.top_process_count, 3);
+        assert_eq!(state.collector.lock().await.configure_calls(), 1);
+
+        collect_and_store(&state)
+            .await
+            .expect("the following tick should succeed");
+        assert_eq!(state.collector.lock().await.configure_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_save_racing_a_tick_leaves_the_collector_matching_the_stored_settings() {
+        // Break caught: a tick applies settings it read before a concurrent PUT and
+        // leaves the collector disagreeing with the newest persisted row.
+        let (_fixture, state) = test_state("settings-save-races-tick").await;
+        let mut settings =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        settings["topProcessCount"] = json!(3);
+
+        let (tick, (status, body)) = tokio::join!(
+            collect_and_store(&state),
+            put_json(router(state.clone()), "/api/settings", settings)
+        );
+        tick.expect("the racing tick should succeed");
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let stored = state
+            .store
+            .get_settings()
+            .await
+            .expect("stored settings should read");
+        let expected = collector_config_from(&stored);
+        let applied = state
+            .collector_config
+            .lock()
+            .await
+            .clone()
+            .expect("one racing caller should configure the collector");
+        assert_eq!(applied, expected);
     }
 
     #[tokio::test]

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Settings saved through both `PUT /api/settings` and `POST /api/settings/import` now configure the collector before the response returns, so the change is effective from the next collection; import dry runs remain non-mutating.
+- The collector configure path now reads the newest persisted settings while holding its configuration guard, closing a race in which a tick could reapply an older row after a concurrent settings write; the idempotence guard prevents the following tick from configuring the same values again.
+
 ## 0.7.3 - 2026-09-01
 
 - **The dashboard's thermal validator now mirrors the backend's rule *order*, not just its wording** (D3). The backend is the only validator that can refuse a write, so the client must fire the same rule with the same words; otherwise the message an operator sees depends on which validator ran first. The inventory recorded this as three diverging strings, but re-reading both sides found more: the backend loops **per chip in array order**, returning on the first offending *element* (pattern → reserved → duplicate), while the client scanned the whole array **per rule**. For `["cpu_a","cpu_a","amdgpu"]` the server answered *duplicate* and the client answered *reserved* — so aligning only the strings would have looked fixed while a different rule still fired. The client now walks the array once, per element, in the backend's order, and the three diverging messages match `thermal_settings.rs` verbatim; the pattern message already agreed and is untouched. The duplicate message stops being a constant and **names the offending chip**, as the backend's `format!` does, so an operator learns which entry repeats.
