@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Settings switches no longer carry two competing implementations.** All 13 switches matched both ADR 0028's `::after` knob and a legacy `::before` knob, so the different pseudo-elements rendered two knobs. The legacy block is removed; one rule now combines the legacy geometry with ADR 0028's `--cyan` / `--surface` colour pair, and the on-state hue follows the active theme accent.
+
 ## 0.8.1 - 2026-09-01
 
 - **The D1 regression test no longer depends on how many processes the host exposes.** It persisted `topProcessCount = 3` and asserted the inserted count was `<= 3`, comparing against a bare default collect *only* when the host showed more than three processes — so on this workstation (default collect returns 8) the contrast fired and the test was meaningful, while inside a containment lane with a tiny process table the comparison was skipped, the surviving assertion was `3 <= 3`, and the **unfixed code would have passed too**. It now collects twice into separate fixture databases with `topProcessCount` 1 and 2 and asserts exact counts and strict ordering, so it fails on any host with at least two processes; "fewer than two visible" is a hard failure rather than a warning. Found by the blind review of lane S1, which was dispatched *after* 0.8.0 because that lane had been the only one to ship unreviewed.
