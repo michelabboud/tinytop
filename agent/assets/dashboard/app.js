@@ -393,6 +393,11 @@ const elements = {
   infoTiersUnavailable: document.querySelector("#info-tiers-unavailable"),
   infoServicesUnavailable: document.querySelector("#info-services-unavailable"),
   infoEventsEmpty: document.querySelector("#info-events-empty"),
+  infoDaemonPid: document.querySelector("#info-daemon-pid"),
+  infoDaemonBind: document.querySelector("#info-daemon-bind"),
+  infoDaemonRuntime: document.querySelector("#info-daemon-runtime"),
+  infoDaemonExecutable: document.querySelector("#info-daemon-executable"),
+  infoDaemonDatabase: document.querySelector("#info-daemon-database"),
   historyArchiveStatus: document.querySelector("#history-archive-status"),
   historyOtelStatus: document.querySelector("#history-otel-status"),
   historyThermalStatus: document.querySelector("#thermal-status"),
@@ -2821,7 +2826,26 @@ function renderVersion(metadata) {
       ? `Dashboard assets: ${metadata.dashboard}; SQLite: ${sqlite}`
       : metadata.dashboard ? `Dashboard assets: ${metadata.dashboard}` : label;
   }
+  renderDaemonProcess(metadata);
   renderRuntimeOriginNotice(metadata, state.lastSnapshot);
+}
+
+// Which process is answering this page. Every value comes from /api/version,
+// which already carried all of them except the pid. Rendered as text rather
+// than left to a tooltip because "am I looking at the daemon I just restarted?"
+// is a question you ask while something is already confusing. ADR 0035.
+function renderDaemonProcess(metadata) {
+  const daemon = metadata?.daemon;
+  const bind = daemon?.bind;
+  const runtime = [metadata?.runtime, daemon?.os, daemon?.arch].filter(Boolean).join(" · ");
+  setText(elements.infoDaemonPid, daemon?.pid == null ? "not reported" : String(daemon.pid));
+  setText(
+    elements.infoDaemonBind,
+    bind?.host && bind?.port != null ? `${bind.host}:${bind.port}` : "not reported",
+  );
+  setText(elements.infoDaemonRuntime, runtime.length > 0 ? runtime : "not reported");
+  setText(elements.infoDaemonExecutable, daemon?.install?.executable ?? "not reported");
+  setText(elements.infoDaemonDatabase, daemon?.storage?.sqlitePath ?? "not reported");
 }
 
 async function fetchVersion() {
@@ -2831,6 +2855,9 @@ async function fetchVersion() {
     renderVersion(await response.json());
   } catch {
     setText(elements.daemonVersion, "Version unavailable");
+    // Say so in Info too, rather than leaving the placeholder dashes there
+    // looking like values the daemon reported.
+    renderDaemonProcess(null);
   }
 }
 

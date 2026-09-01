@@ -174,3 +174,74 @@ describe("Info groups say so when there is nothing to show", () => {
     expect(run([false, false, false])).toBe(true);
   });
 });
+
+describe("Info names the process answering the page", () => {
+  function renderer() {
+    const node = () => ({ textContent: "-" });
+    const elements = {
+      infoDaemonPid: node(),
+      infoDaemonBind: node(),
+      infoDaemonRuntime: node(),
+      infoDaemonExecutable: node(),
+      infoDaemonDatabase: node(),
+    };
+    const render = new Function(
+      "elements",
+      "setText",
+      `${extractFunction(app, "renderDaemonProcess")}; return renderDaemonProcess;`,
+    )(elements, (n: { textContent: string } | undefined, v: string) => {
+      if (n) n.textContent = v;
+    }) as (metadata: unknown) => void;
+    return { render, elements };
+  }
+
+  test("the pid and the bound address are shown as reported", () => {
+    const { render, elements } = renderer();
+    render({
+      runtime: "rust",
+      daemon: {
+        os: "linux",
+        arch: "x86_64",
+        pid: 4242,
+        bind: { host: "127.0.0.1", port: 4274 },
+        install: { executable: "/usr/local/bin/tinytop-agent" },
+        storage: { sqlitePath: "/home/m/.local/share/tinytop/history.sqlite" },
+      },
+    });
+    expect(elements.infoDaemonPid.textContent).toBe("4242");
+    expect(elements.infoDaemonBind.textContent).toBe("127.0.0.1:4274");
+    expect(elements.infoDaemonRuntime.textContent).toBe("rust · linux · x86_64");
+    expect(elements.infoDaemonExecutable.textContent).toBe("/usr/local/bin/tinytop-agent");
+    expect(elements.infoDaemonDatabase.textContent).toBe("/home/m/.local/share/tinytop/history.sqlite");
+  });
+
+  test("port 0 and pid 0 are still VALUES, not missing fields", () => {
+    // `?? "not reported"` would have been wrong here: a falsy number is a number.
+    const { render, elements } = renderer();
+    render({ daemon: { pid: 0, bind: { host: "0.0.0.0", port: 0 } } });
+    expect(elements.infoDaemonPid.textContent).toBe("0");
+    expect(elements.infoDaemonBind.textContent).toBe("0.0.0.0:0");
+  });
+
+  test("an older daemon without a pid says so instead of printing a dash", () => {
+    const { render, elements } = renderer();
+    render({ runtime: "bun", daemon: { os: "linux", arch: "x86_64", bind: { host: "127.0.0.1", port: 4274 } } });
+    expect(elements.infoDaemonPid.textContent).toBe("not reported");
+    expect(elements.infoDaemonBind.textContent).toBe("127.0.0.1:4274");
+    expect(elements.infoDaemonExecutable.textContent).toBe("not reported");
+  });
+
+  test("a failed version fetch reports every field as unavailable", () => {
+    const { render, elements } = renderer();
+    render(null);
+    for (const key of Object.keys(elements) as Array<keyof typeof elements>) {
+      expect(elements[key].textContent).toBe("not reported");
+    }
+  });
+
+  test("the daemon exposes its pid, and the fixture does not fake it away", () => {
+    const writer = readFileSync("agent/crates/tinytop-agent/src/writer.rs", "utf8");
+    expect(writer).toContain("pid: std::process::id(),");
+    expect(writer).toMatch(/struct DaemonMetadata \{[\s\S]*?pid: u32,/u);
+  });
+});

@@ -5,7 +5,7 @@ INSTALL_BUN_COMMAND='curl -fsSL https://bun.com/install | bash'
 INSTALL_RUST_COMMAND='curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh'
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-TINYTOP_FALLBACK_VERSION="0.11.0"
+TINYTOP_FALLBACK_VERSION="0.12.0"
 if [[ -f "$ROOT_DIR/VERSION" ]]; then
   TINYTOP_VERSION="$(<"$ROOT_DIR/VERSION")"
   TINYTOP_VERSION="${TINYTOP_VERSION#"${TINYTOP_VERSION%%[![:space:]]*}"}"

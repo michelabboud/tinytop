@@ -262,6 +262,11 @@ struct HealthResponse {
 struct DaemonMetadata {
     os: String,
     arch: String,
+    /// The daemon's own process id, so the dashboard can say WHICH process is
+    /// answering it. `bind` already identifies the port; together they let a
+    /// reader tie the page in front of them to a process on the machine
+    /// without guessing from a process list. ADR 0035.
+    pid: u32,
     install: InstallMetadata,
     bind: BindMetadata,
     storage: StorageMetadata,
@@ -1413,6 +1418,7 @@ fn daemon_metadata(options: &ServeOptions) -> DaemonMetadata {
     DaemonMetadata {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
+        pid: std::process::id(),
         install: InstallMetadata {
             executable: path_or_unavailable(std::env::current_exe()),
             working_directory: path_or_unavailable(std::env::current_dir()),
@@ -1667,6 +1673,7 @@ pub(crate) mod tests {
             daemon: DaemonMetadata {
                 os: "test".to_string(),
                 arch: "test".to_string(),
+                pid: std::process::id(),
                 install: InstallMetadata {
                     executable: "test".to_string(),
                     working_directory: fixture.directory.display().to_string(),

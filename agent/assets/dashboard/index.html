@@ -862,7 +862,18 @@
 
               <div class="settings-subtab-panel" id="settings-subpanel-info-services" role="tabpanel" aria-labelledby="settings-subtab-info-services" data-settings-subpanel="services" data-subtab-parent="info" hidden>
                 <fieldset class="settings-group info-group">
-                  <legend class="settings-legend">Services<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-info-services" aria-label="About service status">?</button></legend>
+                  <legend class="settings-legend">Daemon process<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-info-daemon" aria-label="About the daemon process">?</button></legend>
+                  <p class="settings-help-text" id="help-info-daemon" hidden>Which process is answering this page. The pid and the address together let you tie what you are looking at to a process on the machine — useful when more than one daemon is running, or when a restart may have left the page talking to the old one.</p>
+                  <dl class="info-facts">
+                    <div><dt>PID</dt><dd id="info-daemon-pid">-</dd></div>
+                    <div><dt>Listening on</dt><dd id="info-daemon-bind">-</dd></div>
+                    <div><dt>Runtime</dt><dd id="info-daemon-runtime">-</dd></div>
+                    <div class="info-facts-wide"><dt>Executable</dt><dd id="info-daemon-executable">-</dd></div>
+                    <div class="info-facts-wide"><dt>Database</dt><dd id="info-daemon-database">-</dd></div>
+                  </dl>
+                </fieldset>
+                <fieldset class="settings-group info-group">
+                  <legend class="settings-legend">Optional services<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-info-services" aria-label="About service status">?</button></legend>
                   <p class="settings-help-text" id="help-info-services" hidden>Whether the optional subsystems are actually running, as reported by the daemon rather than as configured. A service switched on under History or Advanced but reported off here has failed to start, and the reason is in the daemon's log.</p>
                   <div class="history-archive-status" id="history-archive-status" hidden></div>
                   <div class="history-archive-status" id="history-otel-status" role="status" hidden></div>

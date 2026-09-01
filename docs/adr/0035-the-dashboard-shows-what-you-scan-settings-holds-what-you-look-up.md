@@ -102,3 +102,26 @@ two-timestamp range wraps to a second line instead of being cut.
 - The settings dialog now carries both the *controls* for retention, archive, OTel and thermals and
   the *observed result* of each. That adjacency is useful, and it is the argument for Settings over
   a rail section: you set L3 to 90 days under History and check what it actually reaches under Info.
+
+## Addendum (2026-09-02, 0.12.0) — append-only; nothing above is rewritten
+
+Michel, on the new tab: *"in services add the PID of the rust daemon? right?"* and *"also the open
+port"*. Both belong here, and the Services group splits into **Daemon process** and **Optional
+services** — the daemon is not an optional subsystem, it is the thing answering the page.
+
+`/api/version` already carried the bound host and port, the executable, the working directory and the
+database path; **only the pid was missing**, and it is `std::process::id()` — one field on
+`DaemonMetadata`, no dependency. Shown alongside them because "which daemon am I actually looking
+at?" is a question asked while something is already confusing, and a tooltip is the wrong place for
+an answer you may want to copy.
+
+Two details worth keeping:
+
+- **A falsy number is still a number.** `pid ?? "not reported"` would have printed `0` correctly but
+  `port ?? …` would not have survived port `0` (which the test fixture uses). Both are compared
+  against `null`/`undefined` explicitly, and a test pins pid `0` and port `0` as *values*.
+- **Paths get their own full-width rows and wrap on any character.** Truncating the one value someone
+  came here to copy would defeat the tab, the same reasoning as decision 6.
+
+This adds a field to a public response shape. It is additive, and an older daemon that does not send
+it renders "not reported" rather than a dash, so the two are never confused.

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.0 - 2026-09-02
+
+Michel, on the new Info tab: *"in services add the PID of the rust daemon? right?"* and *"also the open port"*.
+
+- **Settings → Info → Services now names the process answering the page**: PID, the address it is listening on, the runtime, the executable and the database file. The Services group splits into **Daemon process** and **Optional services**, because the daemon is not an optional subsystem — it is the thing serving the dashboard.
+- **`/api/version` gains a `pid` field.** It already carried the bound host and port, the executable, the working directory and the database path; only the pid was missing, and it is `std::process::id()` — one field, no new dependency. The addition is additive, and a daemon that does not send it renders *"not reported"* rather than a dash, so a missing field is never mistaken for a placeholder.
+- Port `0` and pid `0` are treated as **values, not missing fields** — they are compared against `null`/`undefined` explicitly rather than by truthiness, and a test pins both.
+- The executable and database paths get full-width rows and wrap on any character. Truncating the one value someone came to Info to copy would defeat the tab.
+
 ## 0.11.0 - 2026-09-02
 
 Michel, pointing at the block under the history chart: *"the idea of dashboard is to see important information in a glance — why is this important as in first page dashboard? I would say, its place is in settings page, just add Info Tab in settings"*.

@@ -1,7 +1,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$TinyTopFallbackVersion = "0.11.0"
+$TinyTopFallbackVersion = "0.12.0"
 $TinyTopVersionPath = Join-Path $PSScriptRoot "VERSION"
 $TinyTopVersion = if (Test-Path -LiteralPath $TinyTopVersionPath) {
   (Get-Content -LiteralPath $TinyTopVersionPath -Raw).Trim()

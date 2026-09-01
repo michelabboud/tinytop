@@ -1768,6 +1768,53 @@ h1 {
   font-size: 0.8rem;
 }
 
+/* Label-over-value facts. Paths get their own full-width row and wrap on any
+   character, because an executable or database path is long, and truncating the
+   one value someone came here to copy would defeat the point. */
+.info-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: 0.45rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.info-facts > div {
+  display: grid;
+  gap: 0.15rem;
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 40%, transparent);
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+}
+
+.info-facts-wide {
+  grid-column: 1 / -1;
+}
+
+.info-facts dt {
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.info-facts dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.info-facts-wide dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
 .otel-settings-group textarea,
 .thermal-settings-group textarea {
   min-height: 8rem;
