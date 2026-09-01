@@ -289,7 +289,7 @@ Response:
 }
 ```
 
-`topProcessCount` accepts `1`–`50` and becomes effective on the daemon's next collection tick.
+`topProcessCount` accepts `1`–`50`. A change saved through the dashboard, `PUT /api/settings`, or `POST /api/settings/import` is effective from the next collection, which begins after the save returns; the tick's settings reload remains a backstop for changes made by other means.
 
 `otel.disabledMetrics` is a list of metric names that the Rust daemon does not record or export. It accepts at most 64 unique entries; each must be 1–128 characters matching `^[a-z][a-z0-9._]*$`. An unknown but well-formed name is accepted and preserved so configuration documents can round-trip between different TinyTop versions. An absent `disabledMetrics` key defaults to an empty list, so all metrics are exported.
 

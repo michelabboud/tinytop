@@ -293,10 +293,11 @@ you know it is not:
   independently reads its *own* DRM device's hwmon node to produce
   `gpus[].temperatureC`, and has done so since 0.5.4 — that read lives under
   `/sys/class/drm/card*/device/hwmon/` and is unaffected by this setting.
-- **A settings change takes effect one collection late.** The daemon collects
-  and then reloads settings, so disabling thermals permits at most one more scan
-  (≤ 1.5 s) and enabling them takes effect on the following tick. Changes to
-  `extraChips` settle at the next slow tick, when chip discovery re-runs.
+- **A settings change made through the dashboard or API is effective from the
+  next collection, which begins after the save returns.** It does not alter a
+  collection already in flight. The tick's own settings reload remains a
+  backstop for changes made by other means. Changes to `extraChips` settle at
+  the next slow collection, when chip discovery re-runs.
 - **The collector is configured from the settings stored in the database the
   rows are going into.** `tinytop-agent collect --json` without `--sqlite`
   stays hermetic: it uses collector defaults without reading, opening, or
@@ -354,7 +355,7 @@ Implementation notes:
 - Collection has three cadence classes: fast CPU, memory, swap, load, pressure, processes, and uptime refresh on every `pollIntervalMs` tick; slow filesystems refresh every `retentionLadder.detailIntervalSec`, are served from cache between checks, and carry `filesystemsCapturedAtMs`; static hostname, kernel, and distro identity is re-read on the slow tick.
 - Schema v5 retains the v4 process/GPU layout and adds interned `sensor_dim` identities plus raw `sensor_samples`; `tinytop-agent db stats --json` reports `userVersion`, GPU counts, and sensor counts.
 - `/api/snapshot` is answered from the daemon's latest in-memory snapshot. It returns `503 {"error":"no snapshot yet"}` only before the first collection, and the daemon collects once before binding its listener.
-- `topProcessCount` is effective from the next daemon collection tick (default `8`), and the previous hard-coded `10` is gone. `tinytop-agent collect --json` without `--sqlite` uses that collector default without opening a database; with `--sqlite <db>`, it loads the target database's stored count before collecting.
+- A `topProcessCount` change made through the dashboard or API is effective from the next collection, which begins after the save returns (default `8`); the tick's reload catches changes made by other means, and the previous hard-coded `10` is gone. `tinytop-agent collect --json` without `--sqlite` uses that collector default without opening a database; with `--sqlite <db>`, it loads the target database's stored count before collecting.
 - Linux is the default supported collector feature. Native macOS and Windows collectors are present as opt-in Rust feature-gated modules for identity, CPU, memory, load equivalent, disks, and processes; Linux remains the reference implementation until those hosts receive full live-machine verification.
 - Local Rust builds require Rust `1.95.0` or newer because the pinned `sysinfo` release uses that MSRV.
 
