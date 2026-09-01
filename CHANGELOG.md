@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Dashboard settings correctness (S3): thermal extra-chip validation now mirrors the authoritative Rust validator's count-first, per-chip pattern → reserved → duplicate order and exact messages, including the duplicated chip name. Thermal bars and severity ignore thresholds outside ADR 0026's `0 < t <= 200 °C` band, and readings with missing, empty, or non-string chip names remain visible together under `unknown`.
+
 ## 0.7.1 - 2026-09-01
 
 Three defects Michel found using 0.7.0, two of them in the dialog 0.7.0 had just shipped and one pre-existing (ADR 0029, ADR 0030).

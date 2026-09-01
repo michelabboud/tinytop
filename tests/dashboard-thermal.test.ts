@@ -142,6 +142,13 @@ describe("dashboard thermal formatting rules", () => {
     expect(rules.sensorSeverity(90, 91, 105)).toBe("normal");
   });
 
+  test("ignores thresholds above 200 degrees while preserving usable thresholds", () => {
+    expect(rules.sensorBarPercent(54, 65261850, undefined)).toBeNull();
+    expect(rules.sensorSeverity(65261850, 65261850, undefined)).toBe("normal");
+    expect(rules.sensorBarPercent(47.5, 95, undefined)).toBe(50);
+    expect(rules.sensorSeverity(95, 95, undefined)).toBe("warn");
+  });
+
   test("returns no chip groups for a missing or empty sensor list", () => {
     expect(rules.groupSensorsByChip(undefined)).toEqual([]);
     expect(rules.groupSensorsByChip([])).toEqual([]);
@@ -151,6 +158,17 @@ describe("dashboard thermal formatting rules", () => {
     expect(rules.groupSensorsByChip(sheepSensors)).toEqual([
       { chip: "coretemp", readings: sheepSensors },
     ]);
+  });
+
+  test("groups missing and empty chip names together under unknown", () => {
+    const readings = [
+      { kind: "temp", label: "Package", value: 54 },
+      { chip: "", kind: "temp", label: "Core 0", value: 51 },
+    ];
+    const groups = rules.groupSensorsByChip(readings);
+
+    expect(groups).toEqual([{ chip: "unknown", readings }]);
+    expect(groups.some(({ chip }) => chip === "undefined")).toBe(false);
   });
 
   test("parses comma and newline separated chip names without hiding duplicates", () => {
@@ -167,7 +185,7 @@ describe("dashboard thermal formatting rules", () => {
 describe("dashboard thermal settings rules", () => {
   test.each(["amdgpu", "i915", "nvme"])("rejects reserved non-CPU chip %s inline", (chip) => {
     expect(rules.validateThermalSettings({ enabled: true, extraChips: [chip] })).toEqual([
-      rules.THERMAL_RESERVED_CHIP_ERROR,
+      "thermal.extraChips must not name a chip already reported elsewhere: amdgpu, i915, nvme",
     ]);
   });
 
@@ -184,13 +202,22 @@ describe("dashboard thermal settings rules", () => {
   test("rejects a seventeenth thermal chip name", () => {
     const extraChips = Array.from({ length: 17 }, (_, index) => `chip_${index}`);
     expect(rules.validateThermalSettings({ enabled: true, extraChips })).toEqual([
-      "thermal.extraChips must hold at most 16 entries",
+      "thermal.extraChips accepts at most 16 chip names",
     ]);
   });
 
   test("rejects duplicate thermal chip names", () => {
     expect(rules.validateThermalSettings({ enabled: true, extraChips: ["coretemp", "coretemp"] })).toEqual([
-      "thermal.extraChips must not contain duplicates",
+      'thermal.extraChips contains duplicate chip name "coretemp"',
+    ]);
+  });
+
+  test("reports the first per-chip failure in backend order", () => {
+    expect(rules.validateThermalSettings({
+      enabled: true,
+      extraChips: ["cpu_a", "cpu_a", "amdgpu"],
+    })).toEqual([
+      'thermal.extraChips contains duplicate chip name "cpu_a"',
     ]);
   });
 
