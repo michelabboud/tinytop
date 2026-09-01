@@ -271,20 +271,13 @@
               <span id="history-start-label">-</span>
               <span id="history-end-label">Live</span>
             </div>
-            <div class="history-coverage" id="history-coverage">
-              <span>Oldest <strong id="history-oldest">-</strong></span>
-              <span>Newest <strong id="history-newest">-</strong></span>
-              <span>DB <strong id="history-db-size">-</strong></span>
-              <span>Budget <strong id="history-db-budget">-</strong></span>
-              <span>Budget used <strong id="history-budget-status">-</strong></span>
-              <span>Rollups <strong id="history-rollups">-</strong></span>
-            </div>
+            <!-- Only the ALERT stays on the dashboard. The same disk reading in its
+                 healthy form ("184 GiB free; minimum 5.0 GiB"), the coverage stats,
+                 the tier spans, the service states and the event log all moved to
+                 Settings > Info: a dashboard is for what you need at a glance, and
+                 none of that is. The banner below is rendered ONLY under real disk
+                 pressure, where it IS at-a-glance. ADR 0035. -->
             <div class="history-status-banner" id="history-disk-pressure" role="status" hidden></div>
-            <section class="history-ladder-coverage" id="history-ladder-coverage" aria-label="History ladder coverage" hidden></section>
-            <div class="history-archive-status" id="history-archive-status" hidden></div>
-            <div class="history-archive-status" id="history-otel-status" role="status" hidden></div>
-            <div class="history-archive-status" id="thermal-status" role="status" hidden></div>
-            <div class="history-marker-list" id="history-marker-list" aria-live="polite"></div>
             <div class="history-sample-values" id="history-sample-values"></div>
           </div>
         </section>
@@ -414,6 +407,7 @@
             <button class="settings-tab" id="settings-tab-metrics" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-metrics" tabindex="-1" data-settings-tab="metrics" hidden>Metrics</button>
             <button class="settings-tab" id="settings-tab-thermals" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-thermals" tabindex="-1" data-settings-tab="thermals" hidden>Thermals</button>
             <button class="settings-tab" id="settings-tab-advanced" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-advanced" tabindex="-1" data-settings-tab="advanced">Advanced</button>
+            <button class="settings-tab" id="settings-tab-info" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-info" tabindex="-1" data-settings-tab="info">Info</button>
           </div>
           <div class="settings-grid">
             <div class="settings-tab-panel" id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general" data-settings-panel="general">
@@ -827,6 +821,64 @@
               </label>
               <p class="settings-help settings-runtime-note">coretemp and k10temp are built in. Add only trusted CPU chip names that match lowercase letters, numbers, or underscores.</p>
             </fieldset>
+            </div>
+
+            <!-- Info is READ-ONLY: every block here used to sit under the history
+                 chart on the dashboard, where it was reference material competing
+                 with the things you actually scan for. Nothing in this panel is a
+                 form control, so none of it appears in the save manifest. ADR 0035. -->
+            <div class="settings-tab-panel" id="settings-panel-info" role="tabpanel" aria-labelledby="settings-tab-info" data-settings-panel="info" hidden>
+              <div class="settings-subtabs" role="tablist" aria-label="Info groups">
+                <button class="settings-subtab" id="settings-subtab-info-coverage" type="button" role="tab" aria-selected="true" aria-controls="settings-subpanel-info-coverage" tabindex="0" data-settings-subtab="coverage" data-subtab-parent="info">Coverage</button>
+                <button class="settings-subtab" id="settings-subtab-info-tiers" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-info-tiers" tabindex="-1" data-settings-subtab="tiers" data-subtab-parent="info">Tiers</button>
+                <button class="settings-subtab" id="settings-subtab-info-services" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-info-services" tabindex="-1" data-settings-subtab="services" data-subtab-parent="info">Services</button>
+                <button class="settings-subtab" id="settings-subtab-info-events" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-info-events" tabindex="-1" data-settings-subtab="events" data-subtab-parent="info">Events</button>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-info-coverage" role="tabpanel" aria-labelledby="settings-subtab-info-coverage" data-settings-subpanel="coverage" data-subtab-parent="info">
+                <fieldset class="settings-group info-group">
+                  <legend class="settings-legend">History coverage<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-info-coverage" aria-label="About history coverage">?</button></legend>
+                  <p class="settings-help-text" id="help-info-coverage" hidden>What the database actually holds right now, and how close it is to its budget. Budget used above 100% means the daemon is pruning to stay inside it — history is being dropped at the oldest end, which is working as intended, not an error.</p>
+                  <div class="history-coverage" id="history-coverage">
+                    <span>Oldest <strong id="history-oldest">-</strong></span>
+                    <span>Newest <strong id="history-newest">-</strong></span>
+                    <span>DB <strong id="history-db-size">-</strong></span>
+                    <span>Budget <strong id="history-db-budget">-</strong></span>
+                    <span>Budget used <strong id="history-budget-status">-</strong></span>
+                    <span>Rollups <strong id="history-rollups">-</strong></span>
+                  </div>
+                  <div class="history-archive-status" id="info-disk-check" hidden></div>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-info-tiers" role="tabpanel" aria-labelledby="settings-subtab-info-tiers" data-settings-subpanel="tiers" data-subtab-parent="info" hidden>
+                <fieldset class="settings-group info-group">
+                  <legend class="settings-legend">Tier coverage<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-info-tiers" aria-label="About tier coverage">?</button></legend>
+                  <p class="settings-help-text" id="help-info-tiers" hidden>How far back each resolution actually reaches, and how many rows or buckets it holds. This is the measured result of the retention tiers you set under History — if a tier reaches less far than you configured, the daemon has not been running long enough yet.</p>
+                  <section class="history-ladder-coverage" id="history-ladder-coverage" aria-label="History ladder coverage" hidden></section>
+                  <p class="settings-runtime-note" id="info-tiers-unavailable">No tier coverage reported by this runtime.</p>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-info-services" role="tabpanel" aria-labelledby="settings-subtab-info-services" data-settings-subpanel="services" data-subtab-parent="info" hidden>
+                <fieldset class="settings-group info-group">
+                  <legend class="settings-legend">Services<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-info-services" aria-label="About service status">?</button></legend>
+                  <p class="settings-help-text" id="help-info-services" hidden>Whether the optional subsystems are actually running, as reported by the daemon rather than as configured. A service switched on under History or Advanced but reported off here has failed to start, and the reason is in the daemon's log.</p>
+                  <div class="history-archive-status" id="history-archive-status" hidden></div>
+                  <div class="history-archive-status" id="history-otel-status" role="status" hidden></div>
+                  <div class="history-archive-status" id="thermal-status" role="status" hidden></div>
+                  <p class="settings-runtime-note" id="info-services-unavailable">No service status reported by this runtime.</p>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-info-events" role="tabpanel" aria-labelledby="settings-subtab-info-events" data-settings-subpanel="events" data-subtab-parent="info" hidden>
+                <fieldset class="settings-group info-group">
+                  <legend class="settings-legend">Recent events<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-info-events" aria-label="About recent events">?</button></legend>
+                  <p class="settings-help-text" id="help-info-events" hidden>The last few things that interrupted or changed collection — a daemon restart, a settings change, a gap in coverage. Useful when a chart has a step or a hole in it and you want to know why.</p>
+                  <div class="history-marker-list" id="history-marker-list" aria-live="polite"></div>
+                  <p class="settings-runtime-note" id="info-events-empty">No events recorded yet.</p>
+                </fieldset>
+              </div>
             </div>
           </div>
           <div class="settings-validation-summary" id="settings-validation-summary" role="status" hidden></div>

@@ -39,6 +39,7 @@ const PANELS = [
   "#settings-panel-metrics",
   "#settings-panel-advanced",
   "#settings-panel-thermals",
+  "#settings-panel-info",
 ];
 
 describe("the settings dialog is nested the way its CSS assumes", () => {

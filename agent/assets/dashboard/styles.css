@@ -1717,6 +1717,57 @@ h1 {
   margin-top: 0.15rem;
 }
 
+/* ── Info groups ─────────────────────────────────────────────────────────────
+   Read-only status blocks, not fields: one column, every child spanning it.
+   The blocks keep the classes they had on the dashboard so their renderers did
+   not have to change at all -- only their container did. ADR 0035. */
+.settings-group.info-group {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.5rem;
+}
+
+.info-group > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/* Wide enough for a full timestamp. At 8.5rem "Sep 01, 11:44:23 PM" clipped to
+   "Sep 01, 11:44:2…", and an exact time is the main reason to open this tab. */
+.info-group .history-coverage {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11.5rem), 1fr));
+}
+
+.info-group .history-coverage strong {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.info-group .history-ladder-coverage {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+}
+
+/* A tier's range is two full timestamps and will not fit one line at four
+   columns. It WRAPS here rather than truncating: on the dashboard an ellipsis
+   was acceptable decoration, but this tab exists to give the exact values, and
+   there is vertical room to spare. */
+.info-group .history-ladder-coverage small {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.info-group .history-marker-list {
+  gap: 0.35rem;
+  max-height: 16rem;
+  overflow: auto;
+}
+
+.info-group .settings-runtime-note {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
 .otel-settings-group textarea,
 .thermal-settings-group textarea {
   min-height: 8rem;

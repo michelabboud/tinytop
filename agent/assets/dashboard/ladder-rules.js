@@ -285,7 +285,11 @@ export function thermalCapabilityFrom(settingsOrNull) {
   );
 }
 
-const SETTINGS_TAB_ORDER = ["general", "history", "metrics", "thermals", "advanced"];
+// `info` is last and ALWAYS available: it is read-only status rather than
+// settings, and unlike `metrics`/`thermals` it has no capability to gate on --
+// each of its groups shows an empty-state line instead when the runtime reports
+// nothing. ADR 0035.
+const SETTINGS_TAB_ORDER = ["general", "history", "metrics", "thermals", "advanced", "info"];
 
 export function availableSettingsTabs(metricsAvailable, thermalAvailable) {
   return SETTINGS_TAB_ORDER.filter((tab) => {

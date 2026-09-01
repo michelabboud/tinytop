@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 - 2026-09-02
+
+Michel, pointing at the block under the history chart: *"the idea of dashboard is to see important information in a glance — why is this important as in first page dashboard? I would say, its place is in settings page, just add Info Tab in settings"*.
+
+- **Seven reference blocks left the dashboard for a new read-only Settings → Info tab** (ADR 0035): the coverage stats (oldest / newest / DB / budget / budget used / rollups), the L1–L4 tier span cards, the archive, OpenTelemetry and thermal service lines, and the timeline event log. None of them answers a question you have *at a glance* — they answer questions you go looking for — and they were occupying the space directly under the primary chart to report that a service is off and that there is plenty of disk. Info groups them as **Coverage · Tiers · Services · Events** in the existing sub-tab pattern.
+- **Info is always available**, unlike Metrics and Thermals: it has no capability to gate on, so each group shows its own empty state when the runtime reports nothing. A tab that vanishes between runtimes is worse than one that says "nothing to report".
+- **The disk reading is split by severity, not by location.** `describeDiskCoverage` produces reference material when healthy (*"184 GiB free; minimum 5.0 GiB"*) and an **alert** when not (*"below 5 GiB. Shrink history or free disk before extending retention"*). The healthy form moved to Info; the alert stays on the dashboard and now renders **only** under pressure. Moving the block wholesale would have buried a warning behind two clicks and a tab — and because the row is no longer always present, its appearance is itself the signal.
+- **The chart keeps its own readout.** `#history-sample-values` shows the values at the scrubbed point and has no meaning away from the chart, so it stays.
+- **Not one renderer changed.** The blocks keep their classes and ids, and every renderer addresses its target by id, so only the container differs. The single addition, `syncInfoServicesEmptyState`, asks the DOM whether any service line is visible rather than re-deriving it from the coverage payload — so the empty state cannot disagree with what is on screen.
+- **Info never truncates a value.** At the inherited column width `Sep 01, 11:44:23 PM` clipped to `Sep 01, 11:44:2…`, which is exactly the number you open the tab to read. Coverage columns are widened to fit a whole timestamp and a tier's two-timestamp range wraps to a second line. Verified in a browser: zero clipped elements and zero overflow across all four groups.
+
 ## 0.10.1 - 2026-09-02
 
 Michel, on the raw settings document: *"in advanced you can give the document more space, since the window is larger"*, *"click on validate and see that the notification change the size"*, *"add scroll"*. Chasing that found two defects, one of them shipped in 0.9.0.

@@ -2,9 +2,21 @@
 
 ## Current Version
 
-- Version: `0.10.0`
+- Version: `0.11.0`
 - Date: 2026-09-02
-- Status: Phase 5 IN PROGRESS. **0.10.0** (ADR 0034) makes the settings save **refuse a form it
+- Status: Phase 5 IN PROGRESS. **0.11.0** (ADR 0035) moves seven reference blocks off the dashboard
+  into a new read-only **Settings → Info** tab (Coverage · Tiers · Services · Events): the coverage
+  stats, the L1–L4 span cards, the archive/OTel/thermal service lines and the event log. His
+  principle, verbatim: *"the idea of dashboard is to see important information in a glance"* — none
+  of those answer a question you have at a glance, and they held the space directly under the primary
+  chart to report that a service is off. Two things deliberately stayed: the chart's own scrubbed
+  readout, and the **disk-pressure alert** — `describeDiskCoverage` yields reference material when
+  healthy and a warning when not, so the reading is split by severity and the banner now renders only
+  under pressure, where its rarity is itself the signal. Not one renderer changed; the blocks kept
+  their ids. **0.10.1** fixed an unclosed `#settings-panel-advanced` shipped in 0.9.0 — the parser
+  silently re-parented, so the **Thermals tab rendered an empty dialog** and the dialog's action
+  buttons could land below its bottom edge — plus a missing `min-height: 0` on the scrolling body.
+  **0.10.0** (ADR 0034) makes the settings save **refuse a form it
   cannot read**, and turns the retention ladder into a list of tiers. The save reads 48 controls
   through an id-based cache taken at load; a *detached* input still answers `.value` with what it
   held when it left the document, and a missing one takes a fallback default — so a save wrote data

@@ -109,6 +109,7 @@ describe("the secondary tab markup is internally consistent", () => {
     expect(byParent.get("general")).toEqual(["browser", "daemon", "thresholds", "display"]);
     expect(byParent.get("history")).toEqual(["tiers", "archive", "disk"]);
     expect(byParent.get("advanced")).toEqual(["otel", "document"]);
+    expect(byParent.get("info")).toEqual(["coverage", "tiers", "services", "events"]);
     // Metrics is built at runtime from METRIC_REGISTRY, so it has no static tabs.
     expect(byParent.has("metrics")).toBe(false);
     expect(html).toContain('id="metrics-settings-subtabs"');
@@ -155,6 +156,8 @@ describe("the secondary tab markup is internally consistent", () => {
     }
     expect(selectedByParent.get("general")).toEqual(["browser"]);
     expect(selectedByParent.get("history")).toEqual(["tiers"]);
+    expect(selectedByParent.get("advanced")).toEqual(["otel"]);
+    expect(selectedByParent.get("info")).toEqual(["coverage"]);
   });
 
   test("every group help button is a real button wired to text that exists in the DOM", () => {

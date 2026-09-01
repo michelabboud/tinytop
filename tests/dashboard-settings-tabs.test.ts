@@ -57,20 +57,20 @@ const registry = [
 ];
 
 describe("tabbed settings shell", () => {
-  test("renders one PRIMARY tablist and five permanent labelled panels", () => {
+  test("renders one PRIMARY tablist and six permanent labelled panels", () => {
     // ADR 0027's invariant was "exactly one tablist in the document". ADR 0033
     // supersedes THAT CLAUSE ONLY: there is now one primary row plus one
     // secondary row per panel that declares sub-groups. The assertion is
     // narrowed to the primary row and widened to check that every tablist in
     // the document -- primary or secondary -- carries an accessible name.
     expect(html.match(/class="settings-tabs" role="tablist"/gu)).toHaveLength(1);
-    for (const id of ["general", "history", "metrics", "thermals", "advanced"]) {
+    for (const id of ["general", "history", "metrics", "thermals", "advanced", "info"]) {
       expect(html).toContain(`id="settings-tab-${id}"`);
       expect(html).toContain(`aria-controls="settings-panel-${id}"`);
       expect(html).toContain(`id="settings-panel-${id}"`);
       expect(html).toContain(`aria-labelledby="settings-tab-${id}"`);
     }
-    expect(html.match(/data-settings-panel="/gu)).toHaveLength(5);
+    expect(html.match(/data-settings-panel="/gu)).toHaveLength(6);
     const tablists = html.match(/<div[^>]*role="tablist"[^>]*>/gu) ?? [];
     expect(tablists.length).toBeGreaterThan(1);
     for (const tablist of tablists) expect(tablist).toContain("aria-label=");
@@ -85,10 +85,20 @@ describe("tabbed settings shell", () => {
   });
 
   test("tablist sets are exact for all capability combinations", () => {
-    expect(availableSettingsTabs(false, false)).toEqual(["general", "history", "advanced"]);
-    expect(availableSettingsTabs(true, false)).toEqual(["general", "history", "metrics", "advanced"]);
-    expect(availableSettingsTabs(false, true)).toEqual(["general", "history", "thermals", "advanced"]);
-    expect(availableSettingsTabs(true, true)).toEqual(["general", "history", "metrics", "thermals", "advanced"]);
+    // `info` is present in every combination on purpose: it is read-only status
+    // with no capability to gate on, and each of its groups shows its own
+    // empty state when the runtime reports nothing (ADR 0035).
+    expect(availableSettingsTabs(false, false)).toEqual(["general", "history", "advanced", "info"]);
+    expect(availableSettingsTabs(true, false)).toEqual(["general", "history", "metrics", "advanced", "info"]);
+    expect(availableSettingsTabs(false, true)).toEqual(["general", "history", "thermals", "advanced", "info"]);
+    expect(availableSettingsTabs(true, true)).toEqual([
+      "general",
+      "history",
+      "metrics",
+      "thermals",
+      "advanced",
+      "info",
+    ]);
   });
 
   test("remembered hidden thermals falls back to General", () => {

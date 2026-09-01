@@ -389,6 +389,10 @@ const elements = {
   historyRollups: document.querySelector("#history-rollups"),
   historyLadderCoverage: document.querySelector("#history-ladder-coverage"),
   historyDiskPressure: document.querySelector("#history-disk-pressure"),
+  infoDiskCheck: document.querySelector("#info-disk-check"),
+  infoTiersUnavailable: document.querySelector("#info-tiers-unavailable"),
+  infoServicesUnavailable: document.querySelector("#info-services-unavailable"),
+  infoEventsEmpty: document.querySelector("#info-events-empty"),
   historyArchiveStatus: document.querySelector("#history-archive-status"),
   historyOtelStatus: document.querySelector("#history-otel-status"),
   historyThermalStatus: document.querySelector("#thermal-status"),
@@ -3958,6 +3962,9 @@ function renderTierCoverage(tiers) {
   if (!state.retentionLadderAvailable || !Array.isArray(tiers)) {
     elements.historyLadderCoverage.replaceChildren();
     setHidden(elements.historyLadderCoverage, true);
+    // The Info tab shows this group on its own, so an absent ladder has to say
+    // so rather than leave a legend with nothing under it.
+    setHidden(elements.infoTiersUnavailable, false);
     return;
   }
   const cards = tiers.map((tier) => {
@@ -3974,18 +3981,34 @@ function renderTierCoverage(tiers) {
   });
   elements.historyLadderCoverage.replaceChildren(...cards);
   setHidden(elements.historyLadderCoverage, false);
+  setHidden(elements.infoTiersUnavailable, true);
 }
 
+// One reading, two audiences. The healthy form ("184 GiB free; minimum 5.0 GiB")
+// is reference material and lives in Settings > Info. The pressure form ("below
+// minimum -- shrink history or free disk") is an ALERT and stays on the
+// dashboard, because burying a warning behind two clicks is how it gets missed.
+// ADR 0035.
 function renderDiskCoverage(disk) {
-  if (!elements.historyDiskPressure) return;
-  if (!disk || typeof disk !== "object") {
-    setHidden(elements.historyDiskPressure, true);
-    return;
+  const known = Boolean(disk) && typeof disk === "object";
+  const pressure = known && Boolean(disk.pressure);
+  const text = known ? describeDiskCoverage(disk) : "";
+
+  if (elements.historyDiskPressure) {
+    if (pressure) {
+      elements.historyDiskPressure.dataset.status = "critical";
+      elements.historyDiskPressure.textContent = text;
+    }
+    setHidden(elements.historyDiskPressure, !pressure);
   }
-  const pressure = Boolean(disk.pressure);
-  elements.historyDiskPressure.dataset.status = pressure ? "critical" : "healthy";
-  elements.historyDiskPressure.textContent = describeDiskCoverage(disk);
-  setHidden(elements.historyDiskPressure, false);
+
+  if (elements.infoDiskCheck) {
+    if (known) {
+      elements.infoDiskCheck.dataset.status = pressure ? "critical" : "healthy";
+      elements.infoDiskCheck.textContent = text;
+    }
+    setHidden(elements.infoDiskCheck, !known);
+  }
 }
 
 function renderArchiveCoverage(archive) {
@@ -4054,7 +4077,20 @@ function renderHistoryCoverage(coverage) {
   renderArchiveCoverage(coverage?.archive);
   renderOtelCoverage(coverage?.otel);
   renderThermalCoverage(coverage?.thermal);
+  syncInfoServicesEmptyState();
   syncHistoryWindowAvailability(coverage);
+}
+
+// The three service lines hide themselves independently, so the empty state can
+// only be decided after all three have run. Asked of the DOM rather than of the
+// coverage payload, so it cannot disagree with what is actually on screen.
+function syncInfoServicesEmptyState() {
+  const anyShown = [
+    elements.historyArchiveStatus,
+    elements.historyOtelStatus,
+    elements.historyThermalStatus,
+  ].some((node) => node && !node.hidden);
+  setHidden(elements.infoServicesUnavailable, anyShown);
 }
 
 function renderHistoryMarkers(markers) {
@@ -4062,8 +4098,10 @@ function renderHistoryMarkers(markers) {
   if (!elements.historyMarkerList) return;
   if (state.historyMarkers.length === 0) {
     elements.historyMarkerList.replaceChildren();
+    setHidden(elements.infoEventsEmpty, false);
     return;
   }
+  setHidden(elements.infoEventsEmpty, true);
   elements.historyMarkerList.replaceChildren(
     ...state.historyMarkers.slice(-6).map((marker) => {
       const item = document.createElement("span");
