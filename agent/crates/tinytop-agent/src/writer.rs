@@ -770,7 +770,7 @@ pub(crate) async fn collect_and_store(state: &AppState) -> Result<HistorySample,
     Ok(sample)
 }
 
-fn collector_config_from(settings: &DashboardSettings) -> CollectorConfig {
+pub(crate) fn collector_config_from(settings: &DashboardSettings) -> CollectorConfig {
     // Store reads validate both settings; these fallbacks preserve safe
     // invariants if a future caller bypasses that validated-read boundary.
     let top_process_count = usize::try_from(settings.top_process_count)

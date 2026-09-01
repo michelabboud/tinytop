@@ -5,7 +5,7 @@ use std::{
 };
 
 use serde::Serialize;
-use tinytop_collectors::NativeCollector;
+use tinytop_collectors::{Collector, NativeCollector};
 use tinytop_store::{
     HistoryArchiveCoverage, HistoryColdArchiveCoverage, HistoryDiskCoverage,
     HistoryQueryableArchiveCoverage, HistoryTierCoverage, SqliteHistoryStore, StoreStats,
@@ -208,6 +208,14 @@ impl ServeDefaults {
 }
 
 async fn collect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let mut stdout = std::io::stdout().lock();
+    collect_to(args, &mut stdout).await
+}
+
+async fn collect_to<W: Write>(
+    args: &[String],
+    output: &mut W,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut sqlite_url = None;
     let mut index = 0;
     while index < args.len() {
@@ -227,19 +235,27 @@ async fn collect(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut collector = NativeCollector::default();
+    let store = if let Some(database_url) = sqlite_url.as_deref() {
+        create_sqlite_parent(database_url)?;
+        let store = SqliteHistoryStore::connect(database_url).await?;
+        let settings = store.get_settings().await?;
+        collector.configure(writer::collector_config_from(&settings));
+        Some(store)
+    } else {
+        None
+    };
     let snapshot = collector.collect()?;
 
-    if let Some(database_url) = sqlite_url {
-        create_sqlite_parent(&database_url)?;
+    if let Some(store) = store {
+        // Stamp immediately after collection so captured_at_ms describes when the snapshot was captured.
         let captured_at_ms = now_ms()?;
-        let store = SqliteHistoryStore::connect(&database_url).await?;
         let insert_result = store.insert_snapshot(captured_at_ms, &snapshot).await;
         let close_result = store.close().await;
         insert_result?;
         close_result?;
     }
 
-    println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    writeln!(output, "{}", serde_json::to_string_pretty(&snapshot)?)?;
     Ok(())
 }
 
@@ -1265,9 +1281,203 @@ Examples:
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
+
+    static TINYTOP_HISTORY_DB_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScopedHistoryDbEnv {
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ScopedHistoryDbEnv {
+        fn point_to(path: &Path) -> Self {
+            let lock = TINYTOP_HISTORY_DB_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os("TINYTOP_HISTORY_DB");
+            // SAFETY: this guard serializes the only test that reads
+            // TINYTOP_HISTORY_DB from the process environment and restores it on drop.
+            unsafe { std::env::set_var("TINYTOP_HISTORY_DB", path) };
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ScopedHistoryDbEnv {
+        fn drop(&mut self) {
+            // SAFETY: the mutex remains held while the original value is restored.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var("TINYTOP_HISTORY_DB", value),
+                    None => std::env::remove_var("TINYTOP_HISTORY_DB"),
+                }
+            }
+        }
+    }
+
+    struct CollectFixture {
+        directory: PathBuf,
+    }
+
+    impl CollectFixture {
+        fn new(label: &str) -> Self {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("time should be after the Unix epoch")
+                .as_nanos();
+            let directory = std::env::temp_dir().join(format!(
+                "tinytop-collect-{label}-{}-{stamp}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&directory)
+                .expect("collect fixture directory should be created");
+            Self { directory }
+        }
+
+        fn database(&self, name: &str) -> (PathBuf, String) {
+            let path = self.directory.join(name);
+            let url = format!("sqlite://{}", path.display());
+            (path, url)
+        }
+    }
+
+    impl Drop for CollectFixture {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.directory).ok();
+        }
+    }
 
     fn env_lookup(values: HashMap<&'static str, &'static str>) -> impl Fn(&str) -> Option<String> {
         move |key| values.get(key).map(|value| value.to_string())
+    }
+
+    #[tokio::test]
+    async fn collect_with_sqlite_honours_persisted_top_process_count() {
+        // Break caught: collect writes a default-configured snapshot instead of using its DB settings.
+        let fixture = CollectFixture::new("persisted-top-process-count");
+        let (_database_path, database_url) = fixture.database("history.sqlite");
+        let store = SqliteHistoryStore::connect(&database_url)
+            .await
+            .expect("fixture database should open");
+        let mut settings = store
+            .get_settings()
+            .await
+            .expect("default settings should load");
+        settings.top_process_count = 3;
+        store
+            .put_settings(&settings)
+            .await
+            .expect("top process count should persist");
+        store.close().await.expect("fixture store should close");
+
+        let mut configured_stdout = Vec::new();
+        collect_to(
+            &[
+                "--json".to_string(),
+                "--sqlite".to_string(),
+                database_url.clone(),
+            ],
+            &mut configured_stdout,
+        )
+        .await
+        .expect("collect with a writable database should succeed");
+
+        let store = SqliteHistoryStore::connect_for_inspection(&database_url)
+            .await
+            .expect("collected database should reopen for inspection");
+        let history = store
+            .read_history(tinytop_store::HistoryQuery::default())
+            .await
+            .expect("inserted snapshot should be readable");
+        assert_eq!(history.len(), 1);
+        let inserted_process_count = history[0].snapshot.processes.len();
+        assert!(
+            inserted_process_count <= 3,
+            "persisted topProcessCount=3, but collect inserted {inserted_process_count} processes"
+        );
+        store.close().await.expect("inspection store should close");
+
+        let mut default_stdout = Vec::new();
+        collect_to(&["--json".to_string()], &mut default_stdout)
+            .await
+            .expect("hermetic default collection should succeed");
+        let default_snapshot: serde_json::Value = serde_json::from_slice(&default_stdout)
+            .expect("default collection stdout should be snapshot JSON");
+        let default_process_count = default_snapshot["processes"]
+            .as_array()
+            .expect("snapshot processes should be an array")
+            .len();
+        if default_process_count <= 3 {
+            eprintln!(
+                "host exposes only {default_process_count} processes, so the same-host greater-than comparison is vacuous"
+            );
+        } else {
+            assert!(
+                default_process_count > inserted_process_count,
+                "the same host without topProcessCount=3 should return more processes"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn collect_without_sqlite_opens_no_database() {
+        // Break caught: bare debug collection resolves and creates the live/default SQLite path.
+        let fixture = CollectFixture::new("no-sqlite");
+        let database_path = fixture.directory.join("default-history.sqlite");
+        let _history_db_env = ScopedHistoryDbEnv::point_to(&database_path);
+        let mut stdout = Vec::new();
+
+        collect_to(&["--json".to_string()], &mut stdout)
+            .await
+            .expect("collect without SQLite should succeed");
+
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(&stdout).expect("stdout should remain snapshot JSON");
+        assert!(
+            snapshot.get("timestamp").is_some(),
+            "snapshot JSON should carry a timestamp"
+        );
+        assert!(
+            snapshot
+                .get("processes")
+                .and_then(serde_json::Value::as_array)
+                .is_some(),
+            "snapshot JSON should carry a processes array"
+        );
+        assert!(
+            !database_path.exists(),
+            "collect without --sqlite must not create the default database"
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_with_sqlite_fails_loudly_when_the_store_cannot_be_opened() {
+        // Break caught: an unusable store silently falls back to a successful default collection.
+        let fixture = CollectFixture::new("unopenable-store");
+        let regular_file = fixture.directory.join("not-a-directory");
+        std::fs::write(&regular_file, b"fixture")
+            .expect("regular-file parent fixture should be written");
+        let database_path = regular_file.join("history.sqlite");
+        let database_url = format!("sqlite://{}", database_path.display());
+        let mut stdout = Vec::new();
+
+        let result = collect_to(
+            &["--json".to_string(), "--sqlite".to_string(), database_url],
+            &mut stdout,
+        )
+        .await;
+
+        assert!(result.is_err(), "an unopenable store must abort collect");
+        assert!(
+            stdout.is_empty(),
+            "a failed collect must not print success JSON to stdout"
+        );
+        assert!(!database_path.exists());
     }
 
     #[test]

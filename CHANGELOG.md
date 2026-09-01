@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.2 - 2026-09-01
+
+- `tinytop-agent collect --json` without `--sqlite` remains hermetic and uses collector defaults without opening a database, while `collect --json --sqlite <db>` configures the collector from that target database's stored settings before inserting the row.
+
 ## 0.7.1 - 2026-09-01
 
 Three defects Michel found using 0.7.0, two of them in the dialog 0.7.0 had just shipped and one pre-existing (ADR 0029, ADR 0030).
