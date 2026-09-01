@@ -1358,50 +1358,8 @@ mod tests {
 
     #[tokio::test]
     async fn collect_with_sqlite_honours_persisted_top_process_count() {
-        // Break caught: collect writes a default-configured snapshot instead of using its DB settings.
+        // Break caught: ignoring each target DB's settings makes the 1- and 2-process collections equal.
         let fixture = CollectFixture::new("persisted-top-process-count");
-        let (_database_path, database_url) = fixture.database("history.sqlite");
-        let store = SqliteHistoryStore::connect(&database_url)
-            .await
-            .expect("fixture database should open");
-        let mut settings = store
-            .get_settings()
-            .await
-            .expect("default settings should load");
-        settings.top_process_count = 3;
-        store
-            .put_settings(&settings)
-            .await
-            .expect("top process count should persist");
-        store.close().await.expect("fixture store should close");
-
-        let mut configured_stdout = Vec::new();
-        collect_to(
-            &[
-                "--json".to_string(),
-                "--sqlite".to_string(),
-                database_url.clone(),
-            ],
-            &mut configured_stdout,
-        )
-        .await
-        .expect("collect with a writable database should succeed");
-
-        let store = SqliteHistoryStore::connect_for_inspection(&database_url)
-            .await
-            .expect("collected database should reopen for inspection");
-        let history = store
-            .read_history(tinytop_store::HistoryQuery::default())
-            .await
-            .expect("inserted snapshot should be readable");
-        assert_eq!(history.len(), 1);
-        let inserted_process_count = history[0].snapshot.processes.len();
-        assert!(
-            inserted_process_count <= 3,
-            "persisted topProcessCount=3, but collect inserted {inserted_process_count} processes"
-        );
-        store.close().await.expect("inspection store should close");
-
         let mut default_stdout = Vec::new();
         collect_to(&["--json".to_string()], &mut default_stdout)
             .await
@@ -1412,16 +1370,104 @@ mod tests {
             .as_array()
             .expect("snapshot processes should be an array")
             .len();
-        if default_process_count <= 3 {
-            eprintln!(
-                "host exposes only {default_process_count} processes, so the same-host greater-than comparison is vacuous"
-            );
-        } else {
-            assert!(
-                default_process_count > inserted_process_count,
-                "the same host without topProcessCount=3 should return more processes"
-            );
-        }
+        assert!(
+            default_process_count >= 2,
+            "host exposes only {default_process_count} process(es); this test requires at least 2 to distinguish topProcessCount=1 from topProcessCount=2"
+        );
+
+        let (_one_process_database_path, one_process_database_url) =
+            fixture.database("one-process.sqlite");
+        let store = SqliteHistoryStore::connect(&one_process_database_url)
+            .await
+            .expect("one-process fixture database should open");
+        let mut settings = store
+            .get_settings()
+            .await
+            .expect("default settings should load");
+        settings.top_process_count = 1;
+        store
+            .put_settings(&settings)
+            .await
+            .expect("topProcessCount=1 should persist");
+        store.close().await.expect("fixture store should close");
+
+        let mut one_process_stdout = Vec::new();
+        collect_to(
+            &[
+                "--json".to_string(),
+                "--sqlite".to_string(),
+                one_process_database_url.clone(),
+            ],
+            &mut one_process_stdout,
+        )
+        .await
+        .expect("collect with topProcessCount=1 should succeed");
+
+        let store = SqliteHistoryStore::connect_for_inspection(&one_process_database_url)
+            .await
+            .expect("one-process database should reopen for inspection");
+        let history = store
+            .read_history(tinytop_store::HistoryQuery::default())
+            .await
+            .expect("inserted snapshot should be readable");
+        assert_eq!(history.len(), 1);
+        let one_process_count = history[0].snapshot.processes.len();
+        store.close().await.expect("inspection store should close");
+
+        let (_two_process_database_path, two_process_database_url) =
+            fixture.database("two-process.sqlite");
+        let store = SqliteHistoryStore::connect(&two_process_database_url)
+            .await
+            .expect("two-process fixture database should open");
+        let mut settings = store
+            .get_settings()
+            .await
+            .expect("default settings should load");
+        settings.top_process_count = 2;
+        store
+            .put_settings(&settings)
+            .await
+            .expect("topProcessCount=2 should persist");
+        store.close().await.expect("fixture store should close");
+
+        let mut two_process_stdout = Vec::new();
+        collect_to(
+            &[
+                "--json".to_string(),
+                "--sqlite".to_string(),
+                two_process_database_url.clone(),
+            ],
+            &mut two_process_stdout,
+        )
+        .await
+        .expect("collect with topProcessCount=2 should succeed");
+
+        let store = SqliteHistoryStore::connect_for_inspection(&two_process_database_url)
+            .await
+            .expect("two-process database should reopen for inspection");
+        let history = store
+            .read_history(tinytop_store::HistoryQuery::default())
+            .await
+            .expect("inserted snapshot should be readable");
+        assert_eq!(history.len(), 1);
+        let two_process_count = history[0].snapshot.processes.len();
+        store.close().await.expect("inspection store should close");
+
+        assert!(
+            one_process_count < two_process_count,
+            "topProcessCount=1 inserted {one_process_count} processes and topProcessCount=2 inserted {two_process_count}; database-specific settings must produce strict ordering"
+        );
+        assert_eq!(
+            one_process_count, 1,
+            "persisted topProcessCount=1 must insert exactly one process"
+        );
+        assert_eq!(
+            two_process_count, 2,
+            "persisted topProcessCount=2 must insert exactly two processes"
+        );
+        eprintln!(
+            "process counts: bare default={default_process_count}, topProcessCount=1={one_process_count}, topProcessCount=2={two_process_count}"
+        );
     }
 
     #[tokio::test]
