@@ -1,8 +1,60 @@
 # Plan — settings correctness (D1–D3)
 
-**Status: PROPOSED, at Michel's gate. Nothing dispatched.**
+**Status: GO (Michel, 2026-09-01, verbatim: *"please proceed with S1-S3"*).**
 **Author:** fable@fabulous, 2026-09-01. Evidence base: `docs/reports/2026-08-31-settings-defect-inventory.md`
-(read it first — every file:line below was verified there at main `0000f80`).
+(every file:line in the ORIGINAL text below was verified there at main `0000f80`).
+
+> ## ⚠️ AMENDMENT — 2026-09-01, at the GO, re-verified at main `f573f7e` (v0.7.1)
+>
+> **The body of this plan below is preserved as written, but parts of it are now WRONG.** It was
+> authored at `0000f80`; main has since moved through T18, T18b, 0.7.0 and 0.7.1, which touched the
+> settings surface directly. **The briefs in `2026-09-01-settings-correctness/briefs/` are authoritative
+> — a lane must trust them, not this document.** What changed:
+>
+> **His three answers.** (1) *Scope* — all three lanes ordered, so this is the **defect** reading; the
+> settings *experience* was largely addressed separately in 0.7.0/0.7.1 (ADRs 0027–0030). (2) *D2 lives.*
+> (3) *Release shape* — **mine, per the repo's own convention**: per-lane patch tags as each merges
+> (0.7.2, 0.7.3, 0.7.4 in merge order), then the set closes at **0.8.0** with a `gh release` and audits.
+> S2 changes deliberate behaviour, which is what earns the minor.
+>
+> **Anchors moved.** `writer.rs` shifted ~46 lines: `collector_config_from` `:727`→**`:773`**,
+> `collect_and_store` `:708`→**`:754`**, `changed_keys` `:451`→**`:497`**. `main.rs` anchors
+> (`:229`, `:210-243`, `:308/445/801`) are unchanged.
+>
+> **The gate baseline in §"Gate requirements" is wrong.** It says 385; the measured baseline at
+> `f573f7e` is **28 suites / 411 passed / 0 failed / 2 ignored** (Bun **261 / 0** across 22 files),
+> run by Fable immediately before dispatch. 385 never reconciled against its own tree. A lane briefed
+> with 385 would report a false green.
+>
+> **D3 no longer has a backend half.** The pattern rule this plan and the inventory describe as a
+> "hand-rolled char check" now carries the *identical* canonical string on both sides
+> (`thermal_settings.rs:41` == `ladder-rules.js:363`). Separately, the inventory's **C2** (client
+> missing the reserved-chip rule) was **fixed by T18b** — which turned a missing rule into a fourth
+> wording divergence. Net: **D3 is entirely frontend**, so S1 becomes pure Rust and S3 pure JS, and
+> the two are cleanly disjoint and run in parallel.
+>
+> **D3 is not only wording — the evaluation ORDER differs.** The backend validates per element with
+> early return (`thermal_settings.rs:33-55`); the client validates per rule across the whole array
+> (`ladder-rules.js:372-379`). For `["cpu_a","cpu_a","amdgpu"]` the server reports *duplicate* and the
+> client reports *reserved* — **a different rule fires.** Copying the strings alone would leave this in
+> place and look fixed. S3 adopts the backend's per-element order.
+>
+> **D2's design is superseded by ADR 0031.** The plan's recommended option (b) — nudge the collector
+> with the settings the write path already holds — **introduces a stale write-back race**: the tick
+> reads settings and applies them with `maintain_history` (a prune) in between, so a write landing in
+> that window is reverted for one tick, and `applied == desired` cannot detect it. ADR 0031 instead
+> removes the settings parameter and has the configure path read the row itself under the
+> `collector_config` guard. The plan's open risk (*"the handler does not hold the collector lock — that
+> must be verified at source"*) **is now verified**: the crate has exactly three non-test lock
+> acquisitions (`writer.rs:756`, `:796`, `:800`) and neither handler holds either. ADR 0031 also adds
+> **`POST /api/settings/import`** as a second write path, which this plan omitted.
+>
+> **D1's headline test cannot be written as specified.** `NativeCollector::thermal_root`
+> (`tinytop-collectors/src/linux.rs:122`) is a private field with no setter and no env override, and
+> `collect()` lives in a different crate — so *"fixture hwmon root → non-empty `sensors`"* is
+> unreachable from `tinytop-agent` without making thermals injectable, which this plan explicitly
+> defers. The CI proof is `topProcessCount` instead (identical single `configure` call, observable on
+> any host); the thermal-specific end stays with Fable's hardware acceptance, where it was found.
 
 ---
 
