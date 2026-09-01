@@ -417,249 +417,313 @@
           </div>
           <div class="settings-grid">
             <div class="settings-tab-panel" id="settings-panel-general" role="tabpanel" aria-labelledby="settings-tab-general" data-settings-panel="general">
-            <fieldset class="settings-group">
-              <legend>This Browser</legend>
-              <label>
-                <span>Theme</span>
-                <select id="browser-theme-setting">
-                  <option value="midnight">Midnight</option>
-                  <option value="matrix">Matrix</option>
-                  <option value="aurora">Aurora</option>
-                  <option value="solar">Solar</option>
-                  <option value="ember">Ember</option>
-                </select>
-              </label>
-              <label>
-                <span>Graph</span>
-                <select id="browser-graph-setting">
-                  <option value="line">Line</option>
-                  <option value="area">Area</option>
-                  <option value="bar">Bar</option>
-                  <option value="heatmap">Heatmap</option>
-                  <option value="treemap">Treemap</option>
-                </select>
-              </label>
-              <label>
-                <span>Window</span>
-                <select id="browser-history-window-setting">
-                  <option value="live">Live</option>
-                  <option value="15m">15m</option>
-                  <option value="1h">1h</option>
-                  <option value="6h">6h</option>
-                  <option value="24h">24h</option>
-                  <option value="7d">7d</option>
-                  <option value="30d">30d</option>
-                  <option value="90d">90d</option>
-                  <option value="1y">1y</option>
-                  <option value="all">All</option>
-                </select>
-              </label>
-              <div class="effective-settings-readout" id="effective-settings-readout"></div>
-            </fieldset>
+              <div class="settings-subtabs" role="tablist" aria-label="General settings groups">
+                <button class="settings-subtab" id="settings-subtab-general-browser" type="button" role="tab" aria-selected="true" aria-controls="settings-subpanel-general-browser" tabindex="0" data-settings-subtab="browser" data-subtab-parent="general">Browser</button>
+                <button class="settings-subtab" id="settings-subtab-general-daemon" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-general-daemon" tabindex="-1" data-settings-subtab="daemon" data-subtab-parent="general">Daemon</button>
+                <button class="settings-subtab" id="settings-subtab-general-thresholds" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-general-thresholds" tabindex="-1" data-settings-subtab="thresholds" data-subtab-parent="general">Thresholds</button>
+                <button class="settings-subtab" id="settings-subtab-general-display" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-general-display" tabindex="-1" data-settings-subtab="display" data-subtab-parent="general">Display</button>
+              </div>
 
-            <fieldset class="settings-group daemon-settings-group">
-              <legend>This Daemon</legend>
-              <label>
-                <span>Threshold preset</span>
-                <select id="threshold-preset">
-                  <option value="balanced">Balanced</option>
-                  <option value="conservative">Conservative</option>
-                  <option value="noisy">Noisy</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </label>
-              <label>
-                <span>Default theme</span>
-                <select id="daemon-default-theme">
-                  <option value="midnight">Midnight</option>
-                  <option value="matrix">Matrix</option>
-                  <option value="aurora">Aurora</option>
-                  <option value="solar">Solar</option>
-                  <option value="ember">Ember</option>
-                </select>
-              </label>
-              <label>
-                <span>Default graph</span>
-                <select id="daemon-default-graph">
-                  <option value="line">Line</option>
-                  <option value="area">Area</option>
-                  <option value="bar">Bar</option>
-                  <option value="heatmap">Heatmap</option>
-                  <option value="treemap">Treemap</option>
-                </select>
-              </label>
-              <label>
-                <span>Default window</span>
-                <select id="daemon-default-window">
-                  <option value="live">Live</option>
-                  <option value="15m">15m</option>
-                  <option value="1h">1h</option>
-                  <option value="6h">6h</option>
-                  <option value="24h">24h</option>
-                  <option value="7d">7d</option>
-                  <option value="30d">30d</option>
-                  <option value="90d">90d</option>
-                  <option value="1y">1y</option>
-                  <option value="all">All</option>
-                </select>
-              </label>
-              <label>
-                <span>Refresh ms</span>
-                <input id="daemon-poll-interval" type="number" min="250" max="60000" step="250" />
-              </label>
-              <label>
-                <span>History hours</span>
-                <input id="daemon-retention-hours" type="number" readonly />
-                <small id="daemon-retention-hours-derived">derived from L1/L2</small>
-              </label>
-              <label>
-                <span>Rollup days</span>
-                <input id="daemon-rollup-retention-days" type="number" readonly />
-                <small id="daemon-rollup-retention-days-derived">derived from L1/L2</small>
-              </label>
-              <label>
-                <span>DB budget MiB</span>
-                <input id="daemon-db-budget-mib" type="number" min="1" max="10240" step="1" />
-              </label>
-              <label>
-                <span>Processes</span>
-                <input id="daemon-top-process-count" type="number" min="1" max="50" step="1" />
-              </label>
-              <label>
-                <span>CPU warn</span>
-                <input id="daemon-cpu-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>CPU critical</span>
-                <input id="daemon-cpu-critical" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>RAM warn</span>
-                <input id="daemon-memory-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>RAM critical</span>
-                <input id="daemon-memory-critical" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>Disk warn</span>
-                <input id="daemon-disk-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>Disk critical</span>
-                <input id="daemon-disk-critical" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>Load warn</span>
-                <input id="daemon-load-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>Load critical</span>
-                <input id="daemon-load-critical" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>Pressure warn</span>
-                <input id="daemon-pressure-warn" type="number" min="0" max="100" step="1" />
-              </label>
-              <label>
-                <span>Pressure critical</span>
-                <input id="daemon-pressure-critical" type="number" min="0" max="100" step="1" />
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-redaction-default" type="checkbox" role="switch" />
-                <span>Redact by default</span>
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-section-overview" type="checkbox" role="switch" />
-                <span>Show overview</span>
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-section-history" type="checkbox" role="switch" />
-                <span>Show history</span>
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-section-filesystem" type="checkbox" role="switch" />
-                <span>Show filesystem</span>
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-section-pressure" type="checkbox" role="switch" />
-                <span>Show pressure</span>
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-section-processes" type="checkbox" role="switch" />
-                <span>Show processes</span>
-              </label>
-            </fieldset>
+              <div class="settings-subtab-panel" id="settings-subpanel-general-browser" role="tabpanel" aria-labelledby="settings-subtab-general-browser" data-settings-subpanel="browser" data-subtab-parent="general">
+                <fieldset class="settings-group">
+                  <legend class="settings-legend">This Browser<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-general-browser" aria-label="About browser settings">?</button></legend>
+                  <p class="settings-help-text" id="help-general-browser" hidden>Applies to this browser only and is remembered locally. These override the daemon defaults without changing what anyone else sees.</p>
+                  <label>
+                    <span>Theme</span>
+                    <select id="browser-theme-setting">
+                      <option value="midnight">Midnight</option>
+                      <option value="matrix">Matrix</option>
+                      <option value="aurora">Aurora</option>
+                      <option value="solar">Solar</option>
+                      <option value="ember">Ember</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Graph</span>
+                    <select id="browser-graph-setting">
+                      <option value="line">Line</option>
+                      <option value="area">Area</option>
+                      <option value="bar">Bar</option>
+                      <option value="heatmap">Heatmap</option>
+                      <option value="treemap">Treemap</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Window</span>
+                    <select id="browser-history-window-setting">
+                      <option value="live">Live</option>
+                      <option value="15m">15m</option>
+                      <option value="1h">1h</option>
+                      <option value="6h">6h</option>
+                      <option value="24h">24h</option>
+                      <option value="7d">7d</option>
+                      <option value="30d">30d</option>
+                      <option value="90d">90d</option>
+                      <option value="1y">1y</option>
+                      <option value="all">All</option>
+                    </select>
+                  </label>
+                  <div class="effective-settings-readout" id="effective-settings-readout"></div>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-general-daemon" role="tabpanel" aria-labelledby="settings-subtab-general-daemon" data-settings-subpanel="daemon" data-subtab-parent="general" hidden>
+                <fieldset class="settings-group daemon-settings-group">
+                  <legend class="settings-legend">Daemon defaults<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-general-daemon" aria-label="About daemon defaults">?</button></legend>
+                  <p class="settings-help-text" id="help-general-daemon" hidden>What a browser sees before it has preferences of its own, and how hard the daemon works. A shorter refresh gives a livelier chart at the cost of CPU and database writes; the budget is the size history is pruned back to.</p>
+                  <label>
+                    <span>Default theme</span>
+                    <select id="daemon-default-theme">
+                      <option value="midnight">Midnight</option>
+                      <option value="matrix">Matrix</option>
+                      <option value="aurora">Aurora</option>
+                      <option value="solar">Solar</option>
+                      <option value="ember">Ember</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Default graph</span>
+                    <select id="daemon-default-graph">
+                      <option value="line">Line</option>
+                      <option value="area">Area</option>
+                      <option value="bar">Bar</option>
+                      <option value="heatmap">Heatmap</option>
+                      <option value="treemap">Treemap</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Default window</span>
+                    <select id="daemon-default-window">
+                      <option value="live">Live</option>
+                      <option value="15m">15m</option>
+                      <option value="1h">1h</option>
+                      <option value="6h">6h</option>
+                      <option value="24h">24h</option>
+                      <option value="7d">7d</option>
+                      <option value="30d">30d</option>
+                      <option value="90d">90d</option>
+                      <option value="1y">1y</option>
+                      <option value="all">All</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Refresh ms</span>
+                    <input id="daemon-poll-interval" type="number" min="250" max="60000" step="250" />
+                  </label>
+                  <label>
+                    <span>History hours</span>
+                    <input id="daemon-retention-hours" type="number" readonly />
+                    <small id="daemon-retention-hours-derived">derived from L1/L2</small>
+                  </label>
+                  <label>
+                    <span>Rollup days</span>
+                    <input id="daemon-rollup-retention-days" type="number" readonly />
+                    <small id="daemon-rollup-retention-days-derived">derived from L1/L2</small>
+                  </label>
+                  <label>
+                    <span>DB budget MiB</span>
+                    <input id="daemon-db-budget-mib" type="number" min="1" max="10240" step="1" />
+                  </label>
+                  <label>
+                    <span>Processes</span>
+                    <input id="daemon-top-process-count" type="number" min="1" max="50" step="1" />
+                  </label>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-general-thresholds" role="tabpanel" aria-labelledby="settings-subtab-general-thresholds" data-settings-subpanel="thresholds" data-subtab-parent="general" hidden>
+                <fieldset class="settings-group daemon-settings-group">
+                  <legend class="settings-legend">Alert thresholds<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-general-thresholds" aria-label="About alert thresholds">?</button></legend>
+                  <p class="settings-help-text" id="help-general-thresholds" hidden>The percentages that turn a panel amber, then red. A preset fills all ten at once; editing any single value switches the preset to Custom. Lower numbers warn earlier and more often.</p>
+                  <label>
+                    <span>Threshold preset</span>
+                    <select id="threshold-preset">
+                      <option value="balanced">Balanced</option>
+                      <option value="conservative">Conservative</option>
+                      <option value="noisy">Noisy</option>
+                      <option value="custom">Custom</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>CPU warn</span>
+                    <input id="daemon-cpu-warn" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>CPU critical</span>
+                    <input id="daemon-cpu-critical" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>RAM warn</span>
+                    <input id="daemon-memory-warn" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>RAM critical</span>
+                    <input id="daemon-memory-critical" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Disk warn</span>
+                    <input id="daemon-disk-warn" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Disk critical</span>
+                    <input id="daemon-disk-critical" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Load warn</span>
+                    <input id="daemon-load-warn" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Load critical</span>
+                    <input id="daemon-load-critical" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Pressure warn</span>
+                    <input id="daemon-pressure-warn" type="number" min="0" max="100" step="1" />
+                  </label>
+                  <label>
+                    <span>Pressure critical</span>
+                    <input id="daemon-pressure-critical" type="number" min="0" max="100" step="1" />
+                  </label>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-general-display" role="tabpanel" aria-labelledby="settings-subtab-general-display" data-settings-subpanel="display" data-subtab-parent="general" hidden>
+                <fieldset class="settings-group daemon-settings-group">
+                  <legend class="settings-legend">Sections &amp; privacy<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-general-display" aria-label="About sections and privacy">?</button></legend>
+                  <p class="settings-help-text" id="help-general-display" hidden>Which sections the dashboard offers, and whether process command lines are redacted before they leave the daemon. Hiding a section does not stop it being collected — it only stops it being shown.</p>
+                  <label class="toggle-row">
+                    <input id="daemon-redaction-default" type="checkbox" role="switch" />
+                    <span>Redact by default</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-section-overview" type="checkbox" role="switch" />
+                    <span>Show overview</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-section-history" type="checkbox" role="switch" />
+                    <span>Show history</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-section-filesystem" type="checkbox" role="switch" />
+                    <span>Show filesystem</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-section-pressure" type="checkbox" role="switch" />
+                    <span>Show pressure</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-section-processes" type="checkbox" role="switch" />
+                    <span>Show processes</span>
+                  </label>
+                </fieldset>
+              </div>
             </div>
 
             <div class="settings-tab-panel" id="settings-panel-history" role="tabpanel" aria-labelledby="settings-tab-history" data-settings-panel="history" hidden>
             <p class="settings-runtime-note" id="history-ladder-unavailable" hidden>History ladder — Rust daemon only</p>
-            <fieldset class="settings-group history-ladder-settings-group" id="history-ladder-settings-group">
-              <legend>History ladder</legend>
-              <label>
-                <span>L1 raw days</span>
-                <input id="daemon-l1-keep-days" type="number" min="3" max="3650" step="1" />
-              </label>
-              <label>
-                <span>L2 one-minute days</span>
-                <input id="daemon-l2-keep-days" type="number" min="7" max="3650" step="1" />
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-l3-enabled" type="checkbox" role="switch" />
-                <span>Enable L3 five-minute history</span>
-              </label>
-              <label>
-                <span>L3 days</span>
-                <input id="daemon-l3-keep-days" type="number" min="0" max="3650" step="1" />
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-l4-enabled" type="checkbox" role="switch" />
-                <span>Enable L4 hourly history</span>
-              </label>
-              <label>
-                <span>L4 days</span>
-                <input id="daemon-l4-keep-days" type="number" min="0" max="36500" step="1" />
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-l4-forever" type="checkbox" role="switch" />
-                <span>Keep L4 forever</span>
-              </label>
-              <label>
-                <span>Filesystem check seconds</span>
-                <input id="daemon-detail-interval-sec" type="number" min="15" max="3600" step="1" />
-              </label>
-              <label>
-                <span>Per-tick process history (hours)</span>
-                <input id="daemon-process-fast-keep-hours" type="number" min="1" max="72" step="1" />
-                <small>Per-tick process rows are kept this long; older windows use the once-a-minute rows.</small>
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-archive-queryable" type="checkbox" role="switch" />
-                <span>Queryable archive</span>
-              </label>
-              <label class="toggle-row">
-                <input id="daemon-archive-cold" type="checkbox" role="switch" />
-                <span>Cold CSV.gz archive</span>
-              </label>
-              <label>
-                <span>Cold after months</span>
-                <input id="daemon-archive-cold-after-months" type="number" min="1" max="120" step="1" />
-              </label>
-              <label class="settings-wide-field">
-                <span>Archive directory</span>
-                <input id="daemon-archive-directory" type="text" placeholder="Main database directory" />
-              </label>
-              <label>
-                <span>Disk check minutes</span>
-                <input id="daemon-disk-check-interval-minutes" type="number" min="5" max="1440" step="1" />
-              </label>
-              <label>
-                <span>Minimum free GiB</span>
-                <input id="daemon-disk-check-min-free-gib" type="number" min="0.25" step="0.25" />
-              </label>
-            </fieldset>
+            <!-- The id stays on this wrapper because syncRetentionLadderAvailability() hides the
+                 whole ladder in one move when the runtime has no retention ladder; the three
+                 fieldsets below keep the CLASS so the existing .history-ladder-settings-group
+                 descendant rules (toggle rows, wide fields) apply unchanged. -->
+            <div class="history-ladder-shell" id="history-ladder-settings-group">
+              <div class="settings-subtabs" role="tablist" aria-label="History settings groups">
+                <button class="settings-subtab" id="settings-subtab-history-tiers" type="button" role="tab" aria-selected="true" aria-controls="settings-subpanel-history-tiers" tabindex="0" data-settings-subtab="tiers" data-subtab-parent="history">Tiers</button>
+                <button class="settings-subtab" id="settings-subtab-history-archive" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-history-archive" tabindex="-1" data-settings-subtab="archive" data-subtab-parent="history">Archive</button>
+                <button class="settings-subtab" id="settings-subtab-history-disk" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-history-disk" tabindex="-1" data-settings-subtab="disk" data-subtab-parent="history">Disk</button>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-history-tiers" role="tabpanel" aria-labelledby="settings-subtab-history-tiers" data-settings-subpanel="tiers" data-subtab-parent="history">
+                <fieldset class="settings-group history-ladder-settings-group history-tier-group">
+                  <legend class="settings-legend">Retention tiers<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-history-tiers" aria-label="About retention tiers">?</button></legend>
+                  <p class="settings-help-text" id="help-history-tiers" hidden>How long each resolution of history survives. L1 keeps every sample, L2 one point a minute, L3 one per five minutes, L4 one per hour. The coarse tiers are what make years of history affordable — raising L1 costs the most disk per day by a wide margin.</p>
+                  <label>
+                    <span>L1 raw days</span>
+                    <input id="daemon-l1-keep-days" type="number" min="3" max="3650" step="1" />
+                  </label>
+                  <label>
+                    <span>L2 one-minute days</span>
+                    <input id="daemon-l2-keep-days" type="number" min="7" max="3650" step="1" />
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-l3-enabled" type="checkbox" role="switch" />
+                    <span>Enable L3</span>
+                  </label>
+                  <label>
+                    <span>L3 days</span>
+                    <input id="daemon-l3-keep-days" type="number" min="0" max="3650" step="1" />
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-l4-enabled" type="checkbox" role="switch" />
+                    <span>Enable L4</span>
+                  </label>
+                  <label>
+                    <span>L4 days</span>
+                    <input id="daemon-l4-keep-days" type="number" min="0" max="36500" step="1" />
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-l4-forever" type="checkbox" role="switch" />
+                    <span>Keep L4 forever</span>
+                  </label>
+                  <label>
+                    <span>Per-tick process history (hours)</span>
+                    <input id="daemon-process-fast-keep-hours" type="number" min="1" max="72" step="1" />
+                    <small>Per-tick process rows are kept this long; older windows use the once-a-minute rows.</small>
+                  </label>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-history-archive" role="tabpanel" aria-labelledby="settings-subtab-history-archive" data-settings-subpanel="archive" data-subtab-parent="history" hidden>
+                <fieldset class="settings-group history-ladder-settings-group">
+                  <legend class="settings-legend">Archive<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-history-archive" aria-label="About the archive">?</button></legend>
+                  <p class="settings-help-text" id="help-history-archive" hidden>What happens to samples older than the ladder. Queryable keeps them readable in a side database; cold writes <code>.csv.gz</code> files you can move off the machine, and stops answering queries from them. Leave the directory blank to use the main database directory.</p>
+                  <label class="toggle-row">
+                    <input id="daemon-archive-queryable" type="checkbox" role="switch" />
+                    <span>Queryable archive</span>
+                  </label>
+                  <label class="toggle-row">
+                    <input id="daemon-archive-cold" type="checkbox" role="switch" />
+                    <span>Cold CSV.gz archive</span>
+                  </label>
+                  <label>
+                    <span>Cold after months</span>
+                    <input id="daemon-archive-cold-after-months" type="number" min="1" max="120" step="1" />
+                  </label>
+                  <label class="settings-wide-field">
+                    <span>Archive directory</span>
+                    <input id="daemon-archive-directory" type="text" placeholder="Main database directory" />
+                  </label>
+                </fieldset>
+              </div>
+
+              <div class="settings-subtab-panel" id="settings-subpanel-history-disk" role="tabpanel" aria-labelledby="settings-subtab-history-disk" data-settings-subpanel="disk" data-subtab-parent="history" hidden>
+                <fieldset class="settings-group history-ladder-settings-group">
+                  <legend class="settings-legend">Disk guard<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-history-disk" aria-label="About the disk guard">?</button></legend>
+                  <p class="settings-help-text" id="help-history-disk" hidden>How often the daemon samples filesystem detail and checks its own footprint. Below the minimum free space it stops writing history rather than filling the disk — so this is the setting that decides whether TinyTop can ever be the reason a machine runs out of room.</p>
+                  <label>
+                    <span>Filesystem check seconds</span>
+                    <input id="daemon-detail-interval-sec" type="number" min="15" max="3600" step="1" />
+                  </label>
+                  <label>
+                    <span>Disk check minutes</span>
+                    <input id="daemon-disk-check-interval-minutes" type="number" min="5" max="1440" step="1" />
+                  </label>
+                  <label>
+                    <span>Minimum free GiB</span>
+                    <input id="daemon-disk-check-min-free-gib" type="number" min="0.25" step="0.25" />
+                  </label>
+                </fieldset>
+              </div>
+            </div>
             </div>
             <div class="settings-tab-panel" id="settings-panel-metrics" role="tabpanel" aria-labelledby="settings-tab-metrics" data-settings-panel="metrics" hidden>
+              <!-- The tablist is filled by renderMetricRegistry() from METRIC_REGISTRY's own
+                   families, so the sub-tabs cannot drift from the metrics they select. The help
+                   button sits OUTSIDE the tablist: a role="tablist" may only contain tabs. -->
+              <div class="settings-subtab-row">
+                <div class="settings-subtabs" role="tablist" aria-label="Metric families" id="metrics-settings-subtabs"></div>
+                <button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-metrics" aria-label="About metric export">?</button>
+              </div>
+              <p class="settings-help-text settings-help-text-standalone" id="help-metrics" hidden>These switches decide which metrics leave the daemon over OpenTelemetry. Unchecking one does not stop it being collected and does not change anything on this dashboard — it only removes it from the export.</p>
               <div class="metrics-settings-groups" id="metrics-settings-groups"></div>
               <section class="metrics-unknown" id="metrics-settings-unknown" aria-labelledby="metrics-settings-unknown-title" hidden>
                 <h3 id="metrics-settings-unknown-title">unknown on this version (inert)</h3>
@@ -668,6 +732,14 @@
             </div>
             <div class="settings-tab-panel" id="settings-panel-advanced" role="tabpanel" aria-labelledby="settings-tab-advanced" data-settings-panel="advanced" hidden>
             <p class="settings-runtime-note" id="advanced-settings-unavailable">Advanced settings document — Rust daemon only</p>
+            <!-- Each sub-tab is hidden with its own group by syncRetentionLadderAvailability():
+                 either half of Advanced can be absent depending on runtime capability. -->
+            <div class="settings-subtabs" role="tablist" aria-label="Advanced settings groups">
+              <button class="settings-subtab" id="settings-subtab-advanced-otel" type="button" role="tab" aria-selected="true" aria-controls="settings-subpanel-advanced-otel" tabindex="0" data-settings-subtab="otel" data-subtab-parent="advanced">Export</button>
+              <button class="settings-subtab" id="settings-subtab-advanced-document" type="button" role="tab" aria-selected="false" aria-controls="settings-subpanel-advanced-document" tabindex="-1" data-settings-subtab="document" data-subtab-parent="advanced">Document</button>
+            </div>
+
+            <div class="settings-subtab-panel" id="settings-subpanel-advanced-otel" role="tabpanel" aria-labelledby="settings-subtab-advanced-otel" data-settings-subpanel="otel" data-subtab-parent="advanced">
             <fieldset class="settings-group otel-settings-group" id="otel-settings-group" hidden>
               <legend>OpenTelemetry export</legend>
               <label class="toggle-row">
@@ -696,6 +768,9 @@
               </label>
               <p class="settings-help settings-runtime-note">Headers (e.g. authorization) are read from the environment variable named here — never stored in settings.</p>
             </fieldset>
+            </div>
+
+            <div class="settings-subtab-panel" id="settings-subpanel-advanced-document" role="tabpanel" aria-labelledby="settings-subtab-advanced-document" data-settings-subpanel="document" data-subtab-parent="advanced" hidden>
               <fieldset class="settings-group advanced-document-settings-group" id="advanced-document-settings-group" hidden>
                 <legend>Raw settings document</legend>
                 <label class="settings-wide-field">

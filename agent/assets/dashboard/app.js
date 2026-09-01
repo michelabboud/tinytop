@@ -26,6 +26,8 @@ import {
   ladderCapabilityFrom,
   liveSampleDrivesTiles,
   liveSampleEntersHistory,
+  metricFamilyKeys,
+  moveWithinTabRow,
   normalizeHistorySamples,
   otelCapabilityFrom,
   parseResourceAttributes,
@@ -38,6 +40,7 @@ import {
   thermalCapabilityFrom,
   moveSettingsTab,
   resolveSettingsTab,
+  resolveTabInRow,
   validateOtelSettings,
   validateRetentionLadder,
   validateThermalSettings,
@@ -63,6 +66,9 @@ const STORAGE_KEYS = {
   filesystemShowSystem: "tinytop.filesystemShowSystem",
   lastSection: "tinytop.lastSection",
   settingsTab: "tinytop.settingsTab",
+  // One object keyed by parent tab, not one key per row: the Metrics row is
+  // built from the daemon's registry, so its members are not known in advance.
+  settingsSubTabs: "tinytop.settingsSubTabs",
 };
 const THEMES = new Set(["midnight", "matrix", "aurora", "solar", "ember"]);
 const THEME_ALIASES = new Map([
@@ -267,6 +273,8 @@ const state = {
   settingsDocumentAvailable: false,
   activeSettingsTab: "general",
   pendingSettingsTab: null,
+  // Secondary tab selection, remembered per parent tab.
+  activeSettingsSubTabs: {},
   metricRegistry: [],
   unknownDisabledMetrics: [],
   advancedValidatedText: null,
@@ -449,6 +457,9 @@ const elements = {
   historyLadderUnavailable: document.querySelector("#history-ladder-unavailable"),
   otelSettingsGroup: document.querySelector("#otel-settings-group"),
   metricsSettingsGroups: document.querySelector("#metrics-settings-groups"),
+  metricsSettingsSubtabs: document.querySelector("#metrics-settings-subtabs"),
+  advancedOtelSubTab: document.querySelector("#settings-subtab-advanced-otel"),
+  advancedDocumentSubTab: document.querySelector("#settings-subtab-advanced-document"),
   metricsSettingsUnknown: document.querySelector("#metrics-settings-unknown"),
   metricsSettingsUnknownList: document.querySelector("#metrics-settings-unknown-list"),
   daemonOtelEnabled: document.querySelector("#daemon-otel-enabled"),
@@ -897,6 +908,95 @@ function syncSettingsTabAvailability() {
   selectSettingsTab(state.pendingSettingsTab ?? state.activeSettingsTab, {
     persist: state.pendingSettingsTab === null,
   });
+  syncSettingsSubTabs();
+}
+
+// ── Secondary (nested) tabs — ADR 0033 ──────────────────────────────────────
+// A settings panel with more content than a short viewport can hold declares
+// sub-groups and shows a second, quieter tablist. Three properties matter:
+//
+//   * The rows are separate keyboard scopes. Arrows move within the row that
+//     holds focus and never jump to the other row.
+//   * Selection is remembered PER PARENT tab, so returning to History lands
+//     where it was left rather than on its first group.
+//   * A sub-panel is HIDDEN, never unmounted. collectDaemonSettingsFromForm()
+//     reads through the id-based `elements` cache, and a detached input still
+//     answers `.value` — unmounting would keep saving, silently, with whatever
+//     the field held when it left the document.
+//
+// Rows are queried live rather than cached at load, because the Metrics row is
+// built at runtime from the daemon's registry and a load-time cache would
+// always miss it.
+
+function settingsSubTabsFor(parent) {
+  return Array.from(document.querySelectorAll("[data-settings-subtab]")).filter(
+    (tab) => tab.dataset.subtabParent === parent && !tab.hidden,
+  );
+}
+
+function settingsSubPanelsFor(parent) {
+  return Array.from(document.querySelectorAll("[data-settings-subpanel]")).filter(
+    (panel) => panel.dataset.subtabParent === parent,
+  );
+}
+
+function settingsSubTabParents() {
+  const parents = new Set();
+  for (const tab of document.querySelectorAll("[data-settings-subtab]")) {
+    if (tab.dataset.subtabParent) parents.add(tab.dataset.subtabParent);
+  }
+  return Array.from(parents);
+}
+
+function readStoredSettingsSubTabs() {
+  const stored = readStoredJson(STORAGE_KEYS.settingsSubTabs, null);
+  // A hand-edited or stale key must not throw the dialog: anything that is not
+  // a plain object is treated as "no memory yet".
+  return stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+}
+
+function persistSettingsSubTab(parent, name) {
+  storeJson(STORAGE_KEYS.settingsSubTabs, { ...readStoredSettingsSubTabs(), [parent]: name });
+}
+
+function selectSettingsSubTab(parent, requested, { focus = false, persist = true } = {}) {
+  const tabs = settingsSubTabsFor(parent);
+  const selected = resolveTabInRow(
+    requested,
+    tabs.map((tab) => tab.dataset.settingsSubtab),
+  );
+  if (selected === null) return null;
+  for (const tab of tabs) {
+    const active = tab.dataset.settingsSubtab === selected;
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus();
+  }
+  for (const panel of settingsSubPanelsFor(parent)) {
+    setHidden(panel, panel.dataset.settingsSubpanel !== selected);
+  }
+  state.activeSettingsSubTabs[parent] = selected;
+  if (persist) persistSettingsSubTab(parent, selected);
+  return selected;
+}
+
+function syncSettingsSubTabs() {
+  const stored = readStoredSettingsSubTabs();
+  for (const parent of settingsSubTabParents()) {
+    // Persist nothing here: syncing is not a user choice, and writing on every
+    // sync would overwrite a remembered row the user has not visited yet.
+    selectSettingsSubTab(parent, state.activeSettingsSubTabs[parent] ?? stored[parent], {
+      persist: false,
+    });
+  }
+}
+
+function toggleSettingsHelp(button) {
+  const target = document.getElementById(button.getAttribute("aria-controls"));
+  if (!target) return;
+  const expanded = button.getAttribute("aria-expanded") === "true";
+  button.setAttribute("aria-expanded", String(!expanded));
+  setHidden(target, expanded);
 }
 
 function setDatasetStatus(node, status) {
@@ -3032,13 +3132,28 @@ function syncRetentionLadderAvailability() {
   setHidden(elements.thermalSettingsGroup, !state.thermalAvailable);
   setHidden(elements.advancedDocumentSettingsGroup, !state.settingsDocumentAvailable);
   setHidden(elements.advancedSettingsUnavailable, state.otelAvailable || state.settingsDocumentAvailable);
+  // Either half of Advanced can be absent, so its sub-tabs follow their groups.
+  // Hidden BEFORE the sync below, which re-resolves each row to a tab that is
+  // actually available -- otherwise Advanced could select a tab that is not there.
+  setHidden(elements.advancedOtelSubTab, !state.otelAvailable);
+  setHidden(elements.advancedDocumentSubTab, !state.settingsDocumentAvailable);
   syncSettingsTabAvailability();
 }
 
 function renderMetricRegistry() {
   if (!elements.metricsSettingsGroups) return;
   elements.metricsSettingsGroups.replaceChildren();
-  for (const group of groupMetricRegistry(state.metricRegistry)) {
+  elements.metricsSettingsSubtabs?.replaceChildren();
+  // One secondary tab per METRIC_REGISTRY family, built from the same grouping
+  // that builds the panels — so the tabs cannot drift from the metrics they
+  // select. Keys are folded to a DOM-id-safe form and de-duplicated first.
+  const groups = groupMetricRegistry(state.metricRegistry);
+  const familyKeys = metricFamilyKeys(groups.map((group) => group.family));
+  for (const [index, group] of groups.entries()) {
+    const familyKey = familyKeys[index];
+    const panelId = `settings-subpanel-metrics-${familyKey}`;
+    const tabId = `settings-subtab-metrics-${familyKey}`;
+
     const fieldset = document.createElement("fieldset");
     fieldset.className = "settings-group metric-family";
     const legend = document.createElement("legend");
@@ -3083,8 +3198,40 @@ function renderMetricRegistry() {
       for (const checkbox of checkboxes) checkbox.checked = checked;
       markSettingsDirty();
     });
-    elements.metricsSettingsGroups.append(fieldset);
+
+    // Hidden by default; syncSettingsSubTabs() below reveals the remembered one.
+    // Never removed from the document -- see the ADR 0033 note above
+    // settingsSubTabsFor(): a detached checkbox still answers `.checked`.
+    const panel = document.createElement("div");
+    panel.className = "settings-subtab-panel";
+    panel.id = panelId;
+    panel.role = "tabpanel";
+    panel.hidden = true;
+    panel.dataset.settingsSubpanel = familyKey;
+    panel.dataset.subtabParent = "metrics";
+    panel.setAttribute("aria-labelledby", tabId);
+    panel.append(fieldset);
+    elements.metricsSettingsGroups.append(panel);
+
+    const tab = document.createElement("button");
+    tab.className = "settings-subtab";
+    tab.id = tabId;
+    tab.type = "button";
+    tab.role = "tab";
+    tab.tabIndex = -1;
+    tab.setAttribute("aria-selected", "false");
+    tab.setAttribute("aria-controls", panelId);
+    tab.dataset.settingsSubtab = familyKey;
+    tab.dataset.subtabParent = "metrics";
+    tab.textContent = group.family;
+    elements.metricsSettingsSubtabs?.append(tab);
   }
+
+  // The row exists only now, so its remembered selection can only be applied
+  // now; syncSettingsTabAvailability() ran before the registry arrived.
+  selectSettingsSubTab("metrics", state.activeSettingsSubTabs.metrics ?? readStoredSettingsSubTabs().metrics, {
+    persist: false,
+  });
 
   const unknown = state.unknownDisabledMetrics;
   setHidden(elements.metricsSettingsUnknown, unknown.length === 0);
@@ -4052,6 +4199,38 @@ for (const tab of elements.settingsTabs) {
     });
   });
 }
+
+// Secondary tabs and group help are delegated on the dialog rather than bound
+// per button: the Metrics row is rebuilt whenever the registry is fetched, and
+// per-button listeners would have to be rebound on every render (or leak).
+elements.settingsDialog?.addEventListener("click", (event) => {
+  const subTab = event.target.closest?.("[data-settings-subtab]");
+  if (subTab) {
+    selectSettingsSubTab(subTab.dataset.subtabParent, subTab.dataset.settingsSubtab, { focus: true });
+    return;
+  }
+  const helpToggle = event.target.closest?.(".settings-help-toggle");
+  if (helpToggle) toggleSettingsHelp(helpToggle);
+});
+
+elements.settingsDialog?.addEventListener("focusin", (event) => {
+  const subTab = event.target.closest?.("[data-settings-subtab]");
+  if (subTab) selectSettingsSubTab(subTab.dataset.subtabParent, subTab.dataset.settingsSubtab);
+});
+
+elements.settingsDialog?.addEventListener("keydown", (event) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  // Scoped to the focused row on purpose: with a primary tab focused this finds
+  // nothing and returns without preventDefault, so the primary row keeps its own
+  // handler and the arrows never cross between the two rows.
+  const subTab = event.target.closest?.("[data-settings-subtab]");
+  if (!subTab) return;
+  event.preventDefault();
+  const parent = subTab.dataset.subtabParent;
+  const names = settingsSubTabsFor(parent).map((tab) => tab.dataset.settingsSubtab);
+  const next = moveWithinTabRow(subTab.dataset.settingsSubtab, event.key, names);
+  if (next !== null) selectSettingsSubTab(parent, next, { focus: true });
+});
 
 elements.settingsOpenButton?.addEventListener("click", () => {
   openSettingsDialog();

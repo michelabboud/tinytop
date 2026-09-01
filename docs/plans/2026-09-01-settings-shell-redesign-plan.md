@@ -1,8 +1,38 @@
 # Plan — settings shell redesign (U1–U5)
 
-**Status: PROPOSED, at Michel's gate. Nothing dispatched.**
+**Status: DONE — U0 shipped in 0.8.2; U1/U2/U3/U5 shipped in 0.9.0 as ADR 0033.**
 **Author:** fable@fabulous, 2026-09-01. Every file:line verified at main `85e7086` (v0.8.1, deployed).
 **Source:** Michel's five instructions after using the deployed 0.8.1 dialog, with screenshots.
+
+---
+
+## ⚠️ What this plan got wrong, recorded rather than rewritten
+
+**The gate itself was the biggest error.** His five instructions *were* the authorization; turning
+them into a proposal with three open questions was an over-gate, and it left items 1, 2, 3 and 5
+unbuilt after 0.8.2 shipped. Of the three questions, one had already been answered ("you decide"),
+one had a stated recommendation, and one (General's carving) was an ordinary judgement call. Only U0
+was built at the time; the rest waited for a nod that was never needed.
+
+Four substantive corrections found while building:
+
+1. **Advanced needed a tab row too.** This plan gave it none, on the grounds that ADR 0029 had
+   already split it into two columns. Measured at a 720 px window it still overflowed by 20 px, and
+   it has two groups that already exist — so it gained Export · Document. With the OTel group then
+   owning the full width, ADR 0029's one-field-per-row rule overflowed by 43 px and was superseded.
+2. **Regrouping History was not enough to fix "looks bad".** With `auto-fit`, "Enable L4" and "L4
+   days" still landed on different rows, because the grid wraps by rendered width. Tiers now uses two
+   fixed columns so each tier's switch pairs with its own field by construction. Caught by looking at
+   a screenshot after the geometry check said the panel fit.
+3. **The tier switch labels were too long** ("Enable L3 five-minute history" wrapped to three lines
+   and staggered the rows). Shortened to "Enable L3"; the resolutions are in the group's help text.
+4. **`moveSettingsTab` could not be reused.** It falls back to the literal `"general"` — a *primary*
+   tab name, meaningless inside a secondary row, and reachable whenever a remembered sub-tab no
+   longer exists. Secondary rows got their own `moveWithinTabRow` / `resolveTabInRow`.
+
+The three "open questions" were resolved as: switch geometry — already answered and shipped in 0.8.2;
+help density — one paragraph per group, as recommended; General's carving — Browser · Daemon ·
+Thresholds · Display, decided rather than asked, and open to correction in review.
 
 ---
 

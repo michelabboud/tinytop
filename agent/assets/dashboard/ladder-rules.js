@@ -311,6 +311,57 @@ export function moveSettingsTab(current, key, availableTabs) {
   return resolveSettingsTab(current, availableTabs);
 }
 
+/**
+ * Resolve a selection inside ONE tablist row.
+ *
+ * Deliberately not `resolveSettingsTab`: that falls back to the literal
+ * "general", which is a PRIMARY tab name and meaningless inside a secondary
+ * row. A row falls back to its own first member, or to null when it is empty
+ * (the Metrics row is empty until the daemon's registry has been fetched).
+ */
+export function resolveTabInRow(requested, names) {
+  if (!Array.isArray(names) || names.length === 0) return null;
+  return names.includes(requested) ? requested : names[0];
+}
+
+/**
+ * Move within ONE tablist row. Arrows wrap inside the row and never leave it:
+ * the settings dialog nests a secondary tablist inside a primary one, and the
+ * two are separate keyboard scopes (ADR 0033). Returns null for an empty row.
+ */
+export function moveWithinTabRow(current, key, names) {
+  if (!Array.isArray(names) || names.length === 0) return null;
+  if (key === "Home") return names[0];
+  if (key === "End") return names.at(-1);
+  const currentIndex = Math.max(0, names.indexOf(current));
+  if (key === "ArrowLeft") return names[(currentIndex - 1 + names.length) % names.length];
+  if (key === "ArrowRight") return names[(currentIndex + 1) % names.length];
+  return resolveTabInRow(current, names);
+}
+
+/**
+ * A DOM-id-safe key for a metric family. Family strings arrive from the
+ * daemon's registry, so they are data, not literals: they are folded to
+ * [a-z0-9-] before they reach an `id` or an `aria-controls`. Distinct families
+ * that fold to the same key are disambiguated by suffix rather than allowed to
+ * collide, because a duplicate id would silently point two tabs at one panel.
+ */
+export function metricFamilyKeys(families) {
+  const used = new Set();
+  return (Array.isArray(families) ? families : []).map((family) => {
+    const base =
+      String(family ?? "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/gu, "-")
+        .replace(/^-+|-+$/gu, "") || "other";
+    let key = base;
+    let suffix = 2;
+    while (used.has(key)) key = `${base}-${suffix++}`;
+    used.add(key);
+    return key;
+  });
+}
+
 export function groupMetricRegistry(metrics) {
   const groups = [];
   const byFamily = new Map();

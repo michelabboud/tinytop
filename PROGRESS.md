@@ -2,9 +2,35 @@
 
 ## Current Version
 
-- Version: `0.7.1`
+- Version: `0.9.0`
 - Date: 2026-09-01
-- Status: Phase 5 (cadence classes + GPU + sensors, plans
+- Status: Phase 5 IN PROGRESS. **0.9.0** is the settings shell redesign (ADR 0033) — Michel's four
+  remaining instructions after using 0.8.1. A panel with more content than a short viewport can hold
+  now declares sub-groups and shows a secondary tab row: General → Browser · Daemon · Thresholds ·
+  Display, History → Tiers · Archive · Disk, Advanced → Export · Document, Metrics → the six
+  `METRIC_REGISTRY` families built at runtime (so the tabs cannot drift from the metrics they
+  select); Thermals keeps none because it already fits. **All 16 tab/sub-tab stops measure overflow 0
+  at a 720 px window, including with a help paragraph open** — General and Advanced both scrolled
+  there before. History's tier rows moved from `auto-fit` to two fixed columns, so each tier's enable
+  switch pairs with its own days field by construction rather than by rendered width; that pairing was
+  the substance of "looks bad" and is verified by geometry. The two tab rows are separate keyboard
+  scopes with per-parent memory, and a sub-panel is hidden rather than unmounted — proven end to end
+  by editing four fields across three sub-tabs, parking on a fourth, and reading the captured PUT
+  body, because `collectDaemonSettingsFromForm` reads through the id-based `elements` cache and a
+  detached input still answers `.value`. Eight groups gained a `(?)` expanding real DOM text (one
+  paragraph per group, what it changes and what it costs); four deliberately did not, because they
+  already carry visible warnings. Supersedes ADR 0027's single-tablist clause and ADR 0029's
+  one-column OTel rule.
+- **0.8.2** deleted the second, competing switch implementation: all 13 toggles had been painting two
+  knobs 4.16 px apart because the two rules drew the knob with different pseudo-elements and so could
+  not override each other (ADR 0032; measured 13/13 → 0/13 in a real browser).
+- **0.8.0 / 0.7.3 / 0.7.2** closed the three settings-correctness defects (S1/S2/S3): `collect`
+  ignored its target database's persisted settings (D1); the client validator disagreed with the
+  server about *which rule fires* for a bad thermal chip list, not merely about wording (D3); and a
+  settings write did not reach the collector until the next tick, whose obvious fix would have
+  introduced a stale write-back race (D2, ADR 0031). **0.8.1** then replaced S1's regression test,
+  which was false-green on any host with fewer than four processes.
+- Superseded status (0.7.1): Phase 5 (cadence classes + GPU + sensors, plans
   `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md` and
   `docs/plans/2026-08-28-tiered-history-ladder/`, ADRs 0021–0030) IN PROGRESS. **0.7.1** fixed three
   defects Michel found while using 0.7.0: the settings dialog dismissed itself on a tab switch (a

@@ -1151,6 +1151,165 @@ h1 {
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* ── Secondary (nested) tab row ─────────────────────────────────────────────
+   A panel whose content cannot fit a short viewport declares sub-groups and
+   shows a second, quieter tablist. Two things here are load-bearing:
+
+   1. EVERY class below that sets `display` must restate `[hidden]`. Setting
+      `display` defeats the `hidden` attribute's own `display: none`, and these
+      panels are hidden by attribute only. `.settings-tab-panel[hidden]` above
+      exists for exactly this reason; a new one silently stops hiding without it.
+   2. A sub-panel is HIDDEN, never unmounted. `collectDaemonSettingsFromForm()`
+      reads inputs through the id-based `elements` cache, and a detached input
+      still answers `.value` — so unmounting a sub-panel would keep saving,
+      quietly, with whatever the field held when it left the document. ADR 0033. */
+.settings-subtabs {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+/* Metrics hangs its help button beside the tablist. The button sits OUTSIDE
+   `[role="tablist"]`, which may only contain tabs, so the two need a flex row. */
+.settings-subtab-row {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.settings-subtab-row .settings-subtabs {
+  flex: 1 1 auto;
+}
+
+.settings-subtab {
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  padding: 0.3rem 0.7rem;
+  text-transform: uppercase;
+}
+
+.settings-subtab:hover {
+  color: var(--text);
+}
+
+/* A pill, deliberately unlike the primary tab's underline: the two rows are
+   different scopes and must not read as one continuous strip of tabs. */
+.settings-subtab[aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--cyan) 55%, transparent);
+  background: color-mix(in srgb, var(--cyan) 16%, transparent);
+  color: var(--text);
+}
+
+.settings-subtab:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 1px;
+}
+
+.settings-subtab-panel {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.settings-subtab[hidden],
+.settings-subtab-panel[hidden] {
+  display: none;
+}
+
+/* Wraps the History sub-tabs and their panels so syncRetentionLadderAvailability()
+   can still hide the entire ladder in one move on a runtime that has none. */
+.history-ladder-shell {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.history-ladder-shell[hidden] {
+  display: none;
+}
+
+/* ── Group help ─────────────────────────────────────────────────────────────
+   A legend that carries a `(?)`. Same shape as `.metric-family legend` below,
+   but kept as an explicit class rather than `:has()` so that a later rule
+   cannot win it by accident — this file has produced that failure three times
+   (`.metric-family`, `.advanced-document-settings-group`, and the switch in
+   ADR 0032). */
+.settings-group legend.settings-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+}
+
+.settings-help-toggle {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 0;
+}
+
+.settings-help-toggle:hover {
+  border-color: color-mix(in srgb, var(--cyan) 60%, transparent);
+  color: var(--text);
+}
+
+.settings-help-toggle[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--cyan) 70%, transparent);
+  background: color-mix(in srgb, var(--cyan) 20%, transparent);
+  color: var(--text);
+}
+
+.settings-help-toggle:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 1px;
+}
+
+/* The help paragraph spans the whole group grid so the fields below keep their
+   columns. It is real text in the DOM, toggled with `hidden` — a `title`
+   tooltip would be invisible to touch and inconsistently announced. */
+.settings-group .settings-help-text,
+.settings-help-text-standalone {
+  grid-column: 1 / -1;
+  margin: 0;
+  border-left: 2px solid color-mix(in srgb, var(--cyan) 55%, transparent);
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.5;
+  padding: 0.1rem 0 0.1rem 0.55rem;
+}
+
+.settings-help-text code {
+  font-size: 0.92em;
+}
+
 /* Advanced is two columns: the OpenTelemetry fields on the left, one per row,
    and the raw settings document on the right where a JSON editor wants the
    height. `auto-fit` collapses both to a single column on a narrow screen. */
@@ -1164,8 +1323,23 @@ h1 {
   grid-column: 1 / -1;
 }
 
+/* ADR 0029 gave this group ONE column because it shared the panel with the raw
+   document editor and had only half the width. ADR 0033 split Advanced into
+   sub-tabs, so the group now owns the full width and lays out in columns --
+   which is also what stops the panel scrolling at a short viewport. */
 #settings-panel-advanced .otel-settings-group {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+#settings-panel-advanced .otel-settings-group .settings-wide-field {
+  grid-column: 1 / -1;
+}
+
+/* In columns, a label that wraps to two lines pushes its input a line below its
+   neighbours'. Bottom-aligning the cells keeps the inputs on one line; it was
+   impossible under ADR 0029's one-field-per-row layout, so it is new here. */
+#settings-panel-advanced .otel-settings-group > label {
+  align-self: end;
 }
 
 /* Families sit SIDE BY SIDE so the whole registry fits the fixed dialog without
@@ -1353,6 +1527,23 @@ h1 {
 .history-ladder-settings-group {
   grid-column: 1 / -1;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+
+/* TWO FIXED COLUMNS, deliberately not `auto-fit`: each tier's enable switch has
+   to land in the left cell with its own days field beside it. Under `auto-fit`
+   the pairing depended on the panel's rendered width, which is what put a
+   toggle for one tier between two other tiers' number fields and left the eye
+   with no rhythm to follow -- the "looks bad" this group exists to fix.
+   Compound selector so it out-ranks .history-ladder-settings-group above
+   regardless of source order; a bare class would tie and lose. */
+.history-ladder-settings-group.history-tier-group {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* A switch row and a number row must be the same height, or the pairs stagger.
+   The number input is the taller of the two, so the switch row matches it. */
+.history-tier-group .toggle-row {
+  align-self: stretch;
 }
 
 .otel-settings-group textarea,
@@ -2441,6 +2632,12 @@ td {
   .settings-group,
   .daemon-settings-group,
   .settings-tab-panel {
+    grid-template-columns: 1fr;
+  }
+
+  /* Restated: the two-column tier rule is a compound selector and would
+     otherwise out-rank the single-column collapse above on a narrow screen. */
+  .history-ladder-settings-group.history-tier-group {
     grid-template-columns: 1fr;
   }
 

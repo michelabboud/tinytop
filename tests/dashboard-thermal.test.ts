@@ -291,6 +291,8 @@ describe("dashboard thermal DOM contracts", () => {
       thermalSettingsGroup: group,
       advancedDocumentSettingsGroup: new FakeElement(),
       advancedSettingsUnavailable: new FakeElement(),
+      advancedOtelSubTab: new FakeElement(),
+      advancedDocumentSubTab: new FakeElement(),
     };
     const state = {
       retentionLadderAvailable: false,
@@ -308,12 +310,18 @@ describe("dashboard thermal DOM contracts", () => {
     )(
       elements,
       state,
-      (node: FakeElement, hidden: boolean) => { node.hidden = hidden; },
+      // Null-guarded exactly like the real setHidden(). A stub that is stricter
+      // than the function it stands in for reports failures the product does
+      // not have -- this one did, the first time an optional element was added.
+      (node: FakeElement | undefined, hidden: boolean) => { if (node) node.hidden = hidden; },
       () => {},
       () => {},
     ) as () => void;
     sync();
     expect(group.hidden).toBe(true);
+    // With neither Advanced capability present, both of its sub-tabs go too.
+    expect(elements.advancedOtelSubTab.hidden).toBe(true);
+    expect(elements.advancedDocumentSubTab.hidden).toBe(true);
   });
 
   test("hides the thermal panel for absent and empty sensors and shows real readings", () => {

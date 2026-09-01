@@ -57,15 +57,23 @@ const registry = [
 ];
 
 describe("tabbed settings shell", () => {
-  test("renders one accessible tablist and five permanent labelled panels", () => {
-    expect(html.match(/role="tablist"/gu)).toHaveLength(1);
+  test("renders one PRIMARY tablist and five permanent labelled panels", () => {
+    // ADR 0027's invariant was "exactly one tablist in the document". ADR 0033
+    // supersedes THAT CLAUSE ONLY: there is now one primary row plus one
+    // secondary row per panel that declares sub-groups. The assertion is
+    // narrowed to the primary row and widened to check that every tablist in
+    // the document -- primary or secondary -- carries an accessible name.
+    expect(html.match(/class="settings-tabs" role="tablist"/gu)).toHaveLength(1);
     for (const id of ["general", "history", "metrics", "thermals", "advanced"]) {
       expect(html).toContain(`id="settings-tab-${id}"`);
       expect(html).toContain(`aria-controls="settings-panel-${id}"`);
       expect(html).toContain(`id="settings-panel-${id}"`);
       expect(html).toContain(`aria-labelledby="settings-tab-${id}"`);
     }
-    expect(html.match(/role="tabpanel"/gu)).toHaveLength(5);
+    expect(html.match(/data-settings-panel="/gu)).toHaveLength(5);
+    const tablists = html.match(/<div[^>]*role="tablist"[^>]*>/gu) ?? [];
+    expect(tablists.length).toBeGreaterThan(1);
+    for (const tablist of tablists) expect(tablist).toContain("aria-label=");
   });
 
   test("tab keyboard movement wraps and Home or End jumps to the boundary", () => {
@@ -413,7 +421,11 @@ describe("the settings dialog is one fixed box for every tab", () => {
 
   test("Advanced puts the raw document beside the other settings, editor above its buttons", () => {
     expect(styles).toMatch(/#settings-panel-advanced\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit/u);
-    expect(styles).toMatch(/#settings-panel-advanced \.otel-settings-group\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/u);
+    // ADR 0033 supersedes ADR 0029's one-column OTel group: with Advanced split
+    // into sub-tabs the group owns the full width instead of half of it, and one
+    // field per row overflowed a short viewport by 43px (measured).
+    expect(styles).toMatch(/#settings-panel-advanced \.otel-settings-group\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit/u);
+    expect(styles).toMatch(/#settings-panel-advanced \.otel-settings-group \.settings-wide-field\s*\{[^}]*grid-column:\s*1 \/ -1/u);
     // Scoped by the panel id on purpose: a bare class ties with .settings-group
     // and loses on source order, which laid the editor out beside its buttons.
     expect(styles).toMatch(/#settings-panel-advanced \.advanced-document-settings-group\s*\{[^}]*flex-direction:\s*column/u);

@@ -22,7 +22,12 @@ describe("dashboard settings", () => {
 
   test("renders browser and daemon settings groups", () => {
     expect(html).toContain("This Browser");
-    expect(html).toContain("This Daemon");
+    // ADR 0033 split the single "This Daemon" fieldset -- 24 controls of four
+    // different kinds -- across the General sub-tabs. Each name is asserted so a
+    // regrouping that silently drops a group cannot pass.
+    expect(html).toContain("Daemon defaults");
+    expect(html).toContain("Alert thresholds");
+    expect(html).toContain("Sections &amp; privacy");
     expect(html).toContain('id="browser-theme-setting"');
     expect(html).toContain('id="browser-graph-setting"');
     expect(html).toContain('id="browser-history-window-setting"');
