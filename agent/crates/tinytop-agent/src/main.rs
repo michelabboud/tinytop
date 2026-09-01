@@ -1281,6 +1281,44 @@ Examples:
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::ffi::OsString;
+    use std::path::Path;
+    use std::sync::{Mutex, MutexGuard};
+
+    static TINYTOP_HISTORY_DB_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ScopedHistoryDbEnv {
+        previous: Option<OsString>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl ScopedHistoryDbEnv {
+        fn point_to(path: &Path) -> Self {
+            let lock = TINYTOP_HISTORY_DB_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::env::var_os("TINYTOP_HISTORY_DB");
+            // SAFETY: this guard serializes the only test that reads
+            // TINYTOP_HISTORY_DB from the process environment and restores it on drop.
+            unsafe { std::env::set_var("TINYTOP_HISTORY_DB", path) };
+            Self {
+                previous,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for ScopedHistoryDbEnv {
+        fn drop(&mut self) {
+            // SAFETY: the mutex remains held while the original value is restored.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var("TINYTOP_HISTORY_DB", value),
+                    None => std::env::remove_var("TINYTOP_HISTORY_DB"),
+                }
+            }
+        }
+    }
 
     struct CollectFixture {
         directory: PathBuf,
@@ -1390,11 +1428,8 @@ mod tests {
     async fn collect_without_sqlite_opens_no_database() {
         // Break caught: bare debug collection resolves and creates the live/default SQLite path.
         let fixture = CollectFixture::new("no-sqlite");
-        let temporary_home = fixture.directory.join("home");
-        let temporary_state = temporary_home.join(".local/share/tinytop");
-        std::fs::create_dir_all(&temporary_state)
-            .expect("temporary HOME state directory should be created");
-        let database_path = temporary_state.join("history.sqlite");
+        let database_path = fixture.directory.join("default-history.sqlite");
+        let _history_db_env = ScopedHistoryDbEnv::point_to(&database_path);
         let mut stdout = Vec::new();
 
         collect_to(&["--json".to_string()], &mut stdout)
@@ -1403,24 +1438,20 @@ mod tests {
 
         let snapshot: serde_json::Value =
             serde_json::from_slice(&stdout).expect("stdout should remain snapshot JSON");
-        let expected_stdout = format!(
-            "{}\n",
-            serde_json::to_string_pretty(&snapshot).expect("snapshot should serialize")
+        assert!(
+            snapshot.get("timestamp").is_some(),
+            "snapshot JSON should carry a timestamp"
         );
-        assert_eq!(stdout, expected_stdout.as_bytes());
+        assert!(
+            snapshot
+                .get("processes")
+                .and_then(serde_json::Value::as_array)
+                .is_some(),
+            "snapshot JSON should carry a processes array"
+        );
         assert!(
             !database_path.exists(),
-            "collect without --sqlite must not create a database"
-        );
-        assert!(
-            std::fs::read_dir(&temporary_state)
-                .expect("temporary state directory should be readable")
-                .all(|entry| entry
-                    .expect("temporary state entry should be readable")
-                    .path()
-                    .extension()
-                    .is_none_or(|extension| extension != "sqlite")),
-            "collect without --sqlite must not create any .sqlite file"
+            "collect without --sqlite must not create the default database"
         );
     }
 

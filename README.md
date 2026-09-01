@@ -297,11 +297,11 @@ you know it is not:
   and then reloads settings, so disabling thermals permits at most one more scan
   (≤ 1.5 s) and enabling them takes effect on the following tick. Changes to
   `extraChips` settle at the next slow tick, when chip discovery re-runs.
-- **`tinytop-agent collect --json` does not read persisted settings**, so it
-  never reports sensors regardless of what is stored — it builds a default
-  collector by design. Use the daemon (`serve` / `serve-writer`, or the
-  dashboard) to see thermals, and `db stats --json` to confirm rows are being
-  recorded.
+- **The collector is configured from the settings stored in the database the
+  rows are going into.** `tinytop-agent collect --json` without `--sqlite`
+  stays hermetic: it uses collector defaults without reading, opening, or
+  creating a database. With `--sqlite <db>`, it loads that database's settings
+  before collecting, so options such as thermals apply to the inserted row.
 
 ## Common Commands
 
@@ -354,7 +354,7 @@ Implementation notes:
 - Collection has three cadence classes: fast CPU, memory, swap, load, pressure, processes, and uptime refresh on every `pollIntervalMs` tick; slow filesystems refresh every `retentionLadder.detailIntervalSec`, are served from cache between checks, and carry `filesystemsCapturedAtMs`; static hostname, kernel, and distro identity is re-read on the slow tick.
 - Schema v5 retains the v4 process/GPU layout and adds interned `sensor_dim` identities plus raw `sensor_samples`; `tinytop-agent db stats --json` reports `userVersion`, GPU counts, and sensor counts.
 - `/api/snapshot` is answered from the daemon's latest in-memory snapshot. It returns `503 {"error":"no snapshot yet"}` only before the first collection, and the daemon collects once before binding its listener.
-- `topProcessCount` is effective from the next collection tick (default `8`); the previous hard-coded `10` is gone, and `tinytop-agent collect --json` uses the default.
+- `topProcessCount` is effective from the next daemon collection tick (default `8`), and the previous hard-coded `10` is gone. `tinytop-agent collect --json` without `--sqlite` uses that collector default without opening a database; with `--sqlite <db>`, it loads the target database's stored count before collecting.
 - Linux is the default supported collector feature. Native macOS and Windows collectors are present as opt-in Rust feature-gated modules for identity, CPU, memory, load equivalent, disks, and processes; Linux remains the reference implementation until those hosts receive full live-machine verification.
 - Local Rust builds require Rust `1.95.0` or newer because the pinned `sysinfo` release uses that MSRV.
 
