@@ -82,3 +82,37 @@ for free and inverts correctly, whereas a literal `--amber` pins one hue across 
   input[type="checkbox"]` rule. A new, more specific rule elsewhere will silently win again, and this
   file has now demonstrated that failure three times.
 - ADR 0028 is **not edited**. Its geometry is superseded here; its central decision stands.
+
+## Errata (2026-09-01, before this ADR shipped)
+
+**Decision 3's consequence above is wrong for `solar`, and the sentence is left standing so the
+error is visible rather than quietly rewritten.**
+
+It claims that keeping `--cyan` leaves "a near-identical orange" on both `ember` and `solar`.
+Measured in a real browser against the fixed stylesheet:
+
+| theme | today, legacy `--amber` | after this ADR, `--cyan` | verdict |
+|---|---|---|---|
+| `ember` | `#f59e0b` | `#fb923c` | near-identical orange — **claim holds** |
+| `solar` | `#b45309` (orange) | `#0369a1` (**blue**) | **claim is false** |
+| `matrix` | `#fbbf24` | `#67e8f9` | orange → cyan |
+| `aurora` | `#fbbf24` | `#38bdf8` | orange → blue |
+| default | `#f59e0b` | `#38bdf8` | orange → blue |
+
+So on four of five themes — including `solar`, which is the one in daily use — the on-state switch
+changes from orange to the theme's cool accent. That is a visible change to every switch in the
+dialog and it was not stated when the decision was written.
+
+**Decision 3 stands after being put to Michel, who returned it ("you decide"), on this evidence:**
+`.history-series-toggles input` and `.inline-toggle input` already carry `accent-color: var(--cyan)`
+(`styles.css:1831-1834`), so on `solar` every other accented control in the dashboard is *already*
+this blue. The amber switch was the outlier, not the convention it appeared to be. Keeping `--amber`
+would preserve familiarity at the cost of pinning one literal hue across all five themes — the exact
+coupling ADR 0028 existed to remove.
+
+**Method note, recorded because it nearly produced a false finding.** An earlier probe reported the
+painted track colour as frozen across all themes, which looked like a fifth competing rule. It was an
+artifact: setting `data-theme` and reading `getComputedStyle` in the *same* task returns stale
+custom-property-dependent paint, because `void offsetHeight` forces layout but not that recomputation.
+Read in a separate task, `--cyan` resolves correctly per theme. **Any future theme measurement in this
+dialog must set the attribute and read in separate tasks.**

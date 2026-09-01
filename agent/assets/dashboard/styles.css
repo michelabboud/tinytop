@@ -1426,12 +1426,14 @@ h1 {
    The on-state pairs --cyan with --surface so it inverts correctly in every
    theme: a light track on the dark themes takes the dark surface as its knob,
    and the dark cyan of the light "solar" theme takes a white one. */
+/* This is the only switch implementation; a more-specific rule elsewhere will
+   silently win. See ADR 0032. */
 .settings-dialog input[type="checkbox"] {
   appearance: none;
   position: relative;
   flex: none;
-  inline-size: 2.15rem;
-  block-size: 1.2rem;
+  inline-size: 42px;
+  block-size: 24px;
   margin: 0;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1446,9 +1448,9 @@ h1 {
   content: "";
   position: absolute;
   inset-block-start: 50%;
-  inset-inline-start: 0.18rem;
-  inline-size: 0.8rem;
-  block-size: 0.8rem;
+  inset-inline-start: 3px;
+  inline-size: 16px;
+  block-size: 16px;
   border-radius: 50%;
   background: var(--muted);
   translate: 0 -50%;
@@ -1464,7 +1466,7 @@ h1 {
 
 .settings-dialog input[type="checkbox"]:checked::after {
   background: var(--surface);
-  translate: calc(0.99rem - 2px) -50%;
+  translate: 18px -50%;
 }
 
 .settings-dialog input[type="checkbox"]:hover:not(:disabled) {
@@ -1523,52 +1525,6 @@ h1 {
 
 .history-ladder-settings-group .settings-wide-field {
   grid-column: span 2;
-}
-
-.settings-group .toggle-row input[type="checkbox"] {
-  appearance: none;
-  position: relative;
-  width: 42px;
-  height: 24px;
-  flex: 0 0 auto;
-  border: 1px solid color-mix(in srgb, var(--muted) 70%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--bg) 62%, var(--surface-2));
-  cursor: pointer;
-  transition:
-    background 160ms ease,
-    border-color 160ms ease,
-    box-shadow 160ms ease;
-}
-
-.settings-group .toggle-row input[type="checkbox"]::before {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 16px;
-  height: 16px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 82%, var(--text));
-  box-shadow: 0 1px 4px rgba(2, 6, 23, 0.4);
-  transition:
-    background 160ms ease,
-    transform 160ms ease;
-}
-
-.settings-group .toggle-row input[type="checkbox"]:checked {
-  border-color: color-mix(in srgb, var(--amber) 80%, var(--border));
-  background: color-mix(in srgb, var(--amber) 78%, var(--surface-2));
-}
-
-.settings-group .toggle-row input[type="checkbox"]:checked::before {
-  background: color-mix(in srgb, var(--bg) 72%, var(--text));
-  transform: translateX(18px);
-}
-
-.settings-group .toggle-row input[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--cyan);
-  outline-offset: 3px;
 }
 
 #effective-settings-readout {
