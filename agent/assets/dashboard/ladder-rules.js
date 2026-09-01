@@ -125,7 +125,7 @@ export function formatSensorThreshold(max, crit) {
 }
 
 function usableSensorThreshold(value) {
-  return Number.isFinite(value) && value > 0;
+  return Number.isFinite(value) && value > 0 && value <= 200;
 }
 
 export function sensorBarPercent(value, max, crit) {
@@ -144,7 +144,7 @@ export function groupSensorsByChip(sensors) {
   if (!Array.isArray(sensors) || sensors.length === 0) return [];
   const groups = new Map();
   for (const sensor of sensors) {
-    const chip = sensor?.chip;
+    const chip = typeof sensor?.chip === "string" && sensor.chip.length > 0 ? sensor.chip : "unknown";
     if (!groups.has(chip)) groups.set(chip, []);
     groups.get(chip).push(sensor);
   }
@@ -361,22 +361,26 @@ export function settingsPutPayload(
 }
 
 const THERMAL_CHIP_ERROR = "thermal.extraChips entries must match ^[a-z0-9_]{1,32}$";
-const THERMAL_CHIP_COUNT_ERROR = "thermal.extraChips must hold at most 16 entries";
-const THERMAL_CHIP_DUPLICATE_ERROR = "thermal.extraChips must not contain duplicates";
+const THERMAL_CHIP_COUNT_ERROR = "thermal.extraChips accepts at most 16 chip names";
 export const THERMAL_RESERVED_CHIP_ERROR =
-  "thermal.extraChips must not contain reserved non-CPU chips: amdgpu, i915, nvme";
+  "thermal.extraChips must not name a chip already reported elsewhere: amdgpu, i915, nvme";
 const THERMAL_RESERVED_CHIPS = new Set(["amdgpu", "i915", "nvme"]);
+
+function thermalChipDuplicateError(chip) {
+  return `thermal.extraChips contains duplicate chip name "${chip}"`;
+}
 
 export function validateThermalSettings(thermal) {
   const extraChips = Array.isArray(thermal?.extraChips) ? thermal.extraChips : [];
   if (extraChips.length > 16) return [THERMAL_CHIP_COUNT_ERROR];
-  if (extraChips.some((chip) => typeof chip !== "string" || !/^[a-z0-9_]{1,32}$/u.test(chip))) {
-    return [THERMAL_CHIP_ERROR];
+
+  const seen = new Set();
+  for (const chip of extraChips) {
+    if (typeof chip !== "string" || !/^[a-z0-9_]{1,32}$/u.test(chip)) return [THERMAL_CHIP_ERROR];
+    if (THERMAL_RESERVED_CHIPS.has(chip)) return [THERMAL_RESERVED_CHIP_ERROR];
+    if (seen.has(chip)) return [thermalChipDuplicateError(chip)];
+    seen.add(chip);
   }
-  if (extraChips.some((chip) => THERMAL_RESERVED_CHIPS.has(chip))) {
-    return [THERMAL_RESERVED_CHIP_ERROR];
-  }
-  if (new Set(extraChips).size !== extraChips.length) return [THERMAL_CHIP_DUPLICATE_ERROR];
   return [];
 }
 

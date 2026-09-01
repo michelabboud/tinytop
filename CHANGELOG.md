@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.3 - 2026-09-01
+
+- **The dashboard's thermal validator now mirrors the backend's rule *order*, not just its wording** (D3). The backend is the only validator that can refuse a write, so the client must fire the same rule with the same words; otherwise the message an operator sees depends on which validator ran first. The inventory recorded this as three diverging strings, but re-reading both sides found more: the backend loops **per chip in array order**, returning on the first offending *element* (pattern → reserved → duplicate), while the client scanned the whole array **per rule**. For `["cpu_a","cpu_a","amdgpu"]` the server answered *duplicate* and the client answered *reserved* — so aligning only the strings would have looked fixed while a different rule still fired. The client now walks the array once, per element, in the backend's order, and the three diverging messages match `thermal_settings.rs` verbatim; the pattern message already agreed and is untouched. The duplicate message stops being a constant and **names the offending chip**, as the backend's `format!` does, so an operator learns which entry repeats.
+- Thermal bars and severity now honour the whole of ADR 0026 decision 4's `0 < t <= 200 °C` band instead of only its lower half. A ceiling outside the band makes the bar absent rather than scaling every reading against a nonsense maximum — which is what sheep's nvme `temp2_max` of `65261850` would otherwise do, rendering a permanently-empty bar with no explanation.
+- A thermal reading with a missing, empty, or non-string `chip` no longer heads a group rendered as the literal string `undefined`; such readings group together under `unknown`. They are not dropped — losing a reading is worse than labelling it. Both of these are unreachable from our own backend and are deliberate defence against any other producer of the same shape.
+
 ## 0.7.2 - 2026-09-01
 
 - `tinytop-agent collect --json` without `--sqlite` remains hermetic and uses collector defaults without opening a database, while `collect --json --sqlite <db>` configures the collector from that target database's stored settings before inserting the row.
