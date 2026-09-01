@@ -1081,8 +1081,17 @@ h1 {
   line-height: 1.45;
 }
 
+/* `min-height: 0` is load-bearing, not tidiness. This is the `minmax(0, 1fr)`
+   row of `.settings-card`, but a grid item's default `min-height: auto` refuses
+   to shrink below its content -- so a tall panel pushed the row to its content
+   height, left the `auto` actions row with 0px, and rendered Save / Cancel /
+   Reset BELOW the dialog's bottom edge where they could not be clicked. With it,
+   the row shrinks, the actions keep their height, and this body is the one thing
+   that scrolls. It is also why showing the validation summary used to resize the
+   dialog instead of just consuming space inside it. ADR 0034. */
 .settings-dialog-body {
   min-width: 0;
+  min-height: 0;
   overflow: auto;
   padding: 1rem;
 }
@@ -1490,6 +1499,29 @@ h1 {
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
   line-height: 1.45;
+}
+
+/* The editor grows with the window. It has a sub-tab to itself since ADR 0033,
+   so it no longer shares the panel width with the OTel fields and there is
+   nothing beside it to keep short -- and a JSON document is simply more usable
+   the more of it you can see at once.
+   The height is derived rather than a flex fill because the chain from the
+   scrolling body down sizes to content (`#settings-panel-advanced` sets
+   `align-content: start` deliberately), so `flex: 1` alone has no definite
+   height to divide.
+
+   It is derived from the DIALOG's own height expression, not from `100dvh`. The
+   dialog is capped at 820px (ADR 0029), so on a tall window the viewport says
+   nothing about how much room the editor has -- sized against `100dvh` on a
+   1216px window it came out 880px tall inside a 716px box and overflowed by 483.
+   `26.5rem` is the chrome above and below it -- header, both tab rows, legend,
+   field label, actions, gaps and padding -- SOLVED from a measurement rather
+   than estimated: at a 20rem constant the editor rendered 500px inside a 716px
+   body whose other content was 319px, so the available height was 397px and the
+   constant is the 818px dialog minus that, plus ~3px of slack. `max()` keeps the
+   old floor on a short window. ADR 0034. */
+#settings-subpanel-advanced-document .advanced-settings-document {
+  min-height: max(9rem, calc(min(820px, 100dvh - 2rem) - 26.5rem)) !important;
 }
 
 .advanced-document-actions {

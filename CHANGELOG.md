@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.1 - 2026-09-02
+
+Michel, on the raw settings document: *"in advanced you can give the document more space, since the window is larger"*, *"click on validate and see that the notification change the size"*, *"add scroll"*. Chasing that found two defects, one of them shipped in 0.9.0.
+
+- **Fixed: the Thermals tab rendered an empty dialog, and the dialog's action buttons could be laid out below its bottom edge.** Wrapping Advanced's two fieldsets in sub-panels (0.9.0) added an opening `<div>` without its matching close, and the browser's error recovery silently re-parented everything after it: `#settings-panel-thermals` became a **child of the Advanced panel** — so it inherited `[hidden]` and showed nothing unless Advanced was also selected — and `.settings-dialog-actions` moved **inside the scrolling body**, which cost `.settings-card` the third row of its three-row grid (measured `102px / 716px / 0px`) and pushed Save, Cancel, Reset and Defaults out of the dialog where they could not be clicked. A parser repairs this kind of mistake silently, which is how it survived a release; the new `tests/dashboard-dialog-structure.test.ts` reads `<div>` **depth in the source** instead — all five tab panels must share a depth, the actions must be a sibling of the body, and the tags must balance. Verified against the shipped markup, where it reports Thermals at depth 4 against every other panel's 3.
+- **Fixed: `.settings-dialog-body` had `min-width: 0` but not `min-height: 0`.** It is the `minmax(0, 1fr)` row of the card, and a grid item's default `min-height: auto` refuses to shrink below its content — so even correctly nested, a tall panel would squeeze the action row to nothing. This was also why showing the validation notice appeared to resize the dialog. The body is now the one scrolling region: after clicking Validate the dialog height and the action row's position are **unchanged** (818 px and 950 px, before and after), and the body scrolls 66 px instead.
+- **The raw settings document editor now fills the dialog.** It has a sub-tab to itself since 0.9.0, so nothing sits beside it to keep short. Its height is derived from the dialog's own `min(820px, 100dvh - 2rem)` rather than from `100dvh` — the dialog is capped at 820 px, so on a tall window the viewport says nothing about the room available, and a first attempt sized against it produced an 880 px editor inside a 716 px box. It now renders 396 px where a binary search over the real layout puts the no-scroll maximum at 397 px.
+
 ## 0.10.0 - 2026-09-02
 
 Michel, on the 0.9.0 dialog: *"FIX this ---> a sub-tab that unmounts silently drops settings on save"* and *"make nicer designs here"*.

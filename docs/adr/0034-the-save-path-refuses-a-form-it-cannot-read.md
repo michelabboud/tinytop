@@ -115,3 +115,43 @@ help paragraph expanded overflowed a 720 px window by 9 px.
   on what a valid settings document is.
 - ADR 0033 is **not edited**. Its decision 2 stands and is now enforced rather than trusted; its
   decision 6 layout is superseded here.
+
+## Addendum (2026-09-02, 0.10.1) — append-only; nothing above is rewritten
+
+Michel then asked for the raw document editor to use the space it had: *"in advanced you can give the
+document more space, since the window is larger"*, *"just lets it expand close to the bottom
+border"*, *"click on validate and see that the notification change the size"*, *"add scroll"*.
+Chasing that exposed **two defects, one of them mine from ADR 0033**.
+
+**1. `#settings-panel-advanced` was never closed.** Wrapping its two fieldsets in sub-panels (ADR
+0033) added an opening `<div>` without its matching close, so the browser's error recovery quietly
+re-parented everything that followed: `#settings-panel-thermals` became a child of the Advanced
+panel, `#settings-validation-summary` moved inside `.settings-grid`, and
+`.settings-dialog-actions` moved inside the scrolling `.settings-dialog-body`.
+
+Two user-visible consequences, both shipped in 0.9.0 and 0.10.0:
+
+- **The Thermals tab rendered an empty dialog.** Its panel inherited `[hidden]` from the Advanced
+  panel, so selecting Thermals showed nothing whenever Advanced was not also selected.
+- **`.settings-card`'s three-row grid lost its third row.** With the actions inside the body rather
+  than beside it, the card's rows measured `102px / 716px / 0px` and Save, Cancel, Reset and
+  Defaults were laid out **below the dialog's bottom edge**, unclickable, whenever a panel was tall.
+
+A parser would have repaired this silently — which is how it survived a release. The new
+`tests/dashboard-dialog-structure.test.ts` reads `<div>` **depth in the source** instead: all five
+tab panels must share one depth, the actions must be a sibling of the body, and the tags must
+balance. Verified against the shipped markup, where it reports Thermals at depth 4 against every
+other panel's 3, and the actions at depth 2 against the body's 1.
+
+**2. `.settings-dialog-body` had `min-width: 0` but not `min-height: 0`.** It is the `minmax(0, 1fr)`
+row of the card, and a grid item's default `min-height: auto` refuses to shrink below its content —
+so even correctly nested, a tall panel would squeeze the actions row. This is also why showing the
+validation summary appeared to resize the dialog. With it set, the body is the one scrolling region,
+the dialog height and the action row's position are unchanged by the summary (measured: card 818 px
+and actions top 950 px, identical before and after Validate), and the body simply scrolls 66 px.
+
+**3. The editor's height is derived from the dialog, not the viewport.** ADR 0029 caps the dialog at
+`min(820px, 100dvh - 2rem)`, so on a tall window `100dvh` says nothing about the room available — a
+first attempt sized against it produced an 880 px editor inside a 716 px box. Sized against the
+dialog's own expression minus measured chrome, the editor renders 396 px where a binary search over
+the real layout puts the no-scroll maximum at 397 px.
