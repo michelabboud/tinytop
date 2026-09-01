@@ -1529,21 +1529,160 @@ h1 {
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
 }
 
-/* TWO FIXED COLUMNS, deliberately not `auto-fit`: each tier's enable switch has
-   to land in the left cell with its own days field beside it. Under `auto-fit`
-   the pairing depended on the panel's rendered width, which is what put a
-   toggle for one tier between two other tiers' number fields and left the eye
-   with no rhythm to follow -- the "looks bad" this group exists to fix.
-   Compound selector so it out-ranks .history-ladder-settings-group above
-   regardless of source order; a bare class would tie and lose. */
+/* ── The retention ladder ────────────────────────────────────────────────────
+   The tiers are a LIST, not a grid of unrelated fields. ADR 0033's two fixed
+   columns did pair each switch with its own days field, but the panel still
+   read as eight separate boxes with no sense that L1..L4 are one ladder getting
+   coarser and longer. Every row now uses the SAME EXPLICIT track sizes -- not
+   `auto`, which sizes per row and would stagger the columns -- so resolution,
+   on/off state and span can be read straight down. ADR 0034.
+
+   Several rules below are prefixed with `.settings-group` on purpose. The unit
+   suffixes and number inputs sit inside `<label>`s within the group, so they
+   collide with `.settings-group label > span` and `.settings-group
+   input[type="number"]`. Winning on specificity rather than on source order is
+   deliberate: this file has now produced four order-dependent failures. */
 .history-ladder-settings-group.history-tier-group {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
 }
 
-/* A switch row and a number row must be the same height, or the pairs stagger.
-   The number input is the taller of the two, so the switch row matches it. */
-.history-tier-group .toggle-row {
-  align-self: stretch;
+/* Gap and row padding are tuned, not chosen: the tiers panel with its help
+   paragraph expanded is the tallest thing in the dialog, and at 0.3rem/0.4rem it
+   overflowed a 720px window by 9px (measured). */
+.tier-ladder {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0.25rem;
+  margin: 0;
+  min-width: 0;
+  list-style: none;
+  padding: 0;
+}
+
+.tier-row {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) 2.9rem 6.4rem 5.6rem;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-2) 40%, transparent);
+  min-width: 0;
+  padding: 0.32rem 0.6rem;
+}
+
+.tier-badge {
+  display: grid;
+  place-items: center;
+  height: 1.5rem;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--cyan) 18%, transparent);
+  color: var(--cyan);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.tier-name {
+  display: grid;
+  gap: 0.05rem;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.tier-name small {
+  color: var(--muted);
+  font-size: 0.69rem;
+  font-weight: 500;
+}
+
+.tier-always {
+  color: var(--muted);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.tier-switch {
+  display: grid;
+  place-items: center;
+  margin: 0;
+  min-width: 0;
+}
+
+.tier-days {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  min-width: 0;
+}
+
+/* Same box width as a tier's span field, so the one setting that is not a tier
+   still lines up with the ladder above it instead of stretching the full row. */
+.tier-extra-control {
+  display: grid;
+  grid-template-columns: 6.4rem auto;
+  align-items: center;
+  justify-content: start;
+  gap: 0.35rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.settings-group .tier-days input[type="number"],
+.settings-group .tier-extra-control input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  padding: 0.3rem 0.45rem;
+  text-align: right;
+}
+
+.settings-group .tier-ladder .tier-unit,
+.settings-group .tier-extra-control .tier-unit {
+  overflow: visible;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.tier-forever {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0;
+  min-width: 0;
+}
+
+.settings-group .tier-forever > span {
+  overflow: visible;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+/* A tier that is switched off recedes; its own switch keeps full contrast so it
+   can be turned back on. Cosmetic only -- the authority on what is editable
+   stays the `disabled` attribute syncLadderControlStates() sets. */
+.tier-row:has(.tier-switch input:not(:checked)) .tier-name,
+.tier-row:has(.tier-switch input:not(:checked)) .tier-badge {
+  opacity: 0.5;
+}
+
+.tier-extra-field {
+  grid-column: 1 / -1;
+  margin-top: 0.15rem;
 }
 
 .otel-settings-group textarea,
@@ -2635,10 +2774,21 @@ td {
     grid-template-columns: 1fr;
   }
 
-  /* Restated: the two-column tier rule is a compound selector and would
-     otherwise out-rank the single-column collapse above on a narrow screen. */
-  .history-ladder-settings-group.history-tier-group {
-    grid-template-columns: 1fr;
+  /* The five-column tier row cannot fit a narrow screen. Badge, name and the
+     on/off state keep the top line; the span and the forever switch wrap
+     underneath, still aligned to the name's column. */
+  .tier-row {
+    grid-template-columns: 2rem minmax(0, 1fr) 2.9rem;
+    row-gap: 0.4rem;
+  }
+
+  .tier-days,
+  .tier-forever {
+    grid-column: 2 / -1;
+  }
+
+  .tier-forever-slot {
+    display: none;
   }
 
   .history-ladder-settings-group .settings-wide-field {

@@ -1,6 +1,7 @@
 import {
   HISTORY_WINDOWS,
   advancedDocumentApplyAllowed,
+  brokenSettingsControls,
   availableSettingsTabs,
   describeDiskCoverage,
   describeFilesystemFreshness,
@@ -35,6 +36,7 @@ import {
   pressureMaximum,
   sensorBarPercent,
   sensorSeverity,
+  settingsIntegrityErrors,
   settingsPutPayload,
   shouldFetchCoverage,
   thermalCapabilityFrom,
@@ -2866,6 +2868,16 @@ function validateThresholdPair(errors, label, warn, critical) {
 }
 
 function validateDaemonSettings(settings = collectDaemonSettingsFromForm()) {
+  // BEFORE any value is judged: can the controls even be read? A detached input
+  // answers `.value` with a stale one, so every range check below would pass on
+  // data the user is not looking at and the save would write it. Reported alone
+  // rather than mixed in, because the remaining checks would be judging values
+  // that did not come from the form. ADR 0034.
+  const integrity = settingsIntegrityErrors(brokenSettingsControls(daemonSettingsControlManifest()));
+  if (integrity.length > 0) {
+    renderSettingsValidation(integrity);
+    return integrity;
+  }
   const errors = [];
   validateRange(errors, "Refresh ms", settings.pollIntervalMs, 250, 60_000);
   validateRange(errors, "DB budget MiB", Math.round(settings.targetDatabaseBytes / 1024 / 1024), 1, 10_240);
@@ -3091,6 +3103,87 @@ function populateDaemonSettings(settings, { resetBaseline = true } = {}) {
   renderSettingsDirtyIndicator();
   applyEnabledSections(nextSettings);
   if (state.lastSnapshot) renderOperatorStatus(state.lastSnapshot);
+}
+
+// Every control collectDaemonSettingsFromForm() reads, paired with the label the
+// user sees and gated by the capability that makes it readable at all — an
+// absent runtime feature must not be reported as a broken form.
+//
+// This list has to stay in step with that function, so it is not trusted to:
+// `tests/dashboard-settings-integrity.test.ts` extracts the `elements.*` set
+// from BOTH and fails if they disagree. Drift is a red test, never a silent
+// hole in the guard. ADR 0034.
+function daemonSettingsControlManifest() {
+  const entries = [
+    ["Refresh ms", elements.daemonPollInterval],
+    ["DB budget MiB", elements.daemonDbBudgetMib],
+    ["Processes", elements.daemonTopProcessCount],
+    ["Default theme", elements.daemonDefaultTheme],
+    ["Default graph", elements.daemonDefaultGraph],
+    ["Default window", elements.daemonDefaultWindow],
+    ["Redact by default", elements.daemonRedactionDefault],
+    ["Show overview", elements.daemonSectionOverview],
+    ["Show history", elements.daemonSectionHistory],
+    ["Show filesystem", elements.daemonSectionFilesystem],
+    ["Show pressure", elements.daemonSectionPressure],
+    ["Show processes", elements.daemonSectionProcesses],
+    ["CPU warn", elements.daemonCpuWarn],
+    ["CPU critical", elements.daemonCpuCritical],
+    ["RAM warn", elements.daemonMemoryWarn],
+    ["RAM critical", elements.daemonMemoryCritical],
+    ["Disk warn", elements.daemonDiskWarn],
+    ["Disk critical", elements.daemonDiskCritical],
+    ["Load warn", elements.daemonLoadWarn],
+    ["Load critical", elements.daemonLoadCritical],
+    ["Pressure warn", elements.daemonPressureWarn],
+    ["Pressure critical", elements.daemonPressureCritical],
+  ];
+  if (state.retentionLadderAvailable) {
+    entries.push(
+      ["L1 raw days", elements.daemonL1KeepDays],
+      ["L2 one-minute days", elements.daemonL2KeepDays],
+      ["Enable L3", elements.daemonL3Enabled],
+      ["L3 days", elements.daemonL3KeepDays],
+      ["Enable L4", elements.daemonL4Enabled],
+      ["L4 days", elements.daemonL4KeepDays],
+      ["Keep L4 forever", elements.daemonL4Forever],
+      ["Filesystem check seconds", elements.daemonDetailIntervalSec],
+      ["Per-tick process history", elements.daemonProcessFastKeepHours],
+      ["Queryable archive", elements.daemonArchiveQueryable],
+      ["Cold CSV.gz archive", elements.daemonArchiveCold],
+      ["Cold after months", elements.daemonArchiveColdAfterMonths],
+      ["Archive directory", elements.daemonArchiveDirectory],
+      ["Disk check minutes", elements.daemonDiskCheckIntervalMinutes],
+      ["Minimum free GiB", elements.daemonDiskCheckMinFreeGib],
+    );
+  } else {
+    // Read only on a runtime without a ladder; derived from L1/L2 otherwise.
+    entries.push(
+      ["History hours", elements.daemonRetentionHours],
+      ["Rollup days", elements.daemonRollupRetentionDays],
+    );
+  }
+  if (state.otelAvailable) {
+    entries.push(
+      ["Enable OpenTelemetry export", elements.daemonOtelEnabled],
+      ["Endpoint", elements.daemonOtelEndpoint],
+      ["Interval seconds", elements.daemonOtelIntervalSec],
+      ["Headers environment variable", elements.daemonOtelHeadersEnvVar],
+      ["Service name", elements.daemonOtelServiceName],
+      ["Resource attributes", elements.daemonOtelResourceAttributes],
+    );
+    // The metric checkboxes are queried THROUGH this container, and
+    // querySelectorAll works perfectly well on a detached subtree — so a
+    // detached container yields a plausible, wrong disabled-metrics set.
+    if (state.metricsAvailable) entries.push(["Metric selection", elements.metricsSettingsGroups]);
+  }
+  if (state.thermalAvailable) {
+    entries.push(
+      ["Collect CPU thermals", elements.daemonThermalEnabled],
+      ["Additional hwmon chips", elements.daemonThermalExtraChips],
+    );
+  }
+  return entries.map(([name, node]) => ({ name, node }));
 }
 
 function numberControlValue(control, fallback) {

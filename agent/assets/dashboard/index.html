@@ -636,37 +636,66 @@
                 <fieldset class="settings-group history-ladder-settings-group history-tier-group">
                   <legend class="settings-legend">Retention tiers<button class="settings-help-toggle" type="button" aria-expanded="false" aria-controls="help-history-tiers" aria-label="About retention tiers">?</button></legend>
                   <p class="settings-help-text" id="help-history-tiers" hidden>How long each resolution of history survives. L1 keeps every sample, L2 one point a minute, L3 one per five minutes, L4 one per hour. The coarse tiers are what make years of history affordable — raising L1 costs the most disk per day by a wide margin.</p>
-                  <label>
-                    <span>L1 raw days</span>
-                    <input id="daemon-l1-keep-days" type="number" min="3" max="3650" step="1" />
-                  </label>
-                  <label>
-                    <span>L2 one-minute days</span>
-                    <input id="daemon-l2-keep-days" type="number" min="7" max="3650" step="1" />
-                  </label>
-                  <label class="toggle-row">
-                    <input id="daemon-l3-enabled" type="checkbox" role="switch" />
-                    <span>Enable L3</span>
-                  </label>
-                  <label>
-                    <span>L3 days</span>
-                    <input id="daemon-l3-keep-days" type="number" min="0" max="3650" step="1" />
-                  </label>
-                  <label class="toggle-row">
-                    <input id="daemon-l4-enabled" type="checkbox" role="switch" />
-                    <span>Enable L4</span>
-                  </label>
-                  <label>
-                    <span>L4 days</span>
-                    <input id="daemon-l4-keep-days" type="number" min="0" max="36500" step="1" />
-                  </label>
-                  <label class="toggle-row">
-                    <input id="daemon-l4-forever" type="checkbox" role="switch" />
-                    <span>Keep L4 forever</span>
-                  </label>
-                  <label>
-                    <span>Per-tick process history (hours)</span>
-                    <input id="daemon-process-fast-keep-hours" type="number" min="1" max="72" step="1" />
+                  <!-- The ladder is a LIST of tiers, not a grid of unrelated fields: the
+                       four rows share one column track, so resolution, on/off state and
+                       span line up and can be read down the column. Each row's own
+                       controls stay together, which the flat auto-fit grid could not
+                       guarantee — it wrapped by rendered width. ADR 0034. -->
+                  <ol class="tier-ladder">
+                    <li class="tier-row">
+                      <span class="tier-badge" aria-hidden="true">L1</span>
+                      <span class="tier-name">Raw samples<small>every poll · finest detail, largest cost</small></span>
+                      <span class="tier-always">always</span>
+                      <label class="tier-days">
+                        <input id="daemon-l1-keep-days" type="number" min="3" max="3650" step="1" aria-label="L1 raw sample days" />
+                        <span class="tier-unit">days</span>
+                      </label>
+                      <span class="tier-forever-slot"></span>
+                    </li>
+                    <li class="tier-row">
+                      <span class="tier-badge" aria-hidden="true">L2</span>
+                      <span class="tier-name">One a minute<small>the workhorse tier</small></span>
+                      <span class="tier-always">always</span>
+                      <label class="tier-days">
+                        <input id="daemon-l2-keep-days" type="number" min="7" max="3650" step="1" aria-label="L2 one-minute days" />
+                        <span class="tier-unit">days</span>
+                      </label>
+                      <span class="tier-forever-slot"></span>
+                    </li>
+                    <li class="tier-row">
+                      <span class="tier-badge" aria-hidden="true">L3</span>
+                      <span class="tier-name">One per five minutes<small>optional</small></span>
+                      <label class="tier-switch">
+                        <input id="daemon-l3-enabled" type="checkbox" role="switch" aria-label="Enable L3 five-minute history" />
+                      </label>
+                      <label class="tier-days">
+                        <input id="daemon-l3-keep-days" type="number" min="0" max="3650" step="1" aria-label="L3 five-minute days" />
+                        <span class="tier-unit">days</span>
+                      </label>
+                      <span class="tier-forever-slot"></span>
+                    </li>
+                    <li class="tier-row">
+                      <span class="tier-badge" aria-hidden="true">L4</span>
+                      <span class="tier-name">One per hour<small>optional · cheapest per day</small></span>
+                      <label class="tier-switch">
+                        <input id="daemon-l4-enabled" type="checkbox" role="switch" aria-label="Enable L4 hourly history" />
+                      </label>
+                      <label class="tier-days">
+                        <input id="daemon-l4-keep-days" type="number" min="0" max="36500" step="1" aria-label="L4 hourly days" />
+                        <span class="tier-unit">days</span>
+                      </label>
+                      <label class="tier-forever">
+                        <input id="daemon-l4-forever" type="checkbox" role="switch" aria-label="Keep L4 hourly history forever" />
+                        <span>forever</span>
+                      </label>
+                    </li>
+                  </ol>
+                  <label class="tier-extra-field">
+                    <span>Per-tick process history</span>
+                    <div class="tier-extra-control">
+                      <input id="daemon-process-fast-keep-hours" type="number" min="1" max="72" step="1" aria-label="Per-tick process history hours" />
+                      <span class="tier-unit">hours</span>
+                    </div>
                     <small>Per-tick process rows are kept this long; older windows use the once-a-minute rows.</small>
                   </label>
                 </fieldset>

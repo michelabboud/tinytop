@@ -312,6 +312,53 @@ export function moveSettingsTab(current, key, availableTabs) {
 }
 
 /**
+ * Which of the controls a settings save depends on cannot be trusted to hold
+ * what the user is looking at.
+ *
+ * A DETACHED input still answers `.value` — with whatever it held when it left
+ * the document — and a missing one silently yields a fallback default. Either
+ * one makes a save write data the form is not showing, with no exception, no
+ * failed request and no visible symptom until someone notices their settings
+ * are wrong. Settings panels are therefore hidden and never unmounted
+ * (ADR 0033), but that is a convention, and a convention is not a guarantee.
+ * This turns it into something the save path CHECKS.
+ *
+ * `entries` are `{ name, node }`. A node is trusted ONLY when it reports
+ * `isConnected === true` — not merely when it is non-null, because "still
+ * referenced but no longer in the page" is the whole failure being caught.
+ */
+export function brokenSettingsControls(entries) {
+  const broken = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    const name = typeof entry?.name === "string" && entry.name.length > 0 ? entry.name : "(unnamed control)";
+    const node = entry?.node;
+    if (node === null || node === undefined) broken.push({ name, reason: "missing" });
+    else if (node.isConnected !== true) broken.push({ name, reason: "detached" });
+  }
+  return broken;
+}
+
+/**
+ * Turn that into the message the user sees. It has to say three things: that
+ * nothing was saved, which settings could not be read, and what to do — a bare
+ * "save failed" would leave someone retrying into the same silent corruption.
+ */
+export function settingsIntegrityErrors(broken) {
+  if (!Array.isArray(broken) || broken.length === 0) return [];
+  const named = (reason) => broken.filter((entry) => entry.reason === reason).map((entry) => entry.name);
+  const detached = named("detached");
+  const missing = named("missing");
+  const parts = [];
+  if (detached.length > 0) parts.push(`removed from the page after it loaded (${detached.join(", ")})`);
+  if (missing.length > 0) parts.push(`never present on the page (${missing.join(", ")})`);
+  const plural = broken.length === 1;
+  return [
+    `Nothing was saved: ${broken.length} setting${plural ? "" : "s"} could not be read — ${parts.join("; ")}. ` +
+      `Saving now would have written a stale or default value for ${plural ? "it" : "them"}. Reload the dashboard.`,
+  ];
+}
+
+/**
  * Resolve a selection inside ONE tablist row.
  *
  * Deliberately not `resolveSettingsTab`: that falls back to the literal

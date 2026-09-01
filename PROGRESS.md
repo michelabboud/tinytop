@@ -2,9 +2,24 @@
 
 ## Current Version
 
-- Version: `0.9.0`
-- Date: 2026-09-01
-- Status: Phase 5 IN PROGRESS. **0.9.0** is the settings shell redesign (ADR 0033) — Michel's four
+- Version: `0.10.0`
+- Date: 2026-09-02
+- Status: Phase 5 IN PROGRESS. **0.10.0** (ADR 0034) makes the settings save **refuse a form it
+  cannot read**, and turns the retention ladder into a list of tiers. The save reads 48 controls
+  through an id-based cache taken at load; a *detached* input still answers `.value` with what it
+  held when it left the document, and a missing one takes a fallback default — so a save wrote data
+  the user was not looking at, silently. 0.9.0 answered that with a convention plus a source-grep
+  test; this replaces both with a precondition the save checks (`isConnected === true`, per control,
+  by name) and a manifest that cannot drift, because a test compares its `elements.*` set to the
+  collect function's in both directions. Proven end to end: with the Archive sub-panel removed from
+  the document the save produced zero `PUT`s and named all four unreadable controls. The ladder is
+  now four rows of `badge · resolution · on-off · span` on shared explicit tracks, replacing 0.9.0's
+  two-column grid, which fixed the pairing but still read as eight unrelated boxes. **Also fixed: the
+  four crate versions and both wrapper scripts were left at 0.8.2 when 0.9.0 shipped**, so
+  `env!("CARGO_PKG_VERSION")` — which stamps the OTel `service.version` and every exported settings
+  document — misreported the build while `/api/version` was correct; a new test now asserts every
+  restatement of the version agrees with the `VERSION` file.
+- **0.9.0** was the settings shell redesign (ADR 0033) — Michel's four
   remaining instructions after using 0.8.1. A panel with more content than a short viewport can hold
   now declares sub-groups and shows a secondary tab row: General → Browser · Daemon · Thresholds ·
   Display, History → Tiers · Archive · Disk, Advanced → Export · Document, Metrics → the six
