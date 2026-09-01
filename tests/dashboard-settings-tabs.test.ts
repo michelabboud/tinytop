@@ -12,6 +12,7 @@ import {
 
 const html = readFileSync("agent/assets/dashboard/index.html", "utf8");
 const app = readFileSync("agent/assets/dashboard/app.js", "utf8");
+const styles = readFileSync("agent/assets/dashboard/styles.css", "utf8");
 
 function extractFunction(source: string, name: string): string {
   let start = source.indexOf(`function ${name}(`);
@@ -387,5 +388,39 @@ describe("save error body", () => {
       Response.json({ error: "disabledMetrics contains a duplicate" }, { status: 400 }),
       "Settings save failed with HTTP 400",
     )).toBe("disabledMetrics contains a duplicate");
+  });
+});
+
+describe("the settings dialog is one fixed box for every tab", () => {
+  test("the dialog has a fixed height, not a content-driven one", () => {
+    // A content-sized dialog shrank when a shorter tab was selected. Because a
+    // dialog is centred, shrinking moves its top edge down, out from under the
+    // pointer -- and the tab's focus handler fires on mousedown, so the box
+    // could resize BETWEEN mousedown and mouseup. The mouseup then landed on
+    // the backdrop and the dialog dismissed itself mid-click.
+    expect(styles).toMatch(/\.settings-dialog\s*\{[^}]*height:\s*min\(820px,\s*calc\(100dvh - 2rem\)\)/u);
+    expect(styles).not.toMatch(/\.settings-dialog\s*\{[^}]*max-height:\s*calc\(100dvh - 2rem\)/u);
+    expect(styles).toMatch(/\.settings-card\s*\{[^}]*height:\s*100%/u);
+  });
+
+  test("a backdrop dismiss requires the gesture to have STARTED on the backdrop", () => {
+    // click fires on the common ancestor of mousedown and mouseup, so a press
+    // inside the card released outside it reported the dialog as the target.
+    // Dragging to select text in the document editor discarded the edit.
+    expect(app).toContain('settingsDialog?.addEventListener("pointerdown"');
+    expect(app).toMatch(/startedOnBackdrop && event\.target === elements\.settingsDialog/u);
+  });
+
+  test("Advanced puts the raw document beside the other settings, editor above its buttons", () => {
+    expect(styles).toMatch(/#settings-panel-advanced\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit/u);
+    expect(styles).toMatch(/#settings-panel-advanced \.otel-settings-group\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/u);
+    // Scoped by the panel id on purpose: a bare class ties with .settings-group
+    // and loses on source order, which laid the editor out beside its buttons.
+    expect(styles).toMatch(/#settings-panel-advanced \.advanced-document-settings-group\s*\{[^}]*flex-direction:\s*column/u);
+  });
+
+  test("metric families sit side by side so the registry fits without scrolling", () => {
+    expect(styles).toMatch(/\.metrics-settings-groups\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit/u);
+    expect(styles).toMatch(/\.metrics-settings-groups \.metric-family\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/u);
   });
 });

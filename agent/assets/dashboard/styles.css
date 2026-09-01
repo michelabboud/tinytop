@@ -1029,9 +1029,17 @@ h1 {
   padding: 1rem;
 }
 
+/* The dialog is a FIXED box for every tab. It used to be sized by its content,
+   so switching to a shorter tab shrank it -- and because a dialog is centred,
+   shrinking moves its top edge DOWN, out from under the pointer. The tab's
+   focus handler runs on mousedown, so the box could resize BETWEEN mousedown
+   and mouseup: the mouseup then landed on the backdrop and the dialog
+   dismissed itself mid-click. One size for all tabs removes that entirely, and
+   stops the tab row jumping as you move between panels. Panels scroll inside
+   the body instead (`.settings-dialog-body` is the `minmax(0, 1fr)` row). */
 .settings-dialog {
   width: min(980px, calc(100vw - 2rem));
-  max-height: calc(100dvh - 2rem);
+  height: min(820px, calc(100dvh - 2rem));
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1049,7 +1057,7 @@ h1 {
 .settings-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
-  max-height: calc(100dvh - 2rem);
+  height: 100%;
   min-width: 0;
 }
 
@@ -1133,28 +1141,50 @@ h1 {
   display: grid;
   grid-column: 1 / -1;
   grid-template-columns: minmax(320px, 0.9fr) minmax(0, 1.4fr);
-  gap: 1rem;
+  gap: 0.75rem;
   min-width: 0;
 }
 
 #settings-panel-history,
 #settings-panel-metrics,
-#settings-panel-thermals,
-#settings-panel-advanced {
+#settings-panel-thermals {
   grid-template-columns: minmax(0, 1fr);
 }
 
-#settings-panel-advanced .settings-group {
+/* Advanced is two columns: the OpenTelemetry fields on the left, one per row,
+   and the raw settings document on the right where a JSON editor wants the
+   height. `auto-fit` collapses both to a single column on a narrow screen. */
+#settings-panel-advanced {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+  align-content: start;
+  min-height: 0;
+}
+
+#settings-panel-advanced .settings-runtime-note {
   grid-column: 1 / -1;
 }
 
-.metrics-settings-groups {
-  display: grid;
-  gap: 1rem;
+#settings-panel-advanced .otel-settings-group {
+  grid-template-columns: minmax(0, 1fr);
 }
 
-.metric-family {
+/* Families sit SIDE BY SIDE so the whole registry fits the fixed dialog without
+   scrolling; each family then lists its metrics in one column, which also keeps
+   a metric's name, unit and description on one readable measure. */
+.metrics-settings-groups {
+  display: grid;
+  align-items: start;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  gap: 0.75rem;
+}
+
+/* Scoped deliberately: the bare `.metric-family` selector loses to
+   `.settings-group`'s two-column rule further down the file (same specificity,
+   later wins), so this one has to out-rank it rather than merely restate it. */
+.metrics-settings-groups .metric-family {
   grid-template-columns: minmax(0, 1fr);
+  gap: 0.35rem;
+  padding: 0.7rem 0.8rem;
 }
 
 /* The family name and its bulk control share one row. This was a float, which
@@ -1253,12 +1283,36 @@ h1 {
   padding-left: 1.25rem;
 }
 
-.advanced-document-settings-group {
-  grid-template-columns: minmax(0, 1fr);
+/* The document group owns its column: editor on top taking the height that is
+   left, its actions beneath. Scoped by the panel id ON PURPOSE -- a bare
+   `.advanced-document-settings-group` ties with `.settings-group` on
+   specificity and loses on source order, so `display: grid` would win and lay
+   the editor out BESIDE its buttons. Same trap as `.metric-family` above. */
+#settings-panel-advanced .advanced-document-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  min-height: 0;
+}
+
+#settings-panel-advanced .advanced-document-settings-group > label {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-height: 0;
+}
+
+/* The actions row keeps its natural height, so the buttons stay button-sized
+   instead of stretching to fill the column. */
+#settings-panel-advanced .advanced-document-actions {
+  flex: none;
+  align-items: center;
 }
 
 .advanced-settings-document {
-  min-height: 22rem !important;
+  flex: 1;
+  min-height: 9rem !important;
   resize: vertical;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
   line-height: 1.45;
@@ -1274,13 +1328,13 @@ h1 {
   display: grid;
   align-content: start;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.8rem;
+  gap: 0.6rem;
   min-width: 0;
   margin: 0;
   border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface-2) 58%, transparent);
-  padding: 0.9rem;
+  padding: 0.8rem;
 }
 
 .settings-group legend {
@@ -1324,7 +1378,7 @@ h1 {
 .settings-group label {
   display: grid;
   align-content: start;
-  gap: 0.4rem;
+  gap: 0.3rem;
   min-width: 0;
 }
 

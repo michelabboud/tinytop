@@ -2,11 +2,16 @@
 
 ## Current Version
 
-- Version: `0.7.0`
+- Version: `0.7.1`
 - Date: 2026-09-01
 - Status: Phase 5 (cadence classes + GPU + sensors, plans
   `docs/plans/2026-08-29-cadence-classes-and-gpu-plan.md` and
-  `docs/plans/2026-08-28-tiered-history-ladder/`, ADRs 0021–0028) IN PROGRESS. T18 + T18b landed as
+  `docs/plans/2026-08-28-tiered-history-ladder/`, ADRs 0021–0030) IN PROGRESS. **0.7.1** fixed three
+  defects Michel found while using 0.7.0: the settings dialog dismissed itself on a tab switch (a
+  content-sized dialog resized on mousedown, so the mouseup landed on the backdrop and `click` — which
+  targets the common ancestor — hit the dialog), tabs that did not fit the now-fixed box were
+  redesigned rather than left to scroll, and a historical timeline was being pushed sideways and
+  silently evicted by live samples (ADR 0029, ADR 0030). T18 + T18b landed as
   0.7.0: the thirteen OTel instruments become one `METRIC_REGISTRY` the daemon builds from and
   `GET /api/otel/metrics` serves (read-only, `no-store`, and deliberately carrying neither `endpoint`
   nor `headersEnvVar`), with selection stored as the DISABLED set so a metric added later ships ON
@@ -76,6 +81,13 @@
   OTel crates expose the provider choice or when a macOS/Windows build without CMake is required.
 
 ## Completed
+
+### 0.7.1 - Settings dialog fixed box, and the historical timeline holds still
+
+- [x] Settings dialog closed itself on a tab switch (ADR 0029): a content-sized dialog + a tab `focus` handler that fires on **mousedown** resized the box before mouseup; a centred dialog shrinking moves its top edge DOWN, the mouseup landed on the backdrop, and `click` (dispatched to the common ancestor of mousedown/mouseup) reported the dialog as its target, so the dismiss handler fired mid-click. Fixed by one fixed box for every tab plus requiring a backdrop dismiss to have STARTED on the backdrop -- which also stops a drag-to-select in the document editor from discarding the edit.
+- [x] Every tab fits the fixed box with no scrolling, measured in a real browser against 650px of body: general 672->629, history 372->353, metrics 884->**621** (families side by side), thermals 185->174, advanced 783->**447** (two columns: OTel fields left, raw document right). Two selectors found silently dead against `.settings-group` on source order and now panel-scoped.
+- [x] A historical timeline was pushed sideways by live samples (ADR 0030, pre-existing): `renderSnapshot` pushed every poll into the charted series regardless of window, so a selected window piled up live points AND -- being hydrated at the 1200 render cap -- had its oldest point evicted once per tick until the range was all live data. Now only `live` charts polled samples; a historical window still drives the TILES from the live snapshot, and that render must follow `renderSelectedSample` or the gauges freeze.
+- Gate: Rust 28 suites / 411 passed / 0 failed / 2 ignored; Bun 261 passed / 0 failed across 22 files (+7 regression tests); fmt + clippy clean. Timeline fix proven with a control: `15m` counter held 300 across 7 s while tiles changed 3x; `live` moved 161->165 over the same interval.
 
 ### 0.7.0 - Cadence classes and GPU, Phase 5 (T18 + T18b + the settings switch pass)
 

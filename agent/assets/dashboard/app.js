@@ -24,6 +24,8 @@ import {
   historyWindowFor,
   isValidImportPlan,
   ladderCapabilityFrom,
+  liveSampleDrivesTiles,
+  liveSampleEntersHistory,
   normalizeHistorySamples,
   otelCapabilityFrom,
   parseResourceAttributes,
@@ -2624,8 +2626,16 @@ function renderSnapshotDetails(snapshot) {
 }
 
 function renderSnapshot(snapshot) {
-  pushHistory(snapshot);
+  if (liveSampleEntersHistory(state.historyWindowKey)) pushHistory(snapshot);
   renderSelectedSample();
+  if (liveSampleDrivesTiles(state.historyWindowKey, state.selectedAtMs)) {
+    // A historical window is charted and nothing is scrubbed: the live sample
+    // stays OUT of the charted series, but the tiles still report the machine
+    // as it is now. This must run AFTER renderSelectedSample, which otherwise
+    // leaves the tiles showing the window's last STORED sample -- on a raw-tier
+    // window that is a real snapshot, so it silently froze the gauges.
+    renderSnapshotDetails(snapshot);
+  }
   redrawCharts();
 }
 
@@ -4060,8 +4070,22 @@ elements.settingsDialog?.addEventListener("cancel", (event) => {
   confirmSettingsDismissIfDirty();
 });
 
+// A backdrop click dismisses -- but ONLY when the gesture also STARTED on the
+// backdrop. `click` fires on the nearest common ancestor of the mousedown and
+// mouseup targets, so a press inside the card that releases outside it reports
+// the dialog itself as the target and used to dismiss. That lost work: dragging
+// to select text in the Advanced document editor and releasing past the edge
+// closed the dialog and discarded the edit.
+let settingsPointerDownOnBackdrop = false;
+
+elements.settingsDialog?.addEventListener("pointerdown", (event) => {
+  settingsPointerDownOnBackdrop = event.target === elements.settingsDialog;
+});
+
 elements.settingsDialog?.addEventListener("click", (event) => {
-  if (event.target === elements.settingsDialog) confirmSettingsDismissIfDirty();
+  const startedOnBackdrop = settingsPointerDownOnBackdrop;
+  settingsPointerDownOnBackdrop = false;
+  if (startedOnBackdrop && event.target === elements.settingsDialog) confirmSettingsDismissIfDirty();
 });
 
 elements.browserThemeSetting?.addEventListener("change", () => {

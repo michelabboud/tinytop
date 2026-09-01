@@ -731,3 +731,25 @@ export function validateRetentionLadder(ladder, previous, diskPressure) {
   }
   return [];
 }
+
+/**
+ * Whether a freshly polled live snapshot belongs in the CHARTED history series.
+ *
+ * Only the "live" window charts live samples. Every other preset shows a fixed
+ * span the daemon supplied, and appending the current sample to it pushed that
+ * span sideways on every poll -- and, once the hydrated window was already at
+ * the render cap, evicted its oldest point per tick until the chosen range had
+ * been replaced by live data.
+ */
+export function liveSampleEntersHistory(historyWindowKey) {
+  return historyWindowKey === "live";
+}
+
+/**
+ * Whether the live snapshot should still drive the tiles while a historical
+ * window is charted. It should, unless the user has scrubbed to a specific
+ * sample -- that selection wins, because it is what they asked to look at.
+ */
+export function liveSampleDrivesTiles(historyWindowKey, selectedAtMs) {
+  return !liveSampleEntersHistory(historyWindowKey) && selectedAtMs === null;
+}

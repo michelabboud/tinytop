@@ -1,5 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import {
+  liveSampleDrivesTiles,
+  liveSampleEntersHistory,
+} from "../agent/assets/dashboard/ladder-rules.js";
+
+function extractFunction(source: string, name: string): string {
+  let start = source.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`${name} not found`);
+  if (source.slice(start - 6, start) === "async ") start -= 6;
+  const bodyStart = source.indexOf("{", start);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  throw new Error(`${name} is incomplete`);
+}
 
 const html = readFileSync("agent/assets/dashboard/index.html", "utf8");
 const app = readFileSync("agent/assets/dashboard/app.js", "utf8");
@@ -125,5 +143,37 @@ describe("dashboard timestamp timeline", () => {
     expect(styles).toContain('body[data-embed="true"]');
     expect(styles).toContain('body[data-embed="true"] .rail');
     expect(styles).toContain('body[data-embed="true"] .control-deck');
+  });
+});
+
+describe("a historical window is not pushed sideways by live samples", () => {
+  test("only the live window charts the freshly polled sample", () => {
+    expect(liveSampleEntersHistory("live")).toBe(true);
+    for (const key of ["15m", "1h", "6h", "24h", "7d", "30d", "90d", "1y", "all"]) {
+      expect(liveSampleEntersHistory(key)).toBe(false);
+    }
+  });
+
+  test("the live sample still drives the tiles on a historical window until one is selected", () => {
+    // Break caught: silencing the live push must not freeze the gauges.
+    expect(liveSampleDrivesTiles("30d", null)).toBe(true);
+    expect(liveSampleDrivesTiles("30d", 1_788_244_538_225)).toBe(false);
+    // On the live window the pushed sample already renders the tiles.
+    expect(liveSampleDrivesTiles("live", null)).toBe(false);
+  });
+
+  test("renderSnapshot routes the poll through those rules instead of always pushing", () => {
+    const renderSnapshot = extractFunction(app, "renderSnapshot");
+    expect(renderSnapshot).toContain("liveSampleEntersHistory(state.historyWindowKey)");
+    expect(renderSnapshot).toContain("liveSampleDrivesTiles(state.historyWindowKey, state.selectedAtMs)");
+    // The push must sit INSIDE the live-window guard. An unconditional push
+    // evicted the chosen window one point per tick once it hit the render cap.
+    expect(renderSnapshot).toMatch(/if \(liveSampleEntersHistory[^)]*\)\) pushHistory\(snapshot\);/u);
+    // Break caught: the live tile render must come AFTER renderSelectedSample,
+    // which otherwise re-renders the tiles from the window's last stored sample
+    // and freezes the gauges on any raw-tier window.
+    expect(renderSnapshot.indexOf("renderSnapshotDetails(snapshot)")).toBeGreaterThan(
+      renderSnapshot.indexOf("renderSelectedSample()"),
+    );
   });
 });
