@@ -151,6 +151,20 @@ async fn count(pool: &SqlitePool, table: &str) -> i64 {
         .expect("count")
 }
 
+/// What a history read returns for processes stored with no rank at all:
+/// each row's position as its `cpu_rank` (ADR 0037's read-time rule).
+fn as_cpu_list(processes: &[ProcessSnapshot]) -> Vec<ProcessSnapshot> {
+    processes
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(rank, mut process)| {
+            process.cpu_rank = Some(u32::try_from(rank).expect("fixture rank fits u32"));
+            process
+        })
+        .collect()
+}
+
 #[tokio::test]
 async fn assembled_snapshot_round_trips_every_stored_field() {
     let fixture = TempDatabase::new("round-trip");
@@ -176,7 +190,8 @@ async fn assembled_snapshot_round_trips_every_stored_field() {
     assert_eq!(output.swap, input.swap);
     assert_eq!(output.load, input.load);
     assert_eq!(output.filesystems, input.filesystems);
-    assert_eq!(output.processes, input.processes);
+    // The fixture's processes carry no ranks: stored NULL, read as a CPU list (ADR 0037).
+    assert_eq!(output.processes, as_cpu_list(&input.processes));
     assert_eq!(output.filesystems_captured_at_ms, Some(10_000));
     assert!(output.pressure.cpu.some.is_none() && output.pressure.cpu.full.is_none());
     assert!(output.pressure.memory.some.is_none() && output.pressure.memory.full.is_none());
@@ -605,7 +620,7 @@ async fn processes_fall_back_to_the_minute_tier_within_two_intervals() {
         })
         .await
         .expect("history");
-    assert_eq!(history[0].snapshot.processes, input.processes);
+    assert_eq!(history[0].snapshot.processes, as_cpu_list(&input.processes));
     assert!(history[1].snapshot.processes.is_empty());
 }
 

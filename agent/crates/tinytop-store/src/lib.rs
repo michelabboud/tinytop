@@ -2547,7 +2547,7 @@ impl SqliteHistoryStore {
             .detail_interval_sec
             .saturating_mul(1_000);
         let fallback_ms = detail_interval_ms.saturating_mul(2);
-        let mut fast_processes = HashMap::<i64, Vec<ProcessSnapshot>>::new();
+        let mut fast_captures = HashMap::<i64, Vec<StoredProcessSnapshot>>::new();
         let fast_rows = sqlx::query(
             r#"
             SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
@@ -2569,12 +2569,18 @@ impl SqliteHistoryStore {
             Err(error) => return Err(error.into()),
         };
         for row in fast_rows {
-            fast_processes
+            fast_captures
                 .entry(row.try_get("captured_at_ms")?)
                 .or_default()
-                .push(process_snapshot_from_row(&row)?);
+                .push(stored_process_snapshot_from_row(&row)?);
         }
-        let mut minute_processes = BTreeMap::<i64, Vec<ProcessSnapshot>>::new();
+        let fast_processes = fast_captures
+            .into_iter()
+            .map(|(captured_at_ms, capture)| {
+                Ok((captured_at_ms, history_process_snapshots(capture)?))
+            })
+            .collect::<Result<HashMap<i64, Vec<ProcessSnapshot>>, StoreError>>()?;
+        let mut minute_captures = BTreeMap::<i64, Vec<StoredProcessSnapshot>>::new();
         let minute_rows = sqlx::query(
             r#"
             SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
@@ -2596,11 +2602,17 @@ impl SqliteHistoryStore {
             Err(error) => return Err(error.into()),
         };
         for row in minute_rows {
-            minute_processes
+            minute_captures
                 .entry(row.try_get("captured_at_ms")?)
                 .or_default()
-                .push(process_snapshot_from_row(&row)?);
+                .push(stored_process_snapshot_from_row(&row)?);
         }
+        let minute_processes = minute_captures
+            .into_iter()
+            .map(|(captured_at_ms, capture)| {
+                Ok((captured_at_ms, history_process_snapshots(capture)?))
+            })
+            .collect::<Result<BTreeMap<i64, Vec<ProcessSnapshot>>, StoreError>>()?;
 
         let mut gpus_by_capture = HashMap::<i64, Vec<GpuSnapshot>>::new();
         for row in sqlx::query(
@@ -3099,6 +3111,9 @@ impl SqliteHistoryStore {
                 ));
             };
             capture.processes.push(process);
+        }
+        for capture in &mut captures {
+            read_unranked_capture_as_cpu_list(&mut capture.processes)?;
         }
         Ok(HistoryProcessesRead { source, captures })
     }
@@ -4217,6 +4232,101 @@ fn process_snapshot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ProcessSna
         cpu_rank: optional_rank(row, "cpu_rank")?,
         memory_rank: optional_rank(row, "memory_rank")?,
     })
+}
+
+/// A process row as a history read returns it, seen only through its ranks,
+/// so the one read-time rule below serves both shapes the store hands out.
+trait StoredProcessRanks {
+    /// The row's `rank` column: its ordinal within the capture.
+    fn stored_rank(&self) -> i64;
+    /// Whether the row is a member of the CPU list or the memory list.
+    fn has_a_list_rank(&self) -> bool;
+    fn set_cpu_rank(&mut self, rank: i64) -> Result<(), StoreError>;
+}
+
+/// A `ProcessSnapshot` with the `rank` column it was read at; the snapshot
+/// type has no field for it.
+struct StoredProcessSnapshot {
+    rank: i64,
+    process: ProcessSnapshot,
+}
+
+impl StoredProcessRanks for StoredProcessSnapshot {
+    fn stored_rank(&self) -> i64 {
+        self.rank
+    }
+
+    fn has_a_list_rank(&self) -> bool {
+        self.process.cpu_rank.is_some() || self.process.memory_rank.is_some()
+    }
+
+    fn set_cpu_rank(&mut self, rank: i64) -> Result<(), StoreError> {
+        self.process.cpu_rank = Some(
+            u32::try_from(rank)
+                .map_err(|_| StoreError::Validation("process rank is outside u32".to_string()))?,
+        );
+        Ok(())
+    }
+}
+
+impl StoredProcessRanks for HistoryProcessSample {
+    fn stored_rank(&self) -> i64 {
+        self.rank
+    }
+
+    fn has_a_list_rank(&self) -> bool {
+        self.cpu_rank.is_some() || self.memory_rank.is_some()
+    }
+
+    fn set_cpu_rank(&mut self, rank: i64) -> Result<(), StoreError> {
+        self.cpu_rank = Some(rank);
+        Ok(())
+    }
+}
+
+/// The read-time rule of ADR 0037, and the only place it lives: a capture in
+/// which NO row has a `cpu_rank` or a `memory_rank` was written by a writer
+/// that knew one list only, the top N by CPU in CPU order, so each row's
+/// `rank` is its CPU position and is returned as its `cpu_rank`.
+///
+/// That is every capture a pre-0.14 daemon writes into a file a newer binary
+/// has already migrated (its ten-column INSERT leaves the three v6 columns
+/// NULL), and every capture stored from a snapshot that carried no ranks.
+///
+/// A capture in which at least one row has a rank is returned exactly as
+/// stored, including any row of it that has none: a v6 writer produced it,
+/// and what an unranked row beside ranked ones means is not known. Nothing is
+/// written back; the rows on disk keep their NULLs.
+///
+/// `capture` must be every row the read returned for one `captured_at_ms`.
+fn read_unranked_capture_as_cpu_list<P: StoredProcessRanks>(
+    capture: &mut [P],
+) -> Result<(), StoreError> {
+    if capture.iter().any(P::has_a_list_rank) {
+        return Ok(());
+    }
+    for process in capture {
+        process.set_cpu_rank(process.stored_rank())?;
+    }
+    Ok(())
+}
+
+fn stored_process_snapshot_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<StoredProcessSnapshot, StoreError> {
+    Ok(StoredProcessSnapshot {
+        rank: row.try_get("rank")?,
+        process: process_snapshot_from_row(row)?,
+    })
+}
+
+/// One capture's rows, in `rank` order, as the snapshots a history sample
+/// carries.
+fn history_process_snapshots(
+    mut capture: Vec<StoredProcessSnapshot>,
+) -> Result<Vec<ProcessSnapshot>, StoreError> {
+    read_unranked_capture_as_cpu_list(&mut capture)?;
+    Ok(capture.into_iter().map(|row| row.process).collect())
 }
 
 /// A stored list position. NULL means "not in that list" (or, for a row older

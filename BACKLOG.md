@@ -9,3 +9,6 @@ One dated line each: date · source · item · status. A line leaves only by bei
 - 2026-10-09 · mechanical review of 0.13.0 (finding 6) · The Bun collector has no per-process swap and no CPU/memory ranks, so the two runtimes are no longer behaviourally identical for the process list · open
 - 2026-10-09 · task 2 lane report · Test names in `tinytop-store/tests/migration_v1..v4.rs` still say "v4" while asserting schema 6 · open
 - 2026-10-09 · task 2 lane report · The minute-tier process INSERT's `ON CONFLICT` clause is unreachable because a `DELETE` precedes it · open
+- 2026-10-09 · deep review of schema v6 (finding 2) and its fix lane · Every migration before v5→v6 (`migrate_v1_to_v2` … `migrate_v4_to_v5`, `rebuild_v0_schema`, `apply_schema_groups`, `finish_migration_audit`) still opens a deferred transaction and acts on a version read outside any lock; two processes racing from a file older than v5 get a misleading failure, or worse on the rebuild steps · open
+- 2026-10-09 · schema v6 fix lane · The capture-size check cannot catch a 0.13.0 capture at N ≤ 25 (at most 50 rows); 0.13.0 was never deployed anywhere · open, accepted limit (ADR 0037)
+- 2026-10-09 · schema v6 fix lane · `docs/adr/README.md`'s one-line description of ADR 0036 still says "nothing is deleted or rewritten" and "0.86–0.96 s" · open

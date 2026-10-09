@@ -1,20 +1,24 @@
 //! Schema v6 (ADR 0036): `swap_bytes`, `cpu_rank` and `memory_rank` on both
-//! process tables, added in place, with `cpu_rank = rank` backfilled.
+//! process tables, added in place, with `cpu_rank = rank` backfilled; and the
+//! migration's locking and capture-size guard (ADR 0037).
 
 use std::{
     fs,
     path::PathBuf,
     str::FromStr,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::Value as JsonValue;
-use sqlx::{Row, SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{
+    Row, SqlitePool,
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+};
 use tinytop_store::{
-    SqliteHistoryStore, StoreError,
+    MAX_TOP_PROCESS_COUNT, SqliteHistoryStore, StoreError,
     migration::{
         CREATE_SCHEMA_V1_SQL, CREATE_SCHEMA_V2_SQL, CREATE_SCHEMA_V3_SQL, CREATE_SCHEMA_V4_SQL,
-        CREATE_SCHEMA_V5_SQL, SCHEMA_VERSION,
+        CREATE_SCHEMA_V5_SQL, SCHEMA_VERSION, SchemaV6Outcome, migrate_v5_to_v6,
     },
 };
 
@@ -841,6 +845,437 @@ async fn every_earlier_schema_version_migrates_to_v6_empty_and_populated() {
             }
             pool.close().await;
         }
+    }
+}
+
+/// A seeded v5 file already in WAL mode, as every database the daemon has
+/// opened is. Without it the first thing a connecting store does is switch
+/// the journal mode, which needs the file to itself and rewrites its header.
+async fn seeded_v5_wal(label: &str) -> TempDatabase {
+    let fixture = seeded_v5(label).await;
+    let pool = fixture.raw_pool(false).await;
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode = WAL")
+        .fetch_one(&pool)
+        .await
+        .expect("journal mode");
+    assert_eq!(mode, "wal");
+    pool.close().await;
+    fixture
+}
+
+/// The v5 → v6 migration written out by hand, for a test that plays "the
+/// other process" on a connection it controls. Its marker carries the v6
+/// label, so "exactly one marker" afterwards means nobody else wrote one.
+const HAND_MIGRATION_V6: [&str; 10] = [
+    "ALTER TABLE process_samples_fast ADD COLUMN swap_bytes INTEGER",
+    "ALTER TABLE process_samples_fast ADD COLUMN cpu_rank INTEGER",
+    "ALTER TABLE process_samples_fast ADD COLUMN memory_rank INTEGER",
+    "UPDATE process_samples_fast SET cpu_rank = rank",
+    "ALTER TABLE process_samples ADD COLUMN swap_bytes INTEGER",
+    "ALTER TABLE process_samples ADD COLUMN cpu_rank INTEGER",
+    "ALTER TABLE process_samples ADD COLUMN memory_rank INTEGER",
+    "UPDATE process_samples SET cpu_rank = rank",
+    "INSERT INTO app_events (occurred_at_ms, marker_type, label, details_json) VALUES (7, 'schemaMigrated', 'SQLite schema migrated from v5 to v6', '{\"by\":\"the other process\"}')",
+    "PRAGMA user_version = 6",
+];
+
+async fn v6_marker_details(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar("SELECT details_json FROM app_events WHERE label = ? ORDER BY event_id")
+        .bind(V6_MARKER_LABEL)
+        .fetch_all(pool)
+        .await
+        .expect("v6 marker details")
+}
+
+/// How long a test lets a migrator run into a lock the test holds before the
+/// test carries on. It only decides how far the migrator got before the lock
+/// was released; every assertion holds whatever it reached.
+const LET_THE_OTHER_SIDE_BLOCK: Duration = Duration::from_millis(300);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_migrators_racing_on_one_v5_file_both_succeed_and_migrate_it_once() {
+    // Break caught: the transaction starts deferred, so the loser of the race
+    // fails at its first ALTER with a lock error (reported as a trigger or
+    // view), or — having read version 5 before the winner committed — runs
+    // the shape check against a v6 table and tells the operator to move the
+    // file aside. Also: two markers, or a second backfill.
+    //
+    // A real race, not a controlled interleaving: which store wins, and how
+    // far the loser gets first, is up to the scheduler. The two tests below
+    // pin the interleaving; this one runs the real thing several times.
+    const ROUNDS: usize = 8;
+    for round in 0..ROUNDS {
+        let fixture = seeded_v5_wal(&format!("race-{round}")).await;
+        let pool = fixture.raw_pool(false).await;
+        let mut before = Vec::new();
+        for table in ["process_samples_fast", "process_samples"] {
+            before.push(old_columns(&pool, table).await);
+        }
+        pool.close().await;
+
+        let (first_url, second_url) = (fixture.url.clone(), fixture.url.clone());
+        let (first, second) = tokio::join!(
+            tokio::spawn(async move { SqliteHistoryStore::connect(&first_url).await }),
+            tokio::spawn(async move { SqliteHistoryStore::connect(&second_url).await }),
+        );
+        for (name, store) in [("first", first), ("second", second)] {
+            store
+                .expect("migrator task")
+                .unwrap_or_else(|error| {
+                    panic!("round {round}: the {name} migrator failed: {error}")
+                })
+                .close()
+                .await
+                .expect("close store");
+        }
+
+        let pool = fixture.raw_pool(false).await;
+        assert_eq!(user_version(&pool).await, 6, "round {round}");
+        assert_eq!(v6_marker_count(&pool).await, 1, "round {round}");
+        for (table, before) in ["process_samples_fast", "process_samples"]
+            .into_iter()
+            .zip(before)
+        {
+            assert_eq!(table_info(&pool, table).await.len(), 13, "round {round}");
+            assert_eq!(old_columns(&pool, table).await, before, "round {round}");
+            assert_backfilled(&pool, table, SEED_ROWS).await;
+        }
+        pool.close().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_migrator_that_waited_for_the_lock_finds_v6_inside_its_transaction_and_writes_nothing() {
+    // Break caught: the migration acts on the version read before it held the
+    // lock. Interleaving, controlled with two connections: the "other
+    // process" holds the write lock; the migrator under test is started
+    // against a file that still reads as v5 and has to wait; the other
+    // process migrates and commits; only then can the migrator proceed.
+    let fixture = seeded_v5_wal("found-v6").await;
+    let other = fixture.raw_pool(false).await;
+    let mut other_process = other.acquire().await.expect("other process connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *other_process)
+        .await
+        .expect("the other process takes the write lock");
+
+    let waiter_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::from_str(&fixture.url)
+                .expect("fixture URL")
+                .busy_timeout(Duration::from_secs(60)),
+        )
+        .await
+        .expect("waiter pool");
+    assert_eq!(
+        user_version(&waiter_pool).await,
+        5,
+        "what the migrator's caller read before any lock was held"
+    );
+    let waiter = tokio::spawn(async move {
+        let outcome = migrate_v5_to_v6(&waiter_pool, 42).await;
+        (outcome, waiter_pool)
+    });
+
+    for statement in HAND_MIGRATION_V6 {
+        sqlx::query(statement)
+            .execute(&mut *other_process)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    tokio::time::sleep(LET_THE_OTHER_SIDE_BLOCK).await;
+    assert!(
+        !waiter.is_finished(),
+        "the migrator waits for the write lock instead of failing or reading ahead"
+    );
+    sqlx::query("COMMIT")
+        .execute(&mut *other_process)
+        .await
+        .expect("the other process commits v6");
+    drop(other_process);
+
+    let (outcome, waiter_pool) = waiter.await.expect("waiter task");
+    assert_eq!(
+        outcome.expect("finding v6 under the lock is not an error"),
+        SchemaV6Outcome::AlreadyMigrated
+    );
+    waiter_pool.close().await;
+
+    assert_eq!(user_version(&other).await, 6);
+    assert_eq!(
+        v6_marker_details(&other).await,
+        [r#"{"by":"the other process"}"#],
+        "the only marker is the one the other process wrote"
+    );
+    for table in ["process_samples_fast", "process_samples"] {
+        assert_eq!(table_info(&other, table).await.len(), 13, "{table}");
+        assert_backfilled(&other, table, SEED_ROWS).await;
+    }
+    other.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_store_that_starts_while_another_process_migrates_opens_the_file_as_already_migrated() {
+    // Break caught: the same as above, through the real entry point — the
+    // store reads version 5 at connect (a WAL read is not blocked by the
+    // writer), then meets a v6 file. It must open it; it must not refuse it,
+    // backfill it again, or write a second marker.
+    let fixture = seeded_v5_wal("connect-behind-migrator").await;
+    let other = fixture.raw_pool(false).await;
+    let mut other_process = other.acquire().await.expect("other process connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *other_process)
+        .await
+        .expect("the other process takes the write lock");
+
+    let url = fixture.url.clone();
+    let connecting = tokio::spawn(async move { SqliteHistoryStore::connect(&url).await });
+    tokio::time::sleep(LET_THE_OTHER_SIDE_BLOCK).await;
+    assert!(!connecting.is_finished(), "the store waits for the lock");
+    for statement in HAND_MIGRATION_V6 {
+        sqlx::query(statement)
+            .execute(&mut *other_process)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    sqlx::query("COMMIT")
+        .execute(&mut *other_process)
+        .await
+        .expect("the other process commits v6");
+    drop(other_process);
+
+    connecting
+        .await
+        .expect("connect task")
+        .expect("a file another process just migrated opens normally")
+        .close()
+        .await
+        .expect("close store");
+
+    assert_eq!(user_version(&other).await, 6);
+    assert_eq!(
+        v6_marker_details(&other).await,
+        [r#"{"by":"the other process"}"#]
+    );
+    for table in ["process_samples_fast", "process_samples"] {
+        assert_backfilled(&other, table, SEED_ROWS).await;
+    }
+    other.close().await;
+}
+
+#[tokio::test]
+async fn a_version_other_than_5_or_6_inside_the_transaction_is_refused_and_the_lock_released() {
+    // Break caught: the in-transaction re-read treats "not 5" as "already
+    // migrated" and reports success on a file it does not understand, or the
+    // refusal leaves the transaction (and the write lock) open.
+    for found in [4_i64, 7] {
+        let fixture = seeded_v5_wal(&format!("found-v{found}")).await;
+        let pool = fixture.raw_pool(false).await;
+        sqlx::query(match found {
+            4 => "PRAGMA user_version = 4",
+            _ => "PRAGMA user_version = 7",
+        })
+        .execute(&pool)
+        .await
+        .expect("version override");
+
+        let error = migrate_v5_to_v6(&pool, 42)
+            .await
+            .expect_err("an unexpected version must be refused");
+        match error {
+            StoreError::Migration { reason, remedy } => {
+                assert!(
+                    reason.contains(&format!(
+                        "schema v6 migration found schema version {found} after taking the write lock"
+                    )),
+                    "{reason}"
+                );
+                assert!(remedy.contains("tinytop-agent db check"), "{remedy}");
+                assert!(remedy.contains("database was not modified"), "{remedy}");
+            }
+            other => panic!("expected migration refusal, observed {other:?}"),
+        }
+
+        assert_eq!(user_version(&pool).await, found);
+        assert_eq!(v6_marker_count(&pool).await, 0);
+        for table in ["process_samples_fast", "process_samples"] {
+            assert_eq!(table_info(&pool, table).await.len(), 10, "{table}");
+        }
+        // The write lock is free again: the refused run rolled back.
+        let mut probe = pool.acquire().await.expect("probe connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *probe)
+            .await
+            .expect("the write lock is free after the refusal");
+        sqlx::query("ROLLBACK")
+            .execute(&mut *probe)
+            .await
+            .expect("probe rollback");
+        drop(probe);
+        pool.close().await;
+    }
+}
+
+#[tokio::test]
+async fn a_database_locked_by_another_process_is_reported_as_locked_not_as_a_schema_problem() {
+    // Break caught: a lock collision reaches the operator as "if it is a
+    // trigger or view … remove it", or as a bare `database is locked` with no
+    // remedy. Takes the store's whole busy timeout (5 s): the lock is held for
+    // the entire attempt, as a process that never lets go would hold it.
+    let fixture = seeded_v5_wal("locked").await;
+    let other = fixture.raw_pool(false).await;
+    let mut other_process = other.acquire().await.expect("other process connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *other_process)
+        .await
+        .expect("the other process takes the write lock");
+
+    let error = SqliteHistoryStore::connect(&fixture.url)
+        .await
+        .expect_err("a database that stays locked must refuse the migration");
+    match &error {
+        StoreError::Migration { reason, remedy } => {
+            assert!(
+                reason.starts_with(
+                    "the database is locked by another process: `BEGIN IMMEDIATE` could not take the write lock for the schema v6 migration ("
+                ),
+                "{reason}"
+            );
+            assert!(reason.contains("database is locked"), "{reason}");
+            assert_eq!(
+                remedy,
+                "another tinytop process holds the database — stop it (`./tinytop stop`, or `./tinytop systemd stop` for the service) or wait for it to finish, then start again; the database was not modified"
+            );
+        }
+        other => panic!("expected migration refusal, observed {other:?}"),
+    }
+    let shown = error.to_string();
+    assert!(
+        !shown.contains("trigger") && !shown.contains("view"),
+        "{shown}"
+    );
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *other_process)
+        .await
+        .expect("the other process lets go");
+    drop(other_process);
+    assert_eq!(user_version(&other).await, 5);
+    assert_eq!(v6_marker_count(&other).await, 0);
+    for table in ["process_samples_fast", "process_samples"] {
+        assert_eq!(table_info(&other, table).await.len(), 10, "{table}");
+    }
+    other.close().await;
+
+    // The refusal is not sticky: once the lock is free the same file migrates.
+    fixture.migrate().await;
+    let pool = fixture.raw_pool(false).await;
+    assert_eq!(user_version(&pool).await, 6);
+    assert_eq!(v6_marker_count(&pool).await, 1);
+    pool.close().await;
+}
+
+/// One capture of `rows` process rows, ranks `0..rows`, in the v5 column set.
+async fn insert_v5_capture(pool: &SqlitePool, table: &str, captured_at_ms: i64, rows: i64) {
+    let sql = match table {
+        "process_samples_fast" => {
+            "WITH RECURSIVE seq(n) AS (VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n + 1 < ?2) INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) SELECT ?1, n, 5000 + n, 1, 1.0, 1.0, 4096, 1, NULL, NULL FROM seq"
+        }
+        "process_samples" => {
+            "WITH RECURSIVE seq(n) AS (VALUES(0) UNION ALL SELECT n + 1 FROM seq WHERE n + 1 < ?2) INSERT INTO process_samples (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) SELECT ?1, n, 5000 + n, 1, 1.0, 1.0, 4096, 1, NULL, NULL FROM seq"
+        }
+        other => panic!("unsupported table {other}"),
+    };
+    let inserted = sqlx::query(sql)
+        .bind(captured_at_ms)
+        .bind(rows)
+        .execute(pool)
+        .await
+        .expect("capture rows")
+        .rows_affected();
+    assert_eq!(i64::try_from(inserted).expect("row count"), rows);
+}
+
+#[tokio::test]
+async fn a_capture_of_exactly_the_maximum_process_count_migrates() {
+    // Break caught: the capture-size guard compares with `>=` and refuses a
+    // database whose owner had legitimately set the process count to its
+    // maximum.
+    let fixture = seeded_v5_wal("capture-at-maximum").await;
+    let pool = fixture.raw_pool(false).await;
+    for table in ["process_samples_fast", "process_samples"] {
+        insert_v5_capture(&pool, table, 200_000, MAX_TOP_PROCESS_COUNT).await;
+    }
+    pool.close().await;
+
+    fixture.migrate().await;
+
+    let pool = fixture.raw_pool(false).await;
+    assert_eq!(user_version(&pool).await, 6);
+    assert_eq!(v6_marker_count(&pool).await, 1);
+    let rows = SEED_ROWS + usize::try_from(MAX_TOP_PROCESS_COUNT).expect("maximum fits usize");
+    for table in ["process_samples_fast", "process_samples"] {
+        assert_backfilled(&pool, table, rows).await;
+    }
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn a_capture_larger_than_the_maximum_process_count_is_refused_and_the_file_left_identical() {
+    // Break caught: a v5 file that a 0.13.0 binary wrote to — captures that
+    // hold the union of two lists, `rank` already an ordinal — is backfilled
+    // with `cpu_rank = rank`, labelling memory-only rows as CPU-ranked; or the
+    // guard looks at one table only; or the refusal leaves a trace in the file.
+    for table in ["process_samples_fast", "process_samples"] {
+        let fixture = seeded_v5_wal(&format!("capture-over-maximum-{table}")).await;
+        let pool = fixture.raw_pool(false).await;
+        insert_v5_capture(&pool, table, 200_000, MAX_TOP_PROCESS_COUNT).await;
+        insert_v5_capture(&pool, table, 300_000, MAX_TOP_PROCESS_COUNT + 1).await;
+        insert_v5_capture(&pool, table, 400_000, MAX_TOP_PROCESS_COUNT + 3).await;
+        pool.close().await;
+        let database_file = fixture.dir.join("history.sqlite");
+        let bytes_before = fs::read(&database_file).expect("database file before");
+
+        let error = SqliteHistoryStore::connect(&fixture.url)
+            .await
+            .expect_err("a capture above the maximum must refuse the migration");
+        match error {
+            StoreError::Migration { reason, remedy } => {
+                assert_eq!(
+                    reason,
+                    format!(
+                        "schema v6 migration found 2 capture(s) in {table} holding more than 50 process rows (the largest holds 53); before 0.13.0 a capture never held more than the configured process count, at most 50, so `rank` is already an ordinal in those captures and `cpu_rank = rank` would mislabel their rows"
+                    )
+                );
+                assert_eq!(
+                    remedy,
+                    format!(
+                        "{table} was written by tinytop-agent 0.13.0, which must not run against a database that is migrated later — restore a backup taken before that binary ran (`./tinytop db backup` writes one) or move the file aside so a fresh one is created, then start again; the database was not modified"
+                    )
+                );
+            }
+            other => panic!("{table}: expected migration refusal, observed {other:?}"),
+        }
+
+        let bytes_after = fs::read(&database_file).expect("database file after");
+        assert!(
+            bytes_after == bytes_before,
+            "{table}: the refused file is bit-identical ({} bytes before, {} after)",
+            bytes_before.len(),
+            bytes_after.len()
+        );
+        let pool = fixture.raw_pool(false).await;
+        assert_eq!(user_version(&pool).await, 5, "{table}");
+        assert_eq!(v6_marker_count(&pool).await, 0, "{table}");
+        for process_table in ["process_samples_fast", "process_samples"] {
+            assert_eq!(
+                table_info(&pool, process_table).await.len(),
+                10,
+                "{table}: {process_table} kept its v5 columns"
+            );
+        }
+        pool.close().await;
     }
 }
 

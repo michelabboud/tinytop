@@ -54,7 +54,12 @@ Every lane: `-j 6`, `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_INCREMENTAL=0`, a free-m
 
 ## Deploy
 
-Rebuild and restart `tinytop.service` (Michel, 2026-10-09: "you can freely rebuild and restart the service, no approval needed"). The schema migration runs at that start. Before it: copy the live database to a dated backup with SQLite's backup command and verify it opens. After it: version, schema version, and three consecutive samples showing both ranks and swap.
+Rebuild and restart `tinytop.service` (Michel, 2026-10-09: "you can freely rebuild and restart the service, no approval needed"). The schema migration runs at the first start of the new binary. In this order:
+
+1. **Stop `tinytop.service` first, and confirm it has stopped, before the new binary is started in any form** — `serve`, or `collect --sqlite` against the live file. A plain restart does this; starting the new binary by hand beside the running service does not. **No 0.13 or later binary is run against the live database while a pre-0.14 daemon is running.** A daemon older than 0.14 that keeps running after the file is migrated goes on writing process rows with no rank (deep review `docs/reviews/2026-10-09-deep-review-0.14.0-c22b57a-schema-v6.md`, finding 1). Since ADR 0037 such rows are read back as a CPU list rather than lost from both lists, but they carry no memory list and no swap, and a 0.13.0 binary against the live file is still what ADR 0036 forbids.
+2. Copy the live database to a dated backup with SQLite's backup command and verify it opens.
+3. Start the new binary. The migration runs here; if another tinytop process holds the database it waits up to 5 s and then stops with `the database is locked by another process`.
+4. Check: version, schema version, and three consecutive samples showing both ranks and swap.
 
 ## Amendments
 

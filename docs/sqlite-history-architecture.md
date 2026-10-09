@@ -457,11 +457,22 @@ writes one `schemaMigrated` marker before setting `user_version = 4`.
 Schema v5 (ADR 0026) is one transaction that creates `sensor_dim` and
 `sensor_samples`; it rebuilds nothing.
 
-Schema v6 (ADR 0036) is one transaction that changes both process tables in
-place. It first reads the column names of `process_samples_fast` and
-`process_samples` and refuses, before any write, unless each is exactly the v5
-list — a file whose process tables were altered by hand is stopped with the
-expected and the found columns, not adapted to. It then runs, per table,
+Schema v6 (ADR 0036, hardened by ADR 0037) is one transaction that changes both
+process tables in place. The transaction is `BEGIN IMMEDIATE`: the write lock is
+taken before the first read, so a second process starting at the same moment
+waits (up to the 5 s busy timeout) instead of failing at its first `ALTER`. A
+lock that is never released is reported as `the database is locked by another
+process`, with the remedy to stop the other tinytop process or wait and start
+again. Inside the transaction `user_version` is read again: 5 migrates; 6 means
+another process migrated the file while this one waited, so nothing is written
+and the file is opened as any v6 file; anything else is refused. It then reads
+the column names of `process_samples_fast` and `process_samples` and refuses,
+before any write, unless each is exactly the v5 list — a file whose process
+tables were altered by hand is stopped with the expected and the found columns,
+not adapted to. It also refuses, before any write, when a capture in either
+table holds more than `MAX_TOP_PROCESS_COUNT` (50) rows: before 0.13.0 a capture
+never exceeded the configured process count, so a larger one was written with
+`rank` as an ordinal and the backfill would mislabel it. It then runs, per table,
 `ALTER TABLE … ADD COLUMN swap_bytes INTEGER`, `… cpu_rank INTEGER`,
 `… memory_rank INTEGER` and `UPDATE … SET cpu_rank = rank`. No table is rebuilt
 and no existing value is rewritten: rows stored before v6 were the top N by CPU
@@ -471,15 +482,27 @@ must have its original row count and no row with `cpu_rank` different from
 `rank` or a non-NULL `swap_bytes` or `memory_rank`. The marker records
 `fastRows`, `minuteRows` and `durationMs`, and `user_version = 6` is set inside
 the same transaction, so any failure leaves a v5 file exactly as it was. No
-pre-image is taken, because nothing is deleted. Measured 2026-10-09: 0.86–0.96 s
-for 460,000 rows in each table.
+pre-image is taken, because nothing is deleted. Measured 2026-10-09: 0.86–1.30 s
+for 460,000 rows in each table, across three sets of runs (ADR 0037 lists them).
 
 From v6, `rank` is the row's ordinal within its sample (still the primary key
 with `captured_at_ms`). A sample is the top N processes by CPU in CPU order,
 then the members of the top N by resident-plus-swap memory that are not already
 present, in memory order; `cpu_rank` and `memory_rank` are the zero-based
 positions in those lists and NULL when the process is not in that list. A
-capture in which no row has a `memory_rank` was written before v6.
+capture in which no row has a `memory_rank` was written by a pre-v6 writer,
+before or after the file's migration: rows that existed at the migration hold
+the backfilled `cpu_rank`, while rows a pre-0.14 daemon writes into an already
+migrated file — its ten-column `INSERT` still succeeds — hold NULL in both rank
+columns.
+
+Reads apply one rule to this (ADR 0037, `read_unranked_capture_as_cpu_list`): a
+capture in which every row has both `cpu_rank` and `memory_rank` NULL is
+returned as a CPU list, each row with `cpu_rank` equal to its `rank`. A capture
+in which at least one row has a rank is returned exactly as stored, so a capture
+that mixes ranked and unranked rows is not repaired. Nothing is written back to
+the table. The rule covers the process rows of `/api/history` samples (per-tick
+and per-minute), `/api/history/processes`, and the sample returned by an insert.
 
 The v0 path still performs its existing pre-image/VACUUM migration first and
 then chains into v1→v2→v3→v4→v5→v6; every later version follows the same

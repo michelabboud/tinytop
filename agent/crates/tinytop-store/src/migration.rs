@@ -7,10 +7,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 use tinytop_types::SystemSnapshot;
 
-use crate::{StoreError, disk};
+use crate::{MAX_TOP_PROCESS_COUNT, StoreError, disk};
 
 pub const SCHEMA_VERSION: i64 = 6;
 
@@ -765,6 +765,10 @@ struct ProcessTableV6 {
     /// and stay NULL — unknown, not zero.
     backfill: &'static str,
     count: &'static str,
+    /// How many captures hold more rows than the bound `?1`, and the size of
+    /// the largest of them (NULL when there is none). See
+    /// [`refuse_captures_larger_than_the_cpu_list`].
+    oversize_captures: &'static str,
     /// Rows the backfill left in any state other than the one it promises.
     count_unverified: &'static str,
 }
@@ -779,6 +783,7 @@ const PROCESS_TABLES_V6: [ProcessTableV6; 2] = [
         ],
         backfill: "UPDATE process_samples_fast SET cpu_rank = rank",
         count: "SELECT COUNT(*) FROM process_samples_fast",
+        oversize_captures: "SELECT COUNT(*), MAX(row_count) FROM (SELECT COUNT(*) AS row_count FROM process_samples_fast GROUP BY captured_at_ms HAVING COUNT(*) > ?1)",
         count_unverified: "SELECT COUNT(*) FROM process_samples_fast WHERE cpu_rank IS NOT rank OR swap_bytes IS NOT NULL OR memory_rank IS NOT NULL",
     },
     ProcessTableV6 {
@@ -790,6 +795,7 @@ const PROCESS_TABLES_V6: [ProcessTableV6; 2] = [
         ],
         backfill: "UPDATE process_samples SET cpu_rank = rank",
         count: "SELECT COUNT(*) FROM process_samples",
+        oversize_captures: "SELECT COUNT(*), MAX(row_count) FROM (SELECT COUNT(*) AS row_count FROM process_samples GROUP BY captured_at_ms HAVING COUNT(*) > ?1)",
         count_unverified: "SELECT COUNT(*) FROM process_samples WHERE cpu_rank IS NOT rank OR swap_bytes IS NOT NULL OR memory_rank IS NOT NULL",
     },
 ];
@@ -1131,23 +1137,125 @@ async fn apply_schema_v6(pool: &SqlitePool) -> Result<(), StoreError> {
     apply_schema_groups(pool, &CREATE_SCHEMA_V6_SQL).await
 }
 
-/// Schema v5 → v6 (ADR 0036): `swap_bytes`, `cpu_rank` and `memory_rank` on
-/// both process tables, and `cpu_rank = rank` for every row already there.
+/// What one run of the v5 → v6 migration did once it held the write lock.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaV6Outcome {
+    /// This run added the columns, backfilled, wrote the marker and committed.
+    Migrated,
+    /// Another process committed schema v6 between this process's first read
+    /// of `user_version` and its write lock. Nothing was written by this run.
+    AlreadyMigrated,
+}
+
+/// Schema v5 → v6 (ADR 0036, hardened by ADR 0037): `swap_bytes`, `cpu_rank`
+/// and `memory_rank` on both process tables, and `cpu_rank = rank` for every
+/// row already there.
 ///
-/// One transaction holds the shape check, the six `ADD COLUMN`s, both
-/// backfills, their verification, the audit marker and `user_version = 6`.
-/// Any error returns before the commit and the dropped transaction rolls all
+/// One transaction holds the version re-read, the shape check, the
+/// capture-size check, the six `ADD COLUMN`s, both backfills, their
+/// verification, the audit marker and `user_version = 6`. Any error rolls all
 /// of it back, so a failed run leaves a v5 file exactly as it was. No row is
 /// deleted or rebuilt; `ADD COLUMN` appends to the stored schema only.
-async fn migrate_v5_to_v6(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {
+///
+/// The transaction is `BEGIN IMMEDIATE`, issued on an acquired connection the
+/// way `put_settings` does: the write lock is taken before the first read, so
+/// a second process starting at the same moment waits (up to `busy_timeout`)
+/// instead of failing at its first `ALTER` with a lock error that reads like
+/// a schema problem. Whoever waited then finds `user_version` already 6 and
+/// writes nothing.
+///
+/// Public only as a test seam, like `migrate_populated_v0_schema_phase`: a
+/// test cannot otherwise put a migrator behind the lock with a stale version.
+#[doc(hidden)]
+pub async fn migrate_v5_to_v6(
+    pool: &SqlitePool,
+    now_ms: i64,
+) -> Result<SchemaV6Outcome, StoreError> {
+    let mut connection = pool.acquire().await?;
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *connection)
+        .await
+        .map_err(|error| {
+            if is_database_busy(&error) {
+                database_busy_refusal("`BEGIN IMMEDIATE`", &error)
+            } else {
+                StoreError::from(error)
+            }
+        })?;
+    // Started once the lock is held: `durationMs` is the migration's own
+    // work, not the time spent waiting for another process.
     let started = Instant::now();
-    let mut transaction = pool.begin().await?;
+
+    let migrated =
+        match migrate_v5_to_v6_holding_the_write_lock(&mut connection, now_ms, started).await {
+            Ok(migrated) => migrated,
+            Err(error) => return rollback_v6_transaction(&mut connection, error).await,
+        };
+    let Some(SchemaV6Counts {
+        fast_rows,
+        minute_rows,
+        duration_ms,
+    }) = migrated
+    else {
+        // Nothing was written; end the transaction without a commit.
+        sqlx::query("ROLLBACK").execute(&mut *connection).await?;
+        // The pool holds one connection, and `apply_schema_v6` needs it.
+        drop(connection);
+        eprintln!(
+            "history migration info: schema v6 was applied by another process while this one waited for the database; nothing to migrate"
+        );
+        // From here the file is treated exactly as one opened at v6.
+        apply_schema_v6(pool).await?;
+        return Ok(SchemaV6Outcome::AlreadyMigrated);
+    };
+    if let Err(source) = sqlx::query("COMMIT").execute(&mut *connection).await {
+        return rollback_v6_transaction(&mut connection, StoreError::from(source)).await;
+    }
+
+    eprintln!(
+        "history migration info: schema v5 → v6 in {duration_ms} ms (swap_bytes, cpu_rank and memory_rank added; cpu_rank backfilled from rank on {fast_rows} fast process rows and {minute_rows} minute process rows)"
+    );
+    Ok(SchemaV6Outcome::Migrated)
+}
+
+struct SchemaV6Counts {
+    fast_rows: i64,
+    minute_rows: i64,
+    duration_ms: i64,
+}
+
+/// Everything the v5 → v6 migration does between `BEGIN IMMEDIATE` and
+/// `COMMIT`. `Ok(None)` means the file was already at v6 and nothing was
+/// written; the caller ends the transaction either way.
+async fn migrate_v5_to_v6_holding_the_write_lock(
+    connection: &mut SqliteConnection,
+    now_ms: i64,
+    started: Instant,
+) -> Result<Option<SchemaV6Counts>, StoreError> {
+    // `ensure_schema` read the version before this process held any lock.
+    // Only the value read here, under the write lock, is safe to act on.
+    let user_version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *connection)
+        .await?;
+    match user_version {
+        5 => {}
+        6 => return Ok(None),
+        other => {
+            return Err(StoreError::Migration {
+                reason: format!(
+                    "schema v6 migration found schema version {other} after taking the write lock; it expected 5, or 6 if another tinytop process had just migrated the file"
+                ),
+                remedy: "another program changed the database while tinytop-agent was starting — stop it, run `tinytop-agent db check`, then start again; the database was not modified".to_string(),
+            });
+        }
+    }
 
     for (table, expected_columns) in PROCESS_TABLE_V5_COLUMNS {
         let columns: Vec<String> =
             sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
                 .bind(table)
-                .fetch_all(&mut *transaction)
+                .fetch_all(&mut *connection)
                 .await?;
         if columns != expected_columns {
             return Err(StoreError::Migration {
@@ -1163,28 +1271,39 @@ async fn migrate_v5_to_v6(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
         }
     }
 
+    for step in &PROCESS_TABLES_V6 {
+        refuse_captures_larger_than_the_cpu_list(&mut *connection, step).await?;
+    }
+
     let mut row_counts = [0_i64; 2];
     for (index, step) in PROCESS_TABLES_V6.iter().enumerate() {
         let table = step.table;
         let rows_before: i64 = sqlx::query_scalar(step.count)
-            .fetch_one(&mut *transaction)
+            .fetch_one(&mut *connection)
             .await?;
         for statement in step.add_columns.into_iter().chain([step.backfill]) {
             sqlx::query(statement)
-                .execute(&mut *transaction)
+                .execute(&mut *connection)
                 .await
-                .map_err(|error| StoreError::Migration {
-                    reason: format!("`{statement}` failed inside the v5→v6 transaction: {error}"),
-                    remedy: format!(
-                        "the error names the cause — if it is a trigger or view on {table}, remove it — then start again; the database was not modified"
-                    ),
+                .map_err(|error| {
+                    if is_database_busy(&error) {
+                        return database_busy_refusal(&format!("`{statement}`"), &error);
+                    }
+                    StoreError::Migration {
+                        reason: format!(
+                            "`{statement}` failed inside the v5→v6 transaction: {error}"
+                        ),
+                        remedy: format!(
+                            "the error names the cause — if it is a trigger or view on {table}, remove it — then start again; the database was not modified"
+                        ),
+                    }
                 })?;
         }
         let rows_after: i64 = sqlx::query_scalar(step.count)
-            .fetch_one(&mut *transaction)
+            .fetch_one(&mut *connection)
             .await?;
         let rows_unverified: i64 = sqlx::query_scalar(step.count_unverified)
-            .fetch_one(&mut *transaction)
+            .fetch_one(&mut *connection)
             .await?;
         if rows_after != rows_before || rows_unverified != 0 {
             return Err(StoreError::Migration {
@@ -1216,17 +1335,84 @@ async fn migrate_v5_to_v6(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreErr
     )
     .bind(now_ms)
     .bind(details_json)
-    .execute(&mut *transaction)
+    .execute(&mut *connection)
     .await?;
     sqlx::query("PRAGMA user_version = 6")
-        .execute(&mut *transaction)
+        .execute(&mut *connection)
         .await?;
-    transaction.commit().await?;
 
-    eprintln!(
-        "history migration info: schema v5 → v6 in {duration_ms} ms (swap_bytes, cpu_rank and memory_rank added; cpu_rank backfilled from rank on {fast_rows} fast process rows and {minute_rows} minute process rows)"
-    );
-    Ok(())
+    Ok(Some(SchemaV6Counts {
+        fast_rows,
+        minute_rows,
+        duration_ms,
+    }))
+}
+
+/// The backfill `cpu_rank = rank` is a fact only where `rank` was a position
+/// in the CPU list. Before 0.13.0 a capture was the top N by CPU and N could
+/// not be configured above [`MAX_TOP_PROCESS_COUNT`]; the 0.13.0 collector
+/// emits up to 2N rows and its store numbered all of them with `rank`. A
+/// capture larger than the bound was therefore written with `rank` as an
+/// ordinal, and the backfill would give its memory-only rows a CPU rank they
+/// never had. Such a file is refused before anything is written.
+///
+/// This catches a 0.13.0 capture only when it is larger than the bound: one
+/// written at N = 12 holds at most 24 rows and is indistinguishable here from
+/// a capture written at N = 24 by an older binary (ADR 0037).
+async fn refuse_captures_larger_than_the_cpu_list(
+    connection: &mut SqliteConnection,
+    step: &ProcessTableV6,
+) -> Result<(), StoreError> {
+    let (oversize_captures, largest): (i64, Option<i64>) = sqlx::query_as(step.oversize_captures)
+        .bind(MAX_TOP_PROCESS_COUNT)
+        .fetch_one(&mut *connection)
+        .await?;
+    let Some(largest) = largest.filter(|_| oversize_captures > 0) else {
+        return Ok(());
+    };
+    let table = step.table;
+    Err(StoreError::Migration {
+        reason: format!(
+            "schema v6 migration found {oversize_captures} capture(s) in {table} holding more than {MAX_TOP_PROCESS_COUNT} process rows (the largest holds {largest}); before 0.13.0 a capture never held more than the configured process count, at most {MAX_TOP_PROCESS_COUNT}, so `rank` is already an ordinal in those captures and `cpu_rank = rank` would mislabel their rows"
+        ),
+        remedy: format!(
+            "{table} was written by tinytop-agent 0.13.0, which must not run against a database that is migrated later — restore a backup taken before that binary ran (`./tinytop db backup` writes one) or move the file aside so a fresh one is created, then start again; the database was not modified"
+        ),
+    })
+}
+
+/// SQLite's primary result code for "another connection holds the lock"
+/// (`SQLITE_BUSY`); sqlx reports the extended code, whose low byte it is.
+const SQLITE_BUSY_PRIMARY_CODE: i64 = 5;
+const SQLITE_PRIMARY_CODE_MASK: i64 = 0xff;
+
+fn is_database_busy(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|error| error.code())
+        .and_then(|code| code.parse::<i64>().ok())
+        .is_some_and(|code| code & SQLITE_PRIMARY_CODE_MASK == SQLITE_BUSY_PRIMARY_CODE)
+}
+
+/// A lock collision is not a schema problem and gets its own remedy: the
+/// operator has a second process to find, not a trigger or a view.
+fn database_busy_refusal(statement: &str, error: &sqlx::Error) -> StoreError {
+    StoreError::Migration {
+        reason: format!(
+            "the database is locked by another process: {statement} could not take the write lock for the schema v6 migration ({error})"
+        ),
+        remedy: "another tinytop process holds the database — stop it (`./tinytop stop`, or `./tinytop systemd stop` for the service) or wait for it to finish, then start again; the database was not modified".to_string(),
+    }
+}
+
+async fn rollback_v6_transaction<T>(
+    connection: &mut SqliteConnection,
+    error: StoreError,
+) -> Result<T, StoreError> {
+    if let Err(source) = sqlx::query("ROLLBACK").execute(&mut *connection).await {
+        eprintln!("schema v6 migration rollback failed after {error}: {source}");
+    }
+    Err(error)
 }
 
 async fn migrate_v4_to_v5(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {

@@ -820,6 +820,322 @@ async fn a_stored_rank_or_swap_outside_its_type_is_refused_on_read() {
     }
 }
 
+/// The INSERT a pre-0.14 daemon issues: the ten schema-v5 columns and nothing
+/// for `swap_bytes`, `cpu_rank` or `memory_rank`. Run against a v6 table it
+/// succeeds and leaves all three NULL (deep review 2026-10-09, finding 1).
+async fn insert_old_shape_capture(
+    pool: &SqlitePool,
+    table: &str,
+    captured_at_ms: i64,
+    pids: &[i64],
+) {
+    sqlx::query(
+        "INSERT OR IGNORE INTO process_commands (command_id, command) VALUES (900, 'old-daemon serve')",
+    )
+    .execute(pool)
+    .await
+    .expect("old daemon command row");
+    let sql = match table {
+        "process_samples_fast" => {
+            "INSERT INTO process_samples_fast (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) VALUES (?, ?, ?, 900, ?, 1.5, 4096, 1, NULL, NULL)"
+        }
+        "process_samples" => {
+            "INSERT INTO process_samples (captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent, rss_bytes, parent_pid, started_at_ms, gpu_percent) VALUES (?, ?, ?, 900, ?, 1.5, 4096, 1, NULL, NULL)"
+        }
+        other => panic!("unsupported table {other}"),
+    };
+    for (rank, pid) in pids.iter().enumerate() {
+        let rank = i64::try_from(rank).expect("rank fits i64");
+        sqlx::query(sql)
+            .bind(captured_at_ms)
+            .bind(rank)
+            .bind(pid)
+            .bind(90.0 - (rank as f64) * 10.0)
+            .execute(pool)
+            .await
+            .expect("old-shape process row");
+    }
+}
+
+/// `(pid, cpu_rank, memory_rank)` of a sample's processes, in the order read.
+fn snapshot_ranks(processes: &[ProcessSnapshot]) -> Vec<(u32, Option<u32>, Option<u32>)> {
+    processes
+        .iter()
+        .map(|process| (process.pid, process.cpu_rank, process.memory_rank))
+        .collect()
+}
+
+/// `(rank, pid, swap_bytes, cpu_rank, memory_rank)` of the single capture a
+/// process-history read is expected to return.
+async fn process_route_ranks(
+    store: &SqliteHistoryStore,
+    since_ms: Option<i64>,
+    until_ms: i64,
+    expected_source: ProcessHistorySource,
+    captured_at_ms: i64,
+) -> Vec<StoredRanks> {
+    let read = store
+        .read_history_processes(HistoryQuery {
+            since_ms,
+            until_ms: Some(until_ms),
+            limit: Some(10_000),
+        })
+        .await
+        .expect("process history should read");
+    assert_eq!(read.source, expected_source);
+    let capture = read
+        .captures
+        .iter()
+        .find(|capture| capture.captured_at_ms == captured_at_ms)
+        .unwrap_or_else(|| panic!("{expected_source:?} read has no capture at {captured_at_ms}"));
+    capture
+        .processes
+        .iter()
+        .map(|process| {
+            (
+                process.rank,
+                process.pid,
+                process.swap_bytes,
+                process.cpu_rank,
+                process.memory_rank,
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_capture_with_no_ranks_written_by_an_old_daemon_into_a_v6_file_is_read_as_a_cpu_list() {
+    // Break caught (ADR 0037): rows a still-running pre-0.14 daemon writes
+    // into a migrated file come back in neither list; the rule is applied on
+    // one read path and forgotten on another; or the read "repairs" the rows
+    // on disk instead of leaving history as it was written.
+    let fixture = TempDatabase::new("old-daemon-into-v6");
+    let store = fixture.store().await;
+    let fast_at = current_time_ms() - 10_000;
+    let minute_at = fast_at + 3_000;
+    for captured_at_ms in [fast_at, minute_at] {
+        let mut metrics_only = snapshot(captured_at_ms);
+        metrics_only.processes = Vec::new();
+        store
+            .insert_snapshot(captured_at_ms, &metrics_only)
+            .await
+            .expect("metric row should insert");
+    }
+    let pids = [501_i64, 502, 503, 504, 505];
+    let pool = fixture.pool().await;
+    // One capture per table, so each SELECT of `read_history` is the only
+    // possible source of the rows it returns.
+    insert_old_shape_capture(&pool, "process_samples_fast", fast_at, &pids).await;
+    insert_old_shape_capture(&pool, "process_samples", minute_at, &pids).await;
+    let on_disk: Vec<StoredRanks> = pids
+        .iter()
+        .enumerate()
+        .map(|(rank, pid)| (rank as i64, *pid, None, None, None))
+        .collect();
+    assert_eq!(
+        stored_ranks(&pool, "process_samples_fast", fast_at).await,
+        on_disk,
+        "fixture: the ten-column INSERT left both ranks NULL"
+    );
+    assert_eq!(
+        stored_ranks(&pool, "process_samples", minute_at).await,
+        on_disk
+    );
+
+    let as_cpu_list: Vec<(u32, Option<u32>, Option<u32>)> = (0_u32..5)
+        .map(|rank| (501 + rank, Some(rank), None))
+        .collect();
+    for (label, captured_at_ms) in [("fast SELECT", fast_at), ("minute SELECT", minute_at)] {
+        let history = store
+            .read_history(HistoryQuery {
+                since_ms: Some(captured_at_ms),
+                until_ms: Some(captured_at_ms),
+                limit: Some(1),
+            })
+            .await
+            .expect("history should read");
+        assert_eq!(history.len(), 1, "{label}");
+        assert_eq!(
+            snapshot_ranks(&history[0].snapshot.processes),
+            as_cpu_list,
+            "read_history, {label}: cpu_rank is the stored rank, and no memory rank is invented"
+        );
+        assert!(
+            history[0]
+                .snapshot
+                .processes
+                .iter()
+                .all(|process| process.swap_bytes.is_none()),
+            "{label}: swap stays unknown"
+        );
+    }
+    let route_rows: Vec<StoredRanks> = pids
+        .iter()
+        .enumerate()
+        .map(|(rank, pid)| (rank as i64, *pid, None, Some(rank as i64), None))
+        .collect();
+    assert_eq!(
+        process_route_ranks(
+            &store,
+            Some(fast_at),
+            fast_at,
+            ProcessHistorySource::Fast,
+            fast_at
+        )
+        .await,
+        route_rows,
+        "read_history_processes, fast table"
+    );
+    assert_eq!(
+        process_route_ranks(
+            &store,
+            None,
+            minute_at,
+            ProcessHistorySource::Minute,
+            minute_at
+        )
+        .await,
+        route_rows,
+        "read_history_processes, minute table"
+    );
+
+    // Nothing was written back: the rows are still the ones the old daemon wrote.
+    assert_eq!(
+        stored_ranks(&pool, "process_samples_fast", fast_at).await,
+        on_disk
+    );
+    assert_eq!(
+        stored_ranks(&pool, "process_samples", minute_at).await,
+        on_disk
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn a_snapshot_without_ranks_is_stored_null_and_returned_as_a_cpu_list() {
+    // Break caught: `insert_snapshot` hands back a sample that differs from
+    // what a later read of the same rows returns, or the writer starts
+    // inferring a rank at write time (ADR 0036 keeps the store recording what
+    // it is given).
+    let fixture = TempDatabase::new("rankless-snapshot");
+    let store = fixture.store().await;
+    let t = current_time_ms();
+    let collected = snapshot(t);
+    assert!(
+        collected
+            .processes
+            .iter()
+            .all(|process| process.cpu_rank.is_none() && process.memory_rank.is_none()),
+        "fixture: the snapshot carries no ranks"
+    );
+
+    let stored = store
+        .insert_snapshot(t, &collected)
+        .await
+        .expect("snapshot should insert");
+    let as_cpu_list: Vec<(u32, Option<u32>, Option<u32>)> = (0_u32..4)
+        .map(|rank| (40 + rank, Some(rank), None))
+        .collect();
+    assert_eq!(snapshot_ranks(&stored.snapshot.processes), as_cpu_list);
+    let read = store
+        .read_history(HistoryQuery {
+            since_ms: Some(t),
+            until_ms: Some(t),
+            limit: Some(1),
+        })
+        .await
+        .expect("history should read");
+    assert_eq!(read, vec![stored]);
+
+    let pool = fixture.pool().await;
+    for table in ["process_samples_fast", "process_samples"] {
+        assert_eq!(
+            stored_ranks(&pool, table, t).await,
+            expected_ranks(&collected.processes),
+            "{table}: both ranks are NULL on disk"
+        );
+    }
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn a_capture_in_which_any_row_has_a_rank_is_returned_exactly_as_stored() {
+    // Break caught: the read-time rule is applied per row instead of per
+    // capture (an unranked row beside ranked ones gets a CPU rank nobody
+    // measured), or it tests `cpu_rank` alone and relabels a capture whose
+    // rows are all in the memory list only.
+    let cases: [(&str, Vec<ProcessSnapshot>); 3] = [
+        (
+            "mixed",
+            vec![
+                ranked(10, 100, Some(1), Some(0), Some(1)),
+                ranked(11, 200, None, None, None),
+                ranked(12, 900, Some(2), None, Some(0)),
+                ranked(13, 300, None, None, None),
+            ],
+        ),
+        (
+            "memory-ranks-only",
+            vec![
+                ranked(20, 900, Some(1), None, Some(0)),
+                ranked(21, 800, Some(2), None, Some(1)),
+            ],
+        ),
+        (
+            "one-ranked-row-last",
+            vec![
+                ranked(30, 100, None, None, None),
+                ranked(31, 200, None, None, None),
+                ranked(32, 300, None, Some(0), None),
+            ],
+        ),
+    ];
+    for (label, processes) in cases {
+        let fixture = TempDatabase::new(&format!("as-stored-{label}"));
+        let store = fixture.store().await;
+        let t = current_time_ms();
+        let mut collected = snapshot(t);
+        collected.processes = processes.clone();
+
+        let stored = store
+            .insert_snapshot(t, &collected)
+            .await
+            .expect("snapshot should insert");
+        assert_eq!(stored.snapshot.processes, processes, "{label}: insert");
+        let read = store
+            .read_history(HistoryQuery {
+                since_ms: Some(t),
+                until_ms: Some(t),
+                limit: Some(1),
+            })
+            .await
+            .expect("history should read");
+        assert_eq!(
+            read[0].snapshot.processes, processes,
+            "{label}: read_history"
+        );
+        for (source, since_ms) in [
+            (ProcessHistorySource::Fast, Some(t)),
+            (ProcessHistorySource::Minute, None),
+        ] {
+            assert_eq!(
+                process_route_ranks(&store, since_ms, t, source, t).await,
+                expected_ranks(&processes),
+                "{label}: read_history_processes {source:?}"
+            );
+        }
+        let pool = fixture.pool().await;
+        for table in ["process_samples_fast", "process_samples"] {
+            assert_eq!(
+                stored_ranks(&pool, table, t).await,
+                expected_ranks(&processes),
+                "{label}: {table} on disk"
+            );
+        }
+        pool.close().await;
+    }
+}
+
 fn snapshot(captured_at_ms: i64) -> SystemSnapshot {
     SystemSnapshot {
         timestamp: format!("fixture-{captured_at_ms}"),
