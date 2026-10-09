@@ -352,11 +352,18 @@
           <div class="section-heading">
             <div>
               <h2>Processes</h2>
-              <p>Top local processes by CPU usage.</p>
+              <p id="process-view-description">Top local processes by CPU usage.</p>
             </div>
             <span class="mini-stat" id="process-count">0 rows</span>
           </div>
           <div class="process-controls">
+            <div class="process-view-field">
+              <span class="label" id="process-view-label">List</span>
+              <div class="process-view-nav" id="process-view" role="group" aria-labelledby="process-view-label">
+                <button type="button" data-process-view="cpu" aria-pressed="true">By CPU</button>
+                <button type="button" data-process-view="memory" aria-pressed="false" aria-describedby="process-view-notice">By memory</button>
+              </div>
+            </div>
             <label>
               <span class="label">Search</span>
               <input id="process-search" type="search" autocomplete="off" placeholder="PID or command" />
@@ -369,15 +376,17 @@
               </select>
             </label>
           </div>
+          <p class="history-status-banner process-view-notice" id="process-view-notice" role="status" hidden></p>
           <div class="table-wrap">
-            <table>
+            <table data-process-view="cpu">
               <thead>
                 <tr>
                   <th scope="col"><button type="button" data-process-sort="pid">PID</button></th>
                   <th scope="col">Command</th>
                   <th scope="col"><button type="button" data-process-sort="cpu">CPU</button></th>
                   <th scope="col"><button type="button" data-process-sort="memory">RAM</button></th>
-                  <th scope="col"><button type="button" data-process-sort="rss">RSS</button></th>
+                  <th scope="col" class="memory-basis-cell"><button type="button" data-process-sort="rss">RSS</button></th>
+                  <th scope="col" class="memory-basis-cell"><button type="button" data-process-sort="swap">Swap</button></th>
                   <th scope="col" class="gpu-cell"><button type="button" data-process-sort="gpu">GPU</button></th>
                   <th scope="col">Details</th>
                 </tr>
@@ -945,6 +954,7 @@
             <div><span class="label">CPU</span><strong id="process-detail-cpu">-</strong></div>
             <div><span class="label">RAM</span><strong id="process-detail-memory">-</strong></div>
             <div><span class="label">RSS</span><strong id="process-detail-rss">-</strong></div>
+            <div><span class="label">Swap</span><strong id="process-detail-swap">—</strong></div>
             <div><span class="label">GPU</span><strong id="process-detail-gpu">—</strong></div>
           </div>
           <canvas id="process-detail-trend" class="process-detail-trend" width="520" height="120" aria-label="Process CPU and RAM trend"></canvas>

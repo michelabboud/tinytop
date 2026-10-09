@@ -10,9 +10,11 @@ import {
 } from "../src/settings";
 import type { SystemSnapshot } from "../src/collector";
 
-// `topProcessCount` is how many processes every sample keeps, in the live list
-// and in the two process history tables. Its default and bounds are restated
-// in five places that cannot import one another: the Rust store, the Rust
+// `topProcessCount` is the size of each of a sample's two process lists (the
+// top N by CPU and the top N by memory), in the live list and in the two
+// process history tables; a sample keeps between N and 2N processes. Its
+// default and bounds are restated in five places that cannot import one
+// another: the Rust store, the Rust
 // collector, the Bun settings module, the dashboard script and the dialog's
 // `<input>`. The default moved 8 -> 12 on 2026-10-09; a copy left behind would
 // have the daemon, `collect --json`, the dev server and the form disagree

@@ -12,6 +12,7 @@ describe("dashboard process and filesystem controls", () => {
     expect(html).toContain('data-process-sort="cpu"');
     expect(html).toContain('data-process-sort="memory"');
     expect(html).toContain('data-process-sort="rss"');
+    expect(html).toContain('data-process-sort="swap"');
     expect(html).toContain('data-process-sort="gpu"');
     expect(html).toContain('id="process-detail-dialog"');
     expect(html).toContain('id="process-detail-title"');
@@ -45,6 +46,7 @@ describe("dashboard process and filesystem controls", () => {
     expect(app).toContain("function renderFilesystemFreshness");
     expect(app).toContain("tinytop.processFilter");
     expect(app).toContain("tinytop.processSort");
+    expect(app).toContain("tinytop.processView");
     expect(app).toContain("tinytop.filesystemShowSystem");
   });
 });

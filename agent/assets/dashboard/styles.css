@@ -2069,12 +2069,21 @@ h1 {
   flex-wrap: wrap;
 }
 
+/* One pill-group implementation for every "pick one view" control: graph
+   type, history range and the process list. Each is a group of real buttons
+   whose state is `aria-pressed`; none of them is a tablist or a switch. */
 .history-graph-nav,
-.history-window-nav {
+.history-window-nav,
+.process-view-nav {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0.35rem;
+}
+
+/* Setting `display` defeats the `hidden` attribute, so it is restated. */
+.process-view-nav[hidden] {
+  display: none;
 }
 
 .history-window-nav {
@@ -2082,7 +2091,8 @@ h1 {
 }
 
 .history-graph-nav button,
-.history-window-nav button {
+.history-window-nav button,
+.process-view-nav button {
   min-height: 34px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -2101,22 +2111,29 @@ h1 {
 }
 
 .history-graph-nav button:hover,
-.history-window-nav button:hover {
+.history-window-nav button:hover,
+.process-view-nav button:hover {
   border-color: var(--control-active-border);
 }
 
 .history-graph-nav button[aria-pressed="true"],
-.history-window-nav button[aria-pressed="true"] {
+.history-window-nav button[aria-pressed="true"],
+.process-view-nav button[aria-pressed="true"] {
   border-color: var(--control-active-border);
   background: var(--control-active-bg);
 }
 
 .history-graph-nav button:active,
-.history-window-nav button:active {
+.history-window-nav button:active,
+.process-view-nav button:active {
   transform: translateY(1px);
 }
 
-.history-window-nav button:disabled {
+/* The process list's "By memory" stays focusable when a capture has no memory
+   list (`aria-disabled`, not `disabled`), so keyboard focus is not thrown away
+   while scrubbing history across such a capture. */
+.history-window-nav button:disabled,
+.process-view-nav button[aria-disabled="true"] {
   border-color: var(--border);
   background: var(--control-bg);
   color: var(--muted);
@@ -2571,15 +2588,24 @@ h1 {
 
 .process-controls {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(160px, 220px);
+  grid-template-columns: auto minmax(220px, 1fr) minmax(160px, 220px);
   gap: 0.75rem;
   margin-top: 1rem;
 }
 
-.process-controls label {
+.process-controls label,
+.process-view-field {
   display: grid;
   gap: 0.35rem;
   min-width: 0;
+}
+
+.process-view-field[hidden] {
+  display: none;
+}
+
+.process-view-notice {
+  margin: 0.75rem 0 0;
 }
 
 .process-controls input,
@@ -2665,6 +2691,17 @@ th button[aria-pressed="true"] {
   color: var(--cyan);
 }
 
+/* In the by-memory list the ranking is RSS plus swap: the two columns that
+   add up to it are marked together, and joined by a visible plus sign. */
+.process-panel table[data-process-view="memory"] th.memory-basis-cell {
+  box-shadow: inset 0 -2px 0 var(--cyan);
+  color: var(--text);
+}
+
+.process-panel table[data-process-view="memory"] th.memory-basis-cell + th.memory-basis-cell button::before {
+  content: "+ ";
+}
+
 td {
   color: var(--text);
 }
@@ -2680,6 +2717,25 @@ td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* With the Swap column the table no longer fits a 720 px window if the command
+   keeps a fixed 420 px: RSS, Swap and Details were pushed out of sight, and a
+   byte figure wrapped inside its cell. Inside the process panel the command is
+   therefore the one column that gives way (it is cut with an ellipsis and the
+   whole text is in its `title` and behind "Open"), and no figure wraps. */
+.process-panel table {
+  min-width: 600px;
+}
+
+.process-panel th,
+.process-panel td {
+  white-space: nowrap;
+}
+
+.process-panel .command-cell {
+  width: 100%;
+  max-width: 0;
 }
 
 .process-detail-dialog,
@@ -2942,6 +2998,12 @@ td {
 
   .history-scrubber-row {
     grid-template-columns: 1fr;
+  }
+
+  .process-panel th,
+  .process-panel td {
+    padding-left: 0.45rem;
+    padding-right: 0.45rem;
   }
 
   .process-controls,

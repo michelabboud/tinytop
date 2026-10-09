@@ -197,7 +197,7 @@ Persisted in browser `localStorage`:
 - graph mode
 - selected history range
 - visible history series
-- process table filter, PID/CPU/RAM/RSS/GPU sort, and density
+- process table list (by CPU or by memory), filter, PID/CPU/RAM/RSS/Swap/GPU sort, and density
 - filesystem system-mount toggle
 - last section
 
@@ -216,6 +216,11 @@ Not persisted:
 - GPU busy is the busiest engine's percentage over the sampling interval, capped at 100%.
 - CPU thermals are degrees Celsius from opted-in hwmon chips. Warning and critical styling is derived only from present kernel `max` and `crit` thresholds; a missing or nonsensical threshold is omitted.
 - Per-process GPU percentage is shown only when at least one process row has a value.
+- The process table shows one of two lists, chosen with **List: By CPU / By memory** above it. **By CPU** is the table TinyTop always had and is the default. **By memory** ranks by resident memory (RSS) plus swap, so a process that has been pushed out to swap, and shows almost no RSS, is still listed; in that view the RSS and Swap headers are underlined together and read `RSS + SWAP`. The choice is remembered in this browser.
+- Each list holds the number of processes set in **Processes** (Settings → General → Daemon). The counter at the top right (`12 / 12 rows`) counts the list on screen, with the search filter applied on the left of the slash.
+- Choosing a list shows it in its own rank order. Clicking a column header then sorts inside that list; choosing the list again returns to its rank order.
+- **Swap** is the process's swapped-out memory. `0 B` is a measured zero; `—` means it is not known (a kernel thread, a process that exited during the read, a platform without per-process swap, or a capture recorded before this was measured).
+- The same choice applies when you scrub the timeline to a past sample. A capture recorded before TinyTop kept the memory list has none: the table then shows that capture by CPU, **By memory** is unavailable, and a sentence above the table says so. The legacy Bun runtime never records the memory list or swap, so it always shows that sentence.
 - In the Rust daemon, filesystem and process data come from Rust crates instead of shelling out.
 - Process detail rows include parent PID and start time when the active collector can provide them. The copy command uses a redacted command string to avoid copying obvious token/password values.
 - In legacy Bun mode, filesystem capacity comes from `df` and process rows come from `ps`.
@@ -231,7 +236,7 @@ On page load:
 5. It requests the latest snapshot from `/api/snapshot`.
 6. It starts polling every 1500 ms.
 
-The daemon's own collection tick is `pollIntervalMs`; filesystems are re-checked every `detailIntervalSec` (default 60 seconds), and the Filesystem panel shows `as of hh:mm:ss` when its rows are older than one poll. The **Processes** field (Settings → General → Daemon; default `12`, allowed `1`–`50`) is how many processes each sample keeps, ranked by CPU, both in the live table and in history. A saved count applies on the daemon's next collection tick. Raising it stores proportionally more process-history rows; an install that already has saved settings keeps its saved count when TinyTop is upgraded, so raise it there by hand.
+The daemon's own collection tick is `pollIntervalMs`; filesystems are re-checked every `detailIntervalSec` (default 60 seconds), and the Filesystem panel shows `as of hh:mm:ss` when its rows are older than one poll. The **Processes** field (Settings → General → Daemon; default `12`, allowed `1`–`50`) is the length of each of the two process lists a sample keeps, the top N by CPU and the top N by memory (RSS plus swap), both in the live table and in history; a process in both lists is stored once, so a sample holds between N and 2N processes. A saved count applies on the daemon's next collection tick. Raising it stores proportionally more process-history rows; an install that already has saved settings keeps its saved count when TinyTop is upgraded, so raise it there by hand.
 
 If history is unavailable, the dashboard still works from live polling, but the chart starts with newly collected samples.
 

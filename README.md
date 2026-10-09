@@ -243,7 +243,7 @@ For persistent background collection, install user-space systemd services:
 - Kernel, distro, uptime, and automatic WSL versus real Linux detection
 - Filesystem capacity and inode pressure
 - CPU, memory, and I/O pressure from `/proc/pressure/*` when available
-- Top processes by CPU and memory
+- Top processes by CPU and, on the Rust daemon, by memory: a "By CPU / By memory" choice on the process table, live and at any scrubbed point in history. Memory here is resident memory (RSS) plus swap, so a process that has been swapped out still ranks; a Swap column shows each process's swapped-out bytes, with a dash when it is unknown
 - Detected GPU adapters with busy, memory, and temperature when their Linux driver exposes those values, plus per-process GPU usage when fdinfo is readable
 - Live CPU, RAM, swap, and load gauges with sparklines, status strips, and stat tiles
 - Apache ECharts History views: line, stacked area, stacked bar, heatmap, and treemap
@@ -254,7 +254,7 @@ For persistent background collection, install user-space systemd services:
 - Timeline rail with overview trace, selected datetime context, compact metric values, history coverage, DB budget status, and a return-to-now control
 - Operator status strip with Healthy, Warning, Critical, and Stale states from saved thresholds plus a detail drawer explaining metric values, thresholds, age, trend, and recent changes
 - Critical, Warning, and Stale operator states use stronger full-strip visual treatment and text labels so the state is obvious at a glance
-- Process search, sort, density controls, and process detail drawer with redacted copy-safe command text, parent PID/start time when available, RSS, and per-PID CPU/RAM trend
+- Process search, column sort inside the shown list, density controls, and process detail drawer with redacted copy-safe command text, parent PID/start time when available, RSS, and per-PID CPU/RAM trend
 - Filesystem root card, system-mount toggle, and threshold-colored filesystem bars
 - Visible collector/dashboard runtime and version metadata in the sidebar
 - In-app confirmation dialogs for browser-local destructive actions, including clearing the session history buffer
@@ -355,7 +355,7 @@ Implementation notes:
 - Collection has three cadence classes: fast CPU, memory, swap, load, pressure, processes, and uptime refresh on every `pollIntervalMs` tick; slow filesystems refresh every `retentionLadder.detailIntervalSec`, are served from cache between checks, and carry `filesystemsCapturedAtMs`; static hostname, kernel, and distro identity is re-read on the slow tick.
 - Schema v5 retains the v4 process/GPU layout and adds interned `sensor_dim` identities plus raw `sensor_samples`; `tinytop-agent db stats --json` reports `userVersion`, GPU counts, and sensor counts.
 - `/api/snapshot` is answered from the daemon's latest in-memory snapshot. It returns `503 {"error":"no snapshot yet"}` only before the first collection, and the daemon collects once before binding its listener.
-- A `topProcessCount` change made through the dashboard or API is effective from the next collection, which begins after the save returns (default `12`, allowed `1`–`50`; it is the **Processes** field under Settings → General → Daemon). The count is how many processes each sample keeps, ranked by CPU, in the live list and in both process history tables; an install that already has stored settings keeps its stored count across an upgrade; the tick's reload catches changes made by other means, and the previous hard-coded `10` is gone. `tinytop-agent collect --json` without `--sqlite` uses that collector default without opening a database; with `--sqlite <db>`, it loads the target database's stored count before collecting.
+- A `topProcessCount` change made through the dashboard or API is effective from the next collection, which begins after the save returns (default `12`, allowed `1`–`50`; it is the **Processes** field under Settings → General → Daemon). The count is the length of each of a sample's two lists, the top N by CPU and the top N by memory (RSS plus swap), in the live list and in both process history tables, so a sample stores between N and 2N processes; an install that already has stored settings keeps its stored count across an upgrade; the tick's reload catches changes made by other means, and the previous hard-coded `10` is gone. `tinytop-agent collect --json` without `--sqlite` uses that collector default without opening a database; with `--sqlite <db>`, it loads the target database's stored count before collecting.
 - Linux is the default supported collector feature. Native macOS and Windows collectors are present as opt-in Rust feature-gated modules for identity, CPU, memory, load equivalent, disks, and processes; Linux remains the reference implementation until those hosts receive full live-machine verification.
 - Local Rust builds require Rust `1.95.0` or newer because the pinned `sysinfo` release uses that MSRV.
 
@@ -508,7 +508,7 @@ Resource attributes include `service.name`, `service.version` (the agent version
 | `GET /api/history/coverage` | Existing database/raw/rollup fields plus every ladder tier, detail cadence, disk state (`freeBytes`, `minFreeBytes`, `pressure`, `pressureSinceMs`, `lastCheckMs`), archive state, migration state, and Rust-daemon OTel status (`enabled`, `endpoint`, `intervalSec`, `lastSuccessMs`, `lastFailureMs`, `lastError`, `failures`). |
 | `GET /api/history/filesystems` | Typed filesystem samples; accepts `sinceMs`, `untilMs`, exact `mount`, and a 1–10,000 clamped `limit`. |
 | `GET /api/history/gpus` | Per-adapter GPU samples; accepts `sinceMs`, `untilMs`, exact stable `adapter`, and a 1–10,000 clamped `limit`. |
-| `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit; the response names its `source` (`fast` for windows inside `processFastKeepHours`, else `minute`). |
+| `GET /api/history/processes` | Typed process samples grouped into complete `capturedAtMs` captures; accepts `sinceMs`, `untilMs`, and a 1–10,000 clamped capture limit; the response names its `source` (`fast` for windows inside `processFastKeepHours`, else `minute`). Rows carry `swapBytes`, `cpuRank` and `memoryRank` when known; a capture holds between N and 2N rows. |
 | `GET /api/history/markers` | Persisted daemon/settings/migration/disk-pressure/disk-recovery events and computed coverage gaps. |
 | `GET /api/settings/export` | Pretty-printed version-1 settings envelope with an attachment filename and `no-store`; Rust daemon only. |
 | `POST /api/settings/import` | Validate and apply a settings envelope, run daemon maintenance, and record an import marker. `?dryRun=true` returns validation errors, warnings, changed keys, and exact candidate-horizon `wouldDelete` counts without writing; Rust daemon only. |

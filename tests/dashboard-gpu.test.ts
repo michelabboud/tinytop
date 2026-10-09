@@ -77,7 +77,7 @@ describe("dashboard GPU source contracts", () => {
   test("wires GPU rendering into every selected snapshot", () => {
     expect(app).toContain("function renderGpus");
     expect(app).toContain('gpuPanel: document.querySelector("#gpu-panel")');
-    expect(app).toContain('const PROCESS_SORT_KEYS = new Set(["pid", "cpu", "memory", "rss", "gpu"]);');
+    expect(app).toContain('const PROCESS_SORT_KEYS = new Set(["rank", "pid", "cpu", "memory", "rss", "swap", "gpu"]);');
     expect(app).toContain("renderGpus(snapshot.gpus)");
   });
 

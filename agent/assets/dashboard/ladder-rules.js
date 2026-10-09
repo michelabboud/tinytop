@@ -170,6 +170,126 @@ export function gpuPercentSortValue(process) {
   return Number.isFinite(process?.gpuPercent) ? process.gpuPercent : -1;
 }
 
+/**
+ * The two process lists of one sample.
+ *
+ * Since schema v6 (ADR 0036) a sample is a union: the top N by CPU followed by
+ * the memory-only members of the top N by memory, where memory is resident
+ * memory plus swap. Each row says which list it is in through two optional
+ * zero-based ranks, `cpuRank` and `memoryRank`. The dashboard never shows the
+ * union; it shows one list, and these are the only rules that pick it.
+ */
+export const PROCESS_VIEWS = Object.freeze(["cpu", "memory"]);
+export const DEFAULT_PROCESS_VIEW = "cpu";
+
+// The sort a view starts in. "rank" is the shown list's own order; in the CPU
+// list that order is CPU descending, which is the sort the table always had.
+const NATURAL_PROCESS_SORT = Object.freeze({
+  cpu: Object.freeze({ key: "cpu", direction: "desc" }),
+  memory: Object.freeze({ key: "rank", direction: "desc" }),
+});
+
+export const PROCESS_VIEW_DESCRIPTIONS = Object.freeze({
+  cpu: "Top local processes by CPU usage.",
+  memory: "Top local processes by memory: RSS plus swap, so a swapped-out process still ranks.",
+});
+
+export const NO_MEMORY_LIST_NOTICE =
+  "This capture has no by-memory list: it was recorded without memory ranks or per-process swap, so its processes are shown by CPU.";
+
+function processRank(process, key) {
+  const rank = process?.[key];
+  return Number.isInteger(rank) && rank >= 0 ? rank : null;
+}
+
+function rankedBy(rows, key) {
+  return rows
+    .map((process, index) => ({ process, index, rank: processRank(process, key) }))
+    .filter((entry) => entry.rank !== null)
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .map((entry) => entry.process);
+}
+
+/**
+ * Splits one sample's rows into the CPU list and the memory list.
+ *
+ * - A row is in a list only when it carries that list's rank. A row with
+ *   neither rank beside ranked rows (a mixed capture, ADR 0037) is in neither.
+ * - When NO row carries any rank the rows came from a producer that knows one
+ *   list only, the top N by CPU in CPU order (the legacy Bun collector): they
+ *   are the CPU list as received.
+ * - `memory` is `null`, not empty, when the sample has rows and none of them
+ *   has a `memoryRank`: a pre-v6 writer recorded it and there is no by-memory
+ *   list to show. An empty sample has two empty lists and nothing to explain.
+ */
+export function processListsFrom(processes) {
+  const rows = Array.isArray(processes) ? processes.filter((process) => process && typeof process === "object") : [];
+  if (rows.length === 0) return { cpu: [], memory: [] };
+  const anyCpuRank = rows.some((process) => processRank(process, "cpuRank") !== null);
+  const anyMemoryRank = rows.some((process) => processRank(process, "memoryRank") !== null);
+  if (!anyCpuRank && !anyMemoryRank) return { cpu: rows, memory: null };
+  return {
+    cpu: rankedBy(rows, "cpuRank"),
+    memory: anyMemoryRank ? rankedBy(rows, "memoryRank") : null,
+  };
+}
+
+/**
+ * The list the table shows for a requested view. A request for the memory
+ * list of a sample that has none is answered with the CPU list and
+ * `memoryAvailable: false`, so the caller can say so instead of showing an
+ * empty table. The stored preference is not changed by this.
+ */
+export function processViewFor(processes, requestedView) {
+  const lists = processListsFrom(processes);
+  const memoryAvailable = lists.memory !== null;
+  const view = requestedView === "memory" && memoryAvailable ? "memory" : "cpu";
+  return {
+    view,
+    rows: view === "memory" ? lists.memory : lists.cpu,
+    memoryAvailable,
+    notice: memoryAvailable ? null : NO_MEMORY_LIST_NOTICE,
+  };
+}
+
+export function naturalProcessSort(view) {
+  return { ...(NATURAL_PROCESS_SORT[view] ?? NATURAL_PROCESS_SORT[DEFAULT_PROCESS_VIEW]) };
+}
+
+// Unknown swap sorts below a real zero, the way an unknown GPU share does.
+export function swapBytesSortValue(process) {
+  return Number.isFinite(process?.swapBytes) && process.swapBytes >= 0 ? process.swapBytes : -1;
+}
+
+/**
+ * Orders the SHOWN list by a column. "rank" (and anything unknown) keeps the
+ * list's own order. Ties keep the list's order too, in both directions.
+ */
+export function sortProcessRows(rows, sort) {
+  const list = Array.isArray(rows) ? [...rows] : [];
+  const valueOf = {
+    pid: (process) => process.pid,
+    cpu: (process) => process.cpuPercent,
+    memory: (process) => process.memoryPercent,
+    rss: (process) => process.rssBytes,
+    swap: swapBytesSortValue,
+    gpu: gpuPercentSortValue,
+  }[sort?.key];
+  if (!valueOf) return list;
+  const direction = sort?.direction === "asc" ? 1 : -1;
+  return list.sort((left, right) => (Number(valueOf(left)) - Number(valueOf(right))) * direction);
+}
+
+// Absent swap is unknown and reads as a dash; a present 0 is a measured zero.
+export function formatSwapBytes(value) {
+  return Number.isFinite(value) && value >= 0 ? formatCoverageBytes(value) : "—";
+}
+
+// Counts the shown list, never the union the sample carries.
+export function processCounterText(visibleCount, listCount) {
+  return `${visibleCount} / ${listCount} rows`;
+}
+
 function finiteTimestamp(value) {
   const timestamp = Number(value);
   return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : null;

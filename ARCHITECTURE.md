@@ -303,6 +303,7 @@ Browser-local settings:
 - `tinytop.visibleSeries`
 - `tinytop.processFilter`
 - `tinytop.processSort`
+- `tinytop.processView` (`cpu` or `memory`: which of a sample's two process lists the table shows)
 - `tinytop.processDensity`
 - `tinytop.filesystemShowSystem`
 - `tinytop.lastSection`

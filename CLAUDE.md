@@ -13,7 +13,9 @@ There are **two implementations of the same product** that must stay behaviorall
 - **Rust** (`agent/`) — the default, persistent runtime. A Cargo workspace of four crates. This is what `systemd install` and `./tinytop start` use when a binary/Cargo is available.
 - **Bun/TypeScript** (`src/`, `legacy/`) — development server + legacy collector, and the fallback when Rust is unavailable (`TINYTOP_RUNTIME=legacy`).
 
-Both produce the same `SystemSnapshot` JSON and serve the same dashboard API. When you change a metric, a snapshot field, or an API route, you almost always must change it **in both runtimes** and update their tests. The Rust snapshot structs (`agent/crates/tinytop-types`) are serialized to match the Bun JSON contract exactly.
+**One stated exception (2026-10-09): the process list.** The Rust collectors emit two lists per sample, the top N by CPU and the top N by memory (RSS plus swap), with `swapBytes`, `cpuRank` and `memoryRank` on each process. The legacy Bun collector (`src/collector.ts`) has no per-process swap and no ranks: it emits a fixed ten rows in CPU order. The shared dashboard reads rows with no rank at all as the CPU list and offers no by-memory view for them (`processViewFor` in `ladder-rules.js`). This is recorded in `BACKLOG.md` (2026-10-09 entries); do not "fix" the dashboard to hide it.
+
+Otherwise both produce the same `SystemSnapshot` JSON and serve the same dashboard API. When you change a metric, a snapshot field, or an API route, you almost always must change it **in both runtimes** and update their tests. The Rust snapshot structs (`agent/crates/tinytop-types`) are serialized to match the Bun JSON contract exactly.
 
 ### Byte-identical dashboard assets — a hard invariant
 
@@ -88,4 +90,4 @@ The Rust Linux collector uses `procfs` (CPU ticks, memory, load, uptime, PSI), `
 
 ## Docs to keep current (per the global workflow rules)
 
-`CHANGELOG.md`, `PROGRESS.md`, `README.md`/`ARCHITECTURE.md`, and `VERSION` (single source of truth, currently `0.14.2`) are all live and expected to be updated per task. New ADRs for architectural decisions.
+`CHANGELOG.md`, `PROGRESS.md`, `README.md`/`ARCHITECTURE.md`, and `VERSION` (single source of truth, currently `0.15.0`) are all live and expected to be updated per task. New ADRs for architectural decisions.

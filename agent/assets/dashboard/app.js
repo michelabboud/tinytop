@@ -1,5 +1,8 @@
 import {
+  DEFAULT_PROCESS_VIEW,
   HISTORY_WINDOWS,
+  PROCESS_VIEWS,
+  PROCESS_VIEW_DESCRIPTIONS,
   advancedDocumentApplyAllowed,
   brokenSettingsControls,
   availableSettingsTabs,
@@ -15,6 +18,7 @@ import {
   formatGpuPercent,
   formatSensorThreshold,
   formatSensorValue,
+  formatSwapBytes,
   formatThermalExtraChips,
   gpuColumnVisible,
   gpuPercentSortValue,
@@ -29,16 +33,20 @@ import {
   liveSampleEntersHistory,
   metricFamilyKeys,
   moveWithinTabRow,
+  naturalProcessSort,
   normalizeHistorySamples,
   otelCapabilityFrom,
   parseResourceAttributes,
   parseThermalExtraChips,
   pressureMaximum,
+  processCounterText,
+  processViewFor,
   sensorBarPercent,
   sensorSeverity,
   settingsIntegrityErrors,
   settingsPutPayload,
   shouldFetchCoverage,
+  sortProcessRows,
   thermalCapabilityFrom,
   moveSettingsTab,
   resolveSettingsTab,
@@ -71,6 +79,7 @@ const STORAGE_KEYS = {
   visibleSeries: "tinytop.visibleSeries",
   processFilter: "tinytop.processFilter",
   processSort: "tinytop.processSort",
+  processView: "tinytop.processView",
   processDensity: "tinytop.processDensity",
   filesystemShowSystem: "tinytop.filesystemShowSystem",
   lastSection: "tinytop.lastSection",
@@ -101,7 +110,10 @@ const HISTORY_METRICS = [
 ];
 const HISTORY_WINDOW_KEYS = new Set(Object.keys(HISTORY_WINDOWS));
 const HISTORY_SERIES_KEYS = new Set(HISTORY_METRICS.map((metric) => metric.key));
-const PROCESS_SORT_KEYS = new Set(["pid", "cpu", "memory", "rss", "gpu"]);
+// "rank" is the shown list's own order (ladder-rules.js, naturalProcessSort);
+// it has no column header, so no header button can select it.
+const PROCESS_SORT_KEYS = new Set(["rank", "pid", "cpu", "memory", "rss", "swap", "gpu"]);
+const PROCESS_VIEW_KEYS = new Set(PROCESS_VIEWS);
 const PROCESS_DENSITIES = new Set(["comfortable", "compact"]);
 const SYSTEM_FILESYSTEM_TYPES = new Set([
   "autofs",
@@ -294,10 +306,10 @@ const state = {
   historyWindowKey: "live",
   visibleSeries: new Set(HISTORY_METRICS.map((metric) => metric.key)),
   processFilter: "",
-  processSort: {
-    key: "cpu",
-    direction: "desc",
-  },
+  processSort: naturalProcessSort(DEFAULT_PROCESS_VIEW),
+  // Which of a sample's two lists the table shows. This is the user's choice;
+  // a capture with no by-memory list is shown by CPU without changing it.
+  processView: DEFAULT_PROCESS_VIEW,
   processDensity: "comfortable",
   filesystemShowSystem: false,
   timelineDragging: false,
@@ -311,6 +323,9 @@ const state = {
   historyFetchToken: 0,
   lastOperatorResult: null,
   activeProcess: null,
+  // The rows the process table last drew, so choosing a list redraws what is
+  // on screen at once instead of waiting for the next poll.
+  renderedProcesses: [],
   snapshots: [],
   selectedAtMs: null,
   history: {
@@ -414,6 +429,9 @@ const elements = {
   processCount: document.querySelector("#process-count"),
   processRows: document.querySelector("#process-rows"),
   processTable: document.querySelector("#processes table"),
+  processViewButtons: Array.from(document.querySelectorAll("#process-view [data-process-view]")),
+  processViewDescription: document.querySelector("#process-view-description"),
+  processViewNotice: document.querySelector("#process-view-notice"),
   processPanel: document.querySelector("#processes"),
   processSearch: document.querySelector("#process-search"),
   processDensity: document.querySelector("#process-density"),
@@ -430,6 +448,7 @@ const elements = {
   processDetailCpu: document.querySelector("#process-detail-cpu"),
   processDetailMemory: document.querySelector("#process-detail-memory"),
   processDetailRss: document.querySelector("#process-detail-rss"),
+  processDetailSwap: document.querySelector("#process-detail-swap"),
   processDetailGpu: document.querySelector("#process-detail-gpu"),
   processDetailTrend: document.querySelector("#process-detail-trend"),
   closeProcessDetailButton: document.querySelector("#close-process-detail-button"),
@@ -2204,31 +2223,7 @@ function renderPressure(snapshot) {
 }
 
 function sortProcesses(processes) {
-  const sortKey = PROCESS_SORT_KEYS.has(state.processSort.key) ? state.processSort.key : "cpu";
-  const direction = state.processSort.direction === "asc" ? 1 : -1;
-  return [...processes].sort((left, right) => {
-    const leftValue =
-      sortKey === "pid"
-        ? left.pid
-        : sortKey === "memory"
-          ? left.memoryPercent
-          : sortKey === "rss"
-            ? left.rssBytes
-            : sortKey === "gpu"
-              ? gpuPercentSortValue(left)
-              : left.cpuPercent;
-    const rightValue =
-      sortKey === "pid"
-        ? right.pid
-        : sortKey === "memory"
-          ? right.memoryPercent
-          : sortKey === "rss"
-            ? right.rssBytes
-            : sortKey === "gpu"
-              ? gpuPercentSortValue(right)
-              : right.cpuPercent;
-    return (Number(leftValue) - Number(rightValue)) * direction;
-  });
+  return sortProcessRows(processes, state.processSort);
 }
 
 function filteredProcesses(processes) {
@@ -2331,6 +2326,7 @@ function renderProcessDetail(process) {
   setText(elements.processDetailCpu, `${Number(process.cpuPercent ?? 0).toFixed(1)}%`);
   setText(elements.processDetailMemory, `${Number(process.memoryPercent ?? 0).toFixed(1)}%`);
   setText(elements.processDetailRss, formatBytes(Number(process.rssBytes ?? 0)));
+  setText(elements.processDetailSwap, formatSwapBytes(process.swapBytes));
   setText(elements.processDetailGpu, formatGpuPercent(process.gpuPercent));
   drawProcessTrend(processTrendForPid(process.pid));
   if (typeof elements.processDetailDialog.showModal === "function") {
@@ -2463,18 +2459,36 @@ function renderThermals(sensors) {
   );
 }
 
+// Shows which list is on screen and whether the other one exists for this
+// sample. The pressed button is the list SHOWN, which differs from the stored
+// choice only while a capture without a by-memory list is on screen.
+function syncProcessView(shown) {
+  for (const button of elements.processViewButtons) {
+    const view = button.dataset.processView;
+    button.setAttribute("aria-pressed", String(view === shown.view));
+    if (view === "memory") button.setAttribute("aria-disabled", String(!shown.memoryAvailable));
+  }
+  if (elements.processTable) elements.processTable.dataset.processView = shown.view;
+  setText(elements.processViewDescription, PROCESS_VIEW_DESCRIPTIONS[shown.view]);
+  setText(elements.processViewNotice, shown.notice ?? "");
+  setHidden(elements.processViewNotice, shown.notice === null);
+}
+
 function renderProcesses(processes) {
+  state.renderedProcesses = processes;
   const hasGpu = gpuColumnVisible(processes);
   if (elements.processTable) elements.processTable.dataset.hasGpu = String(hasGpu);
-  const visible = filteredProcesses(sortProcesses(processes));
-  setText(elements.processCount, `${visible.length} / ${processes.length} rows`);
+  const shown = processViewFor(processes, state.processView);
+  const visible = filteredProcesses(sortProcesses(shown.rows));
+  setText(elements.processCount, processCounterText(visible.length, shown.rows.length));
+  syncProcessView(shown);
   syncProcessSortButtons();
   if (!elements.processRows) return;
 
   if (visible.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = hasGpu ? 7 : 6;
+    cell.colSpan = hasGpu ? 8 : 7;
     cell.textContent = "No matching processes";
     row.append(cell);
     elements.processRows.replaceChildren(row);
@@ -2489,6 +2503,7 @@ function renderProcesses(processes) {
       const cpu = document.createElement("td");
       const memory = document.createElement("td");
       const rss = document.createElement("td");
+      const swap = document.createElement("td");
       const gpu = document.createElement("td");
       const details = document.createElement("td");
       const detailButton = document.createElement("button");
@@ -2500,6 +2515,7 @@ function renderProcesses(processes) {
       cpu.textContent = `${process.cpuPercent.toFixed(1)}%`;
       memory.textContent = `${process.memoryPercent.toFixed(1)}%`;
       rss.textContent = formatBytes(process.rssBytes);
+      swap.textContent = formatSwapBytes(process.swapBytes);
       gpu.className = "gpu-cell";
       gpu.textContent = formatGpuPercent(process.gpuPercent);
       detailButton.className = "mini-button secondary";
@@ -2508,7 +2524,7 @@ function renderProcesses(processes) {
       detailButton.addEventListener("click", () => renderProcessDetail(process));
       details.append(detailButton);
 
-      row.append(pid, command, cpu, memory, rss, gpu, details);
+      row.append(pid, command, cpu, memory, rss, swap, gpu, details);
       return row;
     }),
   );
@@ -3550,6 +3566,7 @@ function applyInitialBrowserSettings(settings) {
       direction: storedSort.direction === "asc" ? "asc" : "desc",
     };
   }
+  state.processView = readStoredValue(STORAGE_KEYS.processView, DEFAULT_PROCESS_VIEW, PROCESS_VIEW_KEYS);
   state.processDensity = readStoredValue(STORAGE_KEYS.processDensity, "comfortable", PROCESS_DENSITIES);
   state.filesystemShowSystem = readStoredBoolean(STORAGE_KEYS.filesystemShowSystem, false);
   setCheckboxValue(elements.filesystemShowSystem, state.filesystemShowSystem);
@@ -4561,6 +4578,23 @@ elements.processDensity?.addEventListener("change", () => {
   storeValue(STORAGE_KEYS.processDensity, state.processDensity);
   syncProcessControls();
 });
+
+for (const button of elements.processViewButtons) {
+  button.addEventListener("click", () => {
+    const view = button.dataset.processView;
+    if (!PROCESS_VIEW_KEYS.has(view)) return;
+    // `aria-disabled` keeps the button focusable; the notice it is described
+    // by says why this capture has no by-memory list.
+    if (button.getAttribute("aria-disabled") === "true") return;
+    state.processView = view;
+    // Choosing a list shows it in its own order; a column header then sorts
+    // inside it.
+    state.processSort = naturalProcessSort(view);
+    storeValue(STORAGE_KEYS.processView, view);
+    storeJson(STORAGE_KEYS.processSort, state.processSort);
+    renderProcesses(state.renderedProcesses);
+  });
+}
 
 for (const button of elements.processSortButtons) {
   button.addEventListener("click", () => {

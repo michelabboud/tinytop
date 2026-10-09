@@ -2,9 +2,27 @@
 
 ## Current Version
 
-- Version: `0.14.2`
-- Date: 2026-09-02
-- Status: Phase 5 IN PROGRESS. **0.11.0** (ADR 0035) moves seven reference blocks off the dashboard
+- Version: `0.15.0`
+- Date: 2026-10-09
+- Status: the **memory-ranked processes plan** (`docs/plans/2026-10-09-memory-ranked-processes-plan.md`,
+  approved 2026-10-09) has all three tasks built; task 3 is in the tree as `## Unreleased` in the
+  changelog and has no version yet. What the plan delivered, in order: **0.12.1** raised the default
+  process count from 8 to 12 and named the constant; **0.13.0** (task 1) made a sample the union of
+  two lists, the top N by CPU and the top N by memory, where memory is RSS plus swap, and added
+  per-process swap read from `/proc/<pid>/status`; **0.14.0** (task 2, ADR 0036) is schema v6, which
+  stores `swap_bytes`, `cpu_rank` and `memory_rank` on both process tables by `ADD COLUMN`;
+  **0.14.1** and **0.14.2** (ADR 0037) are the review fixes: a warning when the swap read overruns
+  its budget, the migration taking the write lock first, and a capture with no ranks at all being
+  read back as a CPU list. **Task 3 (unreleased)** is the dashboard and the documentation: a
+  "By CPU / By memory" choice and a Swap column on the process table, live and at any scrubbed
+  history sample, a plain sentence where a capture has no memory list, and the process object
+  documented for every route in `docs/guides/API.md`. Still to do in this plan: the deep review of
+  the whole batch, then the deploy (stop the 0.12.1 service first, back up the database, start the
+  new binary; the migration runs at that start). The live service is still **0.12.1** on schema v5.
+  Known and recorded, not part of this plan: the legacy Bun collector reports neither swap nor ranks
+  (`BACKLOG.md`, 2026-10-09).
+- Superseded status (0.12.0, 2026-09-02): Phase 5 IN PROGRESS. **0.12.0** added the daemon's PID and
+  listening address to Settings → Info → Services. **0.11.0** (ADR 0035) moves seven reference blocks off the dashboard
   into a new read-only **Settings → Info** tab (Coverage · Tiers · Services · Events): the coverage
   stats, the L1–L4 span cards, the archive/OTel/thermal service lines and the event log. His
   principle, verbatim: *"the idea of dashboard is to see important information in a glance"* — none
