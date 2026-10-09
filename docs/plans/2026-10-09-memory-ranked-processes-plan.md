@@ -1,6 +1,6 @@
 # Memory-ranked processes and per-process swap — plan
 
-- **Status:** approved 2026-10-09 (Michel: "1. go"), running
+- **Status:** done 2026-10-09 (approved 2026-10-09, Michel: "1. go"; deployed 2026-10-09, see "Deploy record")
 - **Written / approved / last updated:** 2026-10-09 / 2026-10-09 / 2026-10-09
 - **Dev mode:** mvp (no `Dev mode:` line in `CLAUDE.md`; the rulebook's default for a project without one)
 - **Coordinator:** the foxymai Claude Code session (Opus 5.5). **Tasks run back to back:** when a task's close-out chain finishes, the next one starts in the same turn.
@@ -64,6 +64,31 @@ Rebuild and restart `tinytop.service` (Michel, 2026-10-09: "you can freely rebui
 6. **Verify**: the version and schema version; exactly one v5→v6 `schemaMigrated` event with row counts matching step 4; `NRestarts=0`; `integrity_check`; a capture from before the deploy read back with `cpuRank` on every row and no `memoryRank`; three consecutive new samples with both ranks and swap; per-process CPU against `top` for one busy process; the daemon's own CPU share.
 
 **Rollback after the migration:** move the v6 file aside (never delete it), restore the backup, and run the binary kept in step 2. Everything recorded after the backup is lost, so fixing forward is the choice for anything short of data damage.
+
+## Deploy record — 2026-10-09, 0.15.2 (`f468ec2`)
+
+Done in the order above by the coordinator.
+
+| Step | Evidence |
+|---|---|
+| 1. Build | Release build in `~/.cache/tinytop-deploy-build`; new binary sha256 `fb73ad65…` |
+| 2. Old binary kept | `~/.local/share/tinytop/deploy-2026-10-09/tinytop-agent-0.12.1` (sha256 `49150d5b…`) |
+| 3. Stop | Unit inactive, port 4274 free, no process holding the database |
+| 4. Backup | `~/.local/share/tinytop/deploy-2026-10-09/history-pre-v6-2026-10-09.sqlite`, 941,195,264 bytes, `integrity_check` ok, `user_version` 5, 473,676 fast and 338,032 minute process rows, equal to the source |
+| 5. Start | 17:38:54 UTC; the service reports version 0.15.2 |
+| 6. Migration | One `schemaMigrated` event: v5 → v6 in 818 ms, `fastRows` 473676, `minuteRows` 338032 (the backup's counts). `daemonStart` 0.15.2 three seconds later. `NRestarts=0`. `integrity_check` ok, `user_version` 6. No row among the old ones with `cpu_rank` different from `rank` |
+| 6. Old capture | The newest pre-deploy capture through `/api/history/processes`: 12 rows, `cpuRank` on all 12 and equal to `rank`, `memoryRank` on none, `swapBytes` on none |
+| 6. New samples | Three consecutive fast captures of 17–18 rows, each with 12 CPU ranks, 12 memory ranks and swap on every row; the newest minute capture carries 12 memory ranks. The live by-memory list shows what the plan was written for: `mai-embedder` with almost nothing resident and 1.72 GB in swap, absent from the by-CPU list |
+| 6. CPU against the kernel | Over one 12-second window, per-process CPU from `/proc/<pid>/stat` against the mean of eight tinytop samples: 92.9 / 92.9, 92.8 / 92.8, 42.1 / 42.0, 9.4 / 9.4, 9.1 / 9.2, 8.5 / 8.8 percent |
+| 6. The daemon's own CPU | About 42 % of one core, steady (see below) |
+
+No warning or error line in the service journal after the start.
+
+**Left open by the deploy**
+
+- **The daemon uses about 42 % of one core.** It predates this plan and is in `BACKLOG.md`: a sample during the 0.15.1 lane put most of it in the SQLite worker thread on the 0.94 GB database (a fresh database costs about 6 %). Which statement costs it is not measured; it needs a profiling lane.
+- **Per-process CPU recorded before 0.15.1 is wrong** and the dashboard does not mark it (`BACKLOG.md`).
+- **The rollback files are kept** in `~/.local/share/tinytop/deploy-2026-10-09/` (about 0.94 GB). Removing them is the owner's call.
 
 ## Amendments
 
