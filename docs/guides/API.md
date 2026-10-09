@@ -228,7 +228,7 @@ Every route that returns processes returns the same object: `/api/snapshot`, `/s
 | --- | --- | --- | --- |
 | `pid` | integer | always | Process id |
 | `command` | string | always | Command line (redacted when `redactionDefault` is on) |
-| `cpuPercent` | number | always | CPU used since the previous collection, as a percentage of **one core**: 100 is one core fully used, and a process running on several cores reads above 100, up to 100 × the core count (the scale `top` and `ps` use). It is not a share of the whole machine. The first sample after the daemon starts, and a one-shot `collect`, measure over 200 ms instead. A process first seen in a sample reads 0 there. The legacy Bun collector reports the `pcpu` figure of `ps` instead: the same unit, averaged over the process's whole lifetime |
+| `cpuPercent` | number | always | CPU used since the previous collection, as a percentage of **one core**: 100 is one core fully used, and a process running on several cores reads above 100, up to 100 × the core count (the scale `top` and `ps` use). It is not a share of the whole machine. The first sample after the daemon starts, and a one-shot `collect`, measure over 200 ms instead. A process first seen in a sample reads 0 there. The legacy Bun collector reports the `pcpu` figure of `ps` instead: the same unit, averaged over the process's whole lifetime **History recorded before 0.15.1 is not usable for this field:** it is almost always `0` and occasionally several times too high (the collector divided by CPU time since boot), and nothing on the wire marks such a capture. |
 | `memoryPercent` | number | always | Resident memory as a share of total RAM |
 | `rssBytes` | integer | always | Resident memory (RSS) in bytes |
 | `swapBytes` | integer | when known | Swapped-out memory in bytes. **Absent means unknown, not zero**; a present `0` is a measured zero |
@@ -237,7 +237,7 @@ Every route that returns processes returns the same object: `/api/snapshot`, `/s
 | `parentPid`, `startedAt` | integer, RFC 3339 string | when the collector has them | Parent process id and start time |
 | `gpuPercent` | number | when a per-process GPU source exists | GPU share |
 
-**How many rows.** `topProcessCount` (N, `1`–`50`, default `12`) is the length of *each* of two lists: the top N by CPU and the top N by memory (RSS plus swap). A sample carries their union with each process once: the CPU list first, in CPU order, then the processes that are only in the memory list, in memory order. `processes.length` is therefore between N and 2N. No route takes a parameter to choose a list; a client builds them itself:
+**How many rows.** `topProcessCount` (N, `1`–`50`, default `12`) is the length of *each* of two lists: the top N by CPU and the top N by memory (RSS plus swap). A sample carries their union with each process once, so between N and 2N rows, or fewer on a host that runs fewer than N processes: the CPU list first, in CPU order, then the processes that are only in the memory list, in memory order. `processes.length` is therefore between N and 2N. No route takes a parameter to choose a list; a client builds them itself:
 
 - **By CPU:** the rows that have `cpuRank`, sorted by it.
 - **By memory:** the rows that have `memoryRank`, sorted by it.

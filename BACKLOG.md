@@ -20,3 +20,9 @@ One dated line each: date · source · item · status. A line leaves only by bei
 - 2026-10-09 · 0.15.1 lane report · Per-process CPU stored before 0.15.1 is wrong in both directions (almost always 0, occasionally several times too high) and the dashboard shows it with no marker · open
 - 2026-10-09 · 0.15.1 lane report · `spawn_collection_loop` uses tokio's default burst catch-up, so several collections fire back to back after a stall; `MissedTickBehavior::Delay` may be the better choice · open
 - 2026-10-09 · 0.15.1 lane report · The Bun collector's `ps pcpu` is a lifetime average, not the last tick (same unit, different window) · open
+- 2026-10-09 · deep batch review (finding 7) · The "no by-memory list" sentence shows above the table for every pre-deploy capture in the By CPU view too; whether a screen reader re-announces it on each poll is untested · open
+- 2026-10-09 · deep batch review (finding 8) · A collection within 200 ms of the previous one keeps the previous process table: an exited process is listed once more with unknown swap, and at a poll interval near the 250 ms floor on a slow host every other sample can repeat the table · open
+- 2026-10-09 · deep batch review (finding 9) · `docs/guides/API.md` states the 200 ms first-sample window without saying it is Linux only · open
+- 2026-10-09 · deep batch review (finding 10) · The v6 migration's busy-error remedy covers `BEGIN IMMEDIATE` and the ALTER/UPDATE statements only; with the write lock held nothing else can return busy · open, no reachable failure
+- 2026-10-09 · deep batch review (finding 3, follow-up) · Mark captures older than the first 0.15.1 `daemonStart` event in the dashboard and on the wire, so wrong per-process CPU is not read as right · open
+- 2026-10-09 · deep batch review (cleanup) · `bun test` leaves fixture directories under `/tmp` (`tinytop-home-*`, `tinytop-runtime-*`, `tinytop-systemd-units-*`); about 56 from this plan's runs · open

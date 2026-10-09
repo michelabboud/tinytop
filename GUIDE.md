@@ -220,6 +220,7 @@ Not persisted:
 - Each list holds the number of processes set in **Processes** (Settings → General → Daemon). The counter at the top right (`12 / 12 rows`) counts the list on screen, with the search filter applied on the left of the slash.
 - Choosing a list shows it in its own rank order. Clicking a column header then sorts inside that list; choosing the list again returns to its rank order.
 - **Swap** is the process's swapped-out memory. `0 B` is a measured zero; `—` means it is not known (a kernel thread, a process that exited during the read, a platform without per-process swap, or a capture recorded before this was measured).
+- **Per-process CPU recorded before 0.15.1 is wrong** (almost always 0, occasionally several times too high), so the By CPU order of a past sample from an older version means nothing; its memory figures are right. Nothing on screen marks those samples yet.
 - The same choice applies when you scrub the timeline to a past sample. A capture recorded before TinyTop kept the memory list has none: the table then shows that capture by CPU, **By memory** is unavailable, and a sentence above the table says so. The legacy Bun runtime never records the memory list or swap, so it always shows that sentence.
 - In the Rust daemon, filesystem and process data come from Rust crates instead of shelling out.
 - Process detail rows include parent PID and start time when the active collector can provide them. The copy command uses a redacted command string to avoid copying obvious token/password values.

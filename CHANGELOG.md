@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.2 - 2026-10-09
+
+The fixes from the deep review of the whole batch (`docs/reviews/2026-10-09-deep-batch-review-0.13.0-0.15.1.md`). No change to the daemon's behaviour, the schema or the routes.
+
+- **A test now owns the one line that keeps a process command line from being read as markup.** The dashboard script may assign `innerHTML` in exactly two places, the pause button's constant icons; a third fails `tests/dashboard-process-views.test.ts`. The code was already safe; nothing guarded it.
+- **The CPU regression test's busy child ends by itself** after a bounded loop, so a test run that is killed cannot leave a process holding a core.
+- **The guides say that per-process CPU recorded before 0.15.1 is not usable** (`docs/guides/API.md`, `GUIDE.md`); before, only this file and the backlog said so.
+- `docs/guides/API.md`: a host with fewer than N processes returns fewer than N rows. `PROGRESS.md` is current. The plan's deploy section is reordered: build elsewhere, keep the old binary, stop, back up, install, start.
+
 ## 0.15.1 - 2026-10-09
 
 Fix: per-process CPU was 0.0 % for almost every process in almost every sample, so the "by CPU" list was not ranked by CPU. In the Linux collector; no schema, route, setting or dashboard change.

@@ -54,12 +54,16 @@ Every lane: `-j 6`, `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_INCREMENTAL=0`, a free-m
 
 ## Deploy
 
-Rebuild and restart `tinytop.service` (Michel, 2026-10-09: "you can freely rebuild and restart the service, no approval needed"). The schema migration runs at the first start of the new binary. In this order:
+Rebuild and restart `tinytop.service` (Michel, 2026-10-09: "you can freely rebuild and restart the service, no approval needed"). The schema migration runs at the first start of the new binary. The installed unit runs `agent/target/release/tinytop-agent`, the same file `cargo build --release` writes, with `Restart=on-failure`: a crash or a reboot after a build in place would start the new binary, and migrate, before any backup existed. So, in this order (amended after the batch review, findings 1 and 2 of `docs/reviews/2026-10-09-deep-batch-review-0.13.0-0.15.1.md`):
 
-1. **Stop `tinytop.service` first, and confirm it has stopped, before the new binary is started in any form** — `serve`, or `collect --sqlite` against the live file. A plain restart does this; starting the new binary by hand beside the running service does not. **No 0.13 or later binary is run against the live database while a pre-0.14 daemon is running.** A daemon older than 0.14 that keeps running after the file is migrated goes on writing process rows with no rank (deep review `docs/reviews/2026-10-09-deep-review-0.14.0-c22b57a-schema-v6.md`, finding 1). Since ADR 0037 such rows are read back as a CPU list rather than lost from both lists, but they carry no memory list and no swap, and a 0.13.0 binary against the live file is still what ADR 0036 forbids.
-2. Copy the live database to a dated backup with SQLite's backup command and verify it opens.
-3. Start the new binary. The migration runs here; if another tinytop process holds the database it waits up to 5 s and then stops with `the database is locked by another process`.
-4. Check: version, schema version, and three consecutive samples showing both ranks and swap.
+1. **Build the new release binary into a separate target directory** (`CARGO_TARGET_DIR` outside `agent/target`), so the running service's binary is not replaced.
+2. **Copy the running binary aside** (the rollback needs it: an older binary refuses a v6 file).
+3. **Stop `tinytop.service` and confirm it has stopped**: no `tinytop-agent serve` process, nothing holding the database file. No 0.13+ binary is run against the live database while a pre-0.14 daemon is running (deep review of schema v6, finding 1).
+4. **Back up the database with SQLite's backup command** to a dated file, and verify it: `integrity_check`, `user_version` 5, and the row counts of both process tables equal to the source. `systemctl stop` ends the daemon without closing the database, so a `-wal` file remains: copying the main file alone would lose the newest writes.
+5. **Install the new binary** at the unit's path and **start the service**. The migration runs here; `Type=simple` means `start` returns at once, so the signal is the port answering.
+6. **Verify**: the version and schema version; exactly one v5→v6 `schemaMigrated` event with row counts matching step 4; `NRestarts=0`; `integrity_check`; a capture from before the deploy read back with `cpuRank` on every row and no `memoryRank`; three consecutive new samples with both ranks and swap; per-process CPU against `top` for one busy process; the daemon's own CPU share.
+
+**Rollback after the migration:** move the v6 file aside (never delete it), restore the backup, and run the binary kept in step 2. Everything recorded after the backup is lost, so fixing forward is the choice for anything short of data damage.
 
 ## Amendments
 

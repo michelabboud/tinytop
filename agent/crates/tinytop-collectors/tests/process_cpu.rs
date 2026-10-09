@@ -35,13 +35,24 @@ const MACHINE_CEILING_FACTOR: f64 = 1.5;
 /// The widest setting, so a busy process is in the CPU list on a busy host.
 const WIDEST_PROCESS_COUNT: usize = 50;
 
-/// A child that burns one core until it is dropped.
+/// How many times the busy child's loop runs before it exits by itself. Drop
+/// kills the child, but not when the test process is itself killed (a timeout,
+/// an abort); a loop that ends cannot hold a core forever. The count is far
+/// more than the few seconds a test needs: measured 2026-10-09 on the
+/// development host, `dash` ran 30,000,000 iterations in 31.6 s, so this is
+/// about a minute there.
+const BUSY_LOOP_ITERATIONS: u64 = 60_000_000;
+
+/// A child that burns one core until it is dropped, or until its loop ends.
 struct BusyChild(Child);
 
 impl BusyChild {
     fn spawn() -> Self {
         let child = Command::new("sh")
-            .args(["-c", "while :; do :; done"])
+            .args([
+                "-c",
+                &format!("i=0; while [ $i -lt {BUSY_LOOP_ITERATIONS} ]; do i=$((i+1)); done"),
+            ])
             .stdin(Stdio::null())
             .spawn()
             .expect("spawn a busy shell loop");

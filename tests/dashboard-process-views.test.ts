@@ -415,4 +415,17 @@ describe("the list control is a real control, and there is still one switch impl
     expect(app).toContain("setText(elements.processCount, processCounterText(visible.length, shown.rows.length));");
     expect(app).not.toContain("${processes.length} rows");
   });
+
+  // A process command line comes from /proc: whoever can start a process on
+  // the host chooses its text. It reaches the page through textContent and
+  // title only. The script's two innerHTML assignments are the pause button's
+  // constant icon templates; a third one is a place where that text, or any
+  // other collected value, could be parsed as markup.
+  test("collected text never reaches the page as markup", () => {
+    const assignments = app.match(/[\w.]+\.(?:innerHTML|outerHTML)\s*\+?=/g) ?? [];
+    expect(assignments).toEqual(["elements.pauseButton.innerHTML =", "elements.pauseButton.innerHTML ="]);
+    expect(app).not.toContain("insertAdjacentHTML");
+    expect(app).not.toContain("document.write");
+    expect(app).toContain("command.textContent = process.command;");
+  });
 });
