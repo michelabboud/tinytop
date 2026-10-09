@@ -39,7 +39,7 @@ An ADR records this (two ranks on one row against a second table, and against re
 
 | # | Task | Owner | Depends on | File boundary | Evidence | Next |
 |---|---|---|---|---|---|---|
-| 1 | Collector and types: read per-process swap; build the CPU list and the memory list; emit one deduplicated set with `swapBytes`, `cpuRank`, `memoryRank`; measure the cost of the swap read per tick against a named budget and fall back to the minute tier if it exceeds it | Rust lane, Opus 5.5 | — | `agent/crates/tinytop-types`, `agent/crates/tinytop-collectors` | unit tests on fixtures (in both lists, CPU only, memory only, swapped-out process ranks by memory, platform without swap); the measured per-tick cost | 2 |
+| 1 | Collector and types: read per-process swap; build the CPU list and the memory list; emit one deduplicated set with `swapBytes`, `cpuRank`, `memoryRank`; measure the cost of the swap read per tick against a named budget (amended 2026-10-09: no fallback, see "Amendments") | Rust lane, Opus 5.5 | — | `agent/crates/tinytop-types`, `agent/crates/tinytop-collectors` | unit tests on fixtures (in both lists, CPU only, memory only, swapped-out process ranks by memory, platform without swap); the measured per-tick cost | 2 |
 | 2 | Store and migration: schema +1, three columns on both tables, backfill, write path, rollup, read path | Rust lane, Opus 5.5 | 1 | `agent/crates/tinytop-store`, the writer in `agent/crates/tinytop-agent` | migration tests from every earlier version, including a populated database and an interrupted migration; write-and-read-back tests; row counts between N and 2N | 3 |
 | 3 | API and dashboard: fields on the wire, sort switch, Swap column, history view, docs | Lane, Opus 5.5 (Rust API) with the dashboard in the same lane | 2 | `agent/crates/tinytop-agent` routes, `agent/assets/dashboard`, `src/`, `tests/`, `README.md`, `GUIDE.md`, `docs/guides/API.md`, `ARCHITECTURE.md` | Rust and Bun suites; the dialog and manifest guard tests; a rendered check of the table at 720 px in both sort modes | deploy |
 
@@ -55,6 +55,10 @@ Every lane: `-j 6`, `CARGO_PROFILE_DEV_DEBUG=0`, `CARGO_INCREMENTAL=0`, a free-m
 ## Deploy
 
 Rebuild and restart `tinytop.service` (Michel, 2026-10-09: "you can freely rebuild and restart the service, no approval needed"). The schema migration runs at that start. Before it: copy the live database to a dated backup with SQLite's backup command and verify it opens. After it: version, schema version, and three consecutive samples showing both ranks and swap.
+
+## Amendments
+
+- **2026-10-09, task 1 — the minute-tier fallback is dropped.** The plan said the swap read would fall back to the minute tier if it exceeded its budget. Measured at 12–19 ms per tick for about 790 processes, it sat at the first budget (15 ms). The coordinator set the budget to 30 ms (2 % of one core at the default interval) and kept the read on every tick: a minute-tier read would leave the per-tick memory list ranking by RSS alone and miss the swapped-out process, which is why the plan exists. An overrun is logged, rate-limited (finding 1 of `docs/reviews/2026-10-09-mechanical-review-0.13.0-e70160c.md`). This stays inside the approved design; it changes no schema, API or approval.
 
 ## Out of scope
 
