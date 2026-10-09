@@ -353,12 +353,17 @@ mod tests {
     fn ties_are_broken_the_same_way_whatever_order_the_processes_arrive_in() {
         // Break caught: a tie left to the process table's iteration order (a
         // hash map) reshuffles idle processes between two identical ticks.
+        //
+        // The busier of the two largest processes (9) has the HIGHER pid, so
+        // "CPU descending" and "pid ascending" predict opposite orders for the
+        // memory list's first two places. With the lower pid on the busier
+        // one, a memory ordering that had lost its CPU key still passed.
         let host = vec![
             process(5, 0.0, 10, None),
             process(3, 0.0, 10, None),
-            process(9, 0.0, 30, None),
+            process(7, 0.0, 30, None),
             process(1, 0.0, 10, None),
-            process(7, 2.0, 30, None),
+            process(9, 2.0, 30, None),
         ];
         let mut reversed = host.clone();
         reversed.reverse();
@@ -371,15 +376,22 @@ mod tests {
         assert_eq!(
             ranks(&ranked),
             vec![
-                // CPU: 7 leads; the idle four tie on CPU, so the larger (9)
+                // CPU: 9 leads; the idle four tie on CPU, so the larger (7)
                 // comes first and the equal-sized rest go by pid.
-                (7, Some(0), Some(0)),
-                (9, Some(1), Some(1)),
+                (9, Some(0), Some(0)),
+                (7, Some(1), Some(1)),
                 (1, Some(2), Some(2)),
                 (3, Some(3), Some(3)),
             ]
         );
-        // Memory: 7 and 9 tie on footprint, so the busier (7) comes first.
+        // Memory: 9 and 7 tie on footprint (30 MiB each), so the busier (9)
+        // comes first although its pid is higher; pid alone would put 7 first.
+        let mut memory_list = ranked
+            .iter()
+            .filter_map(|process| process.memory_rank.map(|rank| (rank, process.pid)))
+            .collect::<Vec<_>>();
+        memory_list.sort_unstable();
+        assert_eq!(memory_list, vec![(0, 9), (1, 7), (2, 1), (3, 3)]);
     }
 
     #[test]

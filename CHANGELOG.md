@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.1 - 2026-10-09
+
+The three accepted findings of the mechanical review of 0.13.0 (`docs/reviews/2026-10-09-mechanical-review-0.13.0-e70160c.md`, findings 1, 2 and 4). No snapshot field, API route, schema or setting changes.
+
+- **A swap read that runs over its budget now tells the operator.** The Linux collector reads one `status` file per process on every tick, against a named budget of 30 ms (`SWAP_READ_BUDGET_PER_TICK`). Until now nothing in the daemon looked at the result, so a host with several thousand processes ran over it unseen. The collector now writes one line to standard error (the service log): `process collector warning: per-process swap read took 41.3 ms for 2314 processes, over the 30 ms per-tick budget; the read is not shortened, and this warning repeats at most once every 60 minutes`. The read itself is unchanged: it is never shortened or skipped.
+- **The warning is rate-limited to one line an hour per collector** (`SWAP_BUDGET_WARNING_INTERVAL`, a constant, not a setting). A host that is over budget is over it on every tick, which unlimited would be 57,600 lines a day at the default 1.5 s interval. The hour runs from the last line written; a read inside the budget neither warns nor resets it, so a host that dips under the budget and back does not warn more often.
+- Tests: an overrun warns once with the exact text; a second one inside the hour is silent and one at the hour warns again; a read inside the budget (the budget itself included) never warns; one nanosecond over is an overrun; a clock that steps backwards stays quiet. The decision takes the time as a parameter, so none of them waits. Not tested: that the line reaches standard error, which is one `eprintln!` of the tested text.
+- **The tie-break test for the memory list can now fail.** It tied two processes on memory with the busier one also holding the lower pid, so "CPU descending" and "pid ascending" gave the same order and the test passed with the CPU key removed. The busier process now has the higher pid, and the memory order is asserted on its own.
+- **The live swap test no longer assumes every Linux kernel writes a `VmSwap:` line.** It looks at every status file under `/proc` itself first: where none has the line, unknown swap for every process is checked as the correct result; where any has it, the collector must still read this process's own swap and must not come back empty.
+
 ## 0.14.0 - 2026-10-09
 
 Task 2 of the memory-ranked processes plan (`docs/plans/2026-10-09-memory-ranked-processes-plan.md`): the store. The dashboard and the API documentation are task 3.

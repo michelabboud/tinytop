@@ -139,11 +139,24 @@ const PROC_ROOT: &str = "/proc";
 /// was considered, reading swap only on the minute tier, would leave the
 /// per-tick memory list ranking by resident memory alone and miss the
 /// swapped-out process, which is the reason the list exists.
-/// [`SwapScanStats::within_budget`] reports an overrun, and the ignored test
-/// `live_swap_read_cost_on_this_host` repeats the measurement.
+///
+/// **An overrun is reported to the operator.** When a tick's read takes longer
+/// than this ([`SwapScanStats::within_budget`] is false), the collector writes
+/// one warning line to standard error naming the measured duration, this
+/// budget and the number of processes read, and then stays quiet for
+/// [`SWAP_BUDGET_WARNING_INTERVAL`] however many more ticks overrun. The
+/// ignored test `live_swap_read_cost_on_this_host` repeats the measurement.
 ///
 /// It is a design limit to measure against, not an operator setting.
 pub const SWAP_READ_BUDGET_PER_TICK: Duration = Duration::from_millis(30);
+
+/// The shortest time between two over-budget warnings from one collector.
+///
+/// A host with several thousand processes is over the budget on every tick,
+/// not now and then, and at the default 1.5 s interval an unlimited warning
+/// would write 57,600 lines a day into the service log. One line an hour says
+/// the condition is still there without burying everything else.
+pub const SWAP_BUDGET_WARNING_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 /// The cost and coverage of one tick's per-process swap read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -159,6 +172,43 @@ pub struct SwapScanStats {
 impl SwapScanStats {
     pub fn within_budget(&self) -> bool {
         self.duration <= SWAP_READ_BUDGET_PER_TICK
+    }
+}
+
+/// Decides which over-budget swap reads are worth a warning line.
+///
+/// It takes the time as a parameter and returns the text instead of writing
+/// it, so the rate limit is tested without waiting and without capturing
+/// standard error; [`LinuxCollector::collect`] passes its own clock's reading
+/// and prints what comes back.
+#[derive(Debug, Default)]
+struct SwapBudgetWarning {
+    last_warned_at: Option<Instant>,
+}
+
+impl SwapBudgetWarning {
+    /// The warning to print for this tick's read, if any: `None` when the
+    /// read was within the budget, or when a warning was already returned
+    /// less than [`SWAP_BUDGET_WARNING_INTERVAL`] before `now`.
+    fn check(&mut self, scan: SwapScanStats, now: Instant) -> Option<String> {
+        if scan.within_budget() {
+            return None;
+        }
+        // A clock that stepped backwards reads as no time passed: stay quiet.
+        if self
+            .last_warned_at
+            .is_some_and(|last| now.saturating_duration_since(last) < SWAP_BUDGET_WARNING_INTERVAL)
+        {
+            return None;
+        }
+        self.last_warned_at = Some(now);
+        Some(format!(
+            "process collector warning: per-process swap read took {:.1} ms for {} processes, over the {} ms per-tick budget; the read is not shortened, and this warning repeats at most once every {} minutes",
+            scan.duration.as_secs_f64() * 1000.0,
+            scan.pids_scanned,
+            SWAP_READ_BUDGET_PER_TICK.as_millis(),
+            SWAP_BUDGET_WARNING_INTERVAL.as_secs() / 60,
+        ))
     }
 }
 
@@ -178,6 +228,7 @@ pub struct LinuxCollector {
     thermal_enabled: bool,
     thermal_extra_chips: Vec<String>,
     last_swap_scan: Option<SwapScanStats>,
+    swap_budget_warning: SwapBudgetWarning,
     #[cfg(test)]
     thermal_scan_calls: u64,
 }
@@ -200,6 +251,7 @@ impl Default for LinuxCollector {
             thermal_enabled: false,
             thermal_extra_chips: Vec::new(),
             last_swap_scan: None,
+            swap_budget_warning: SwapBudgetWarning::default(),
             #[cfg(test)]
             thermal_scan_calls: 0,
         }
@@ -224,6 +276,7 @@ impl LinuxCollector {
             thermal_enabled: false,
             thermal_extra_chips: Vec::new(),
             last_swap_scan: None,
+            swap_budget_warning: SwapBudgetWarning::default(),
             #[cfg(test)]
             thermal_scan_calls: 0,
         }
@@ -320,6 +373,9 @@ impl LinuxCollector {
         };
         self.previous_proc_stat_text = Some(fast.current_proc_stat_text.clone());
         self.last_swap_scan = Some(fast.swap_scan);
+        if let Some(warning) = self.swap_budget_warning.check(fast.swap_scan, now) {
+            eprintln!("{warning}");
+        }
         let cache = self
             .slow_cache
             .as_ref()
@@ -1365,6 +1421,120 @@ fn round_percent(value: f64) -> f64 {
         return 0.0;
     }
     (value.clamp(0.0, 100.0) * 10.0).round() / 10.0
+}
+
+#[cfg(test)]
+mod swap_budget_tests {
+    use std::time::{Duration, Instant};
+
+    use super::{
+        SWAP_BUDGET_WARNING_INTERVAL, SWAP_READ_BUDGET_PER_TICK, SwapBudgetWarning, SwapScanStats,
+    };
+
+    fn scan(duration: Duration, pids_scanned: usize) -> SwapScanStats {
+        SwapScanStats {
+            duration,
+            pids_scanned,
+            pids_unknown: 0,
+        }
+    }
+
+    fn over_budget() -> SwapScanStats {
+        scan(Duration::from_micros(41_300), 2_314)
+    }
+
+    #[test]
+    fn an_overrun_warns_once_with_the_duration_the_budget_and_the_process_count() {
+        let mut warning = SwapBudgetWarning::default();
+        assert_eq!(
+            warning.check(over_budget(), Instant::now()).as_deref(),
+            Some(
+                "process collector warning: per-process swap read took 41.3 ms for 2314 processes, over the 30 ms per-tick budget; the read is not shortened, and this warning repeats at most once every 60 minutes"
+            )
+        );
+    }
+
+    #[test]
+    fn a_second_overrun_inside_the_interval_is_silent_and_one_after_it_warns_again() {
+        // Break caught: a warning on every over-budget tick, which on a host
+        // that is always over budget is one line every 1.5 s for ever.
+        let base = Instant::now();
+        let mut warning = SwapBudgetWarning::default();
+        assert!(warning.check(over_budget(), base).is_some());
+
+        for elapsed in [
+            Duration::ZERO,
+            Duration::from_millis(1_500),
+            SWAP_BUDGET_WARNING_INTERVAL - Duration::from_nanos(1),
+        ] {
+            assert_eq!(
+                warning.check(over_budget(), base + elapsed),
+                None,
+                "{elapsed:?} after the first warning"
+            );
+        }
+
+        // The interval runs from the last warning printed, not from the last
+        // overrun seen: the silent ones above did not push it back.
+        let second = base + SWAP_BUDGET_WARNING_INTERVAL;
+        assert!(warning.check(over_budget(), second).is_some());
+        assert_eq!(
+            warning.check(over_budget(), second + Duration::from_secs(1)),
+            None
+        );
+        assert!(
+            warning
+                .check(over_budget(), second + SWAP_BUDGET_WARNING_INTERVAL)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_read_inside_the_budget_never_warns_and_does_not_start_the_interval() {
+        let base = Instant::now();
+        let mut warning = SwapBudgetWarning::default();
+        for (tick, duration) in [
+            Duration::ZERO,
+            Duration::from_millis(12),
+            SWAP_READ_BUDGET_PER_TICK,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let now = base + SWAP_BUDGET_WARNING_INTERVAL * u32::try_from(tick).expect("tick");
+            assert_eq!(warning.check(scan(duration, 5_000), now), None);
+        }
+        // Nothing above counted as a warning, so the first overrun is not
+        // held back by it.
+        assert!(warning.check(over_budget(), base).is_some());
+        // And a quiet tick after a warning does not re-arm it early.
+        assert_eq!(
+            warning.check(scan(Duration::from_millis(12), 800), base),
+            None
+        );
+        assert_eq!(
+            warning.check(over_budget(), base + Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn one_nanosecond_over_the_budget_is_an_overrun() {
+        let mut warning = SwapBudgetWarning::default();
+        let barely = scan(SWAP_READ_BUDGET_PER_TICK + Duration::from_nanos(1), 1);
+        assert!(warning.check(barely, Instant::now()).is_some());
+    }
+
+    #[test]
+    fn a_clock_that_steps_backwards_stays_quiet_instead_of_warning_again() {
+        let base = Instant::now() + SWAP_BUDGET_WARNING_INTERVAL;
+        let mut warning = SwapBudgetWarning::default();
+        assert!(warning.check(over_budget(), base).is_some());
+        assert_eq!(
+            warning.check(over_budget(), base - Duration::from_secs(5)),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

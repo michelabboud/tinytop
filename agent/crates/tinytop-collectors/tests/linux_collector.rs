@@ -842,12 +842,87 @@ fn a_live_sample_ranks_both_lists_and_reads_swap() {
     assert!(scan.pids_scanned >= snapshot.processes.len());
     assert!(scan.pids_unknown <= scan.pids_scanned);
 
-    // This test process is a user process the collector may read: its swap is
-    // a known number (usually zero), never unknown.
+    // What the collector should have found is read here a second way, with
+    // nothing shared with the collector's own reader: which processes have a
+    // `VmSwap:` line in their status file at all. A kernel may expose none (a
+    // sandboxed one, or one built without swap accounting), and unknown for
+    // every process is then the right answer, not a failure.
     let own_pid = std::process::id();
+    let host_pids = live_pids();
+    let reporting = host_pids
+        .iter()
+        .copied()
+        .filter(|pid| status_has_a_swap_line(*pid))
+        .collect::<HashSet<_>>();
     let (swap, own_scan) = scan_process_swap(Path::new("/proc"), [own_pid]);
-    assert!(swap.contains_key(&own_pid), "own VmSwap should be readable");
-    assert_eq!((own_scan.pids_scanned, own_scan.pids_unknown), (1, 0));
+    assert_eq!(own_scan.pids_scanned, 1);
+
+    if reporting.is_empty() {
+        eprintln!(
+            "no status file under /proc has a VmSwap line ({} processes looked at): unknown swap everywhere was checked as the valid result",
+            host_pids.len()
+        );
+        assert!(swap.is_empty(), "swap invented for this process: {swap:?}");
+        assert_eq!(own_scan.pids_unknown, 1);
+        assert_eq!(scan.pids_unknown, scan.pids_scanned);
+        assert!(
+            snapshot
+                .processes
+                .iter()
+                .all(|process| process.swap_bytes.is_none()),
+            "a sample row carries swap on a host that reports none"
+        );
+        return;
+    }
+
+    // Some processes do report swap, so dropping it is the collector's fault.
+    // This test process is a user process the collector may read: when its
+    // own status file has the line, its swap is a known number (usually
+    // zero), never unknown.
+    assert_eq!(
+        swap.contains_key(&own_pid),
+        reporting.contains(&own_pid),
+        "own VmSwap line present={} but the collector read {swap:?}",
+        reporting.contains(&own_pid)
+    );
+    assert_eq!(
+        own_scan.pids_unknown,
+        usize::from(!reporting.contains(&own_pid))
+    );
+    // The same over the whole host, in one pass taken right after the look
+    // above: processes come and go between the two, so the comparison is "not
+    // all dropped", not an exact count.
+    let (host_swap, host_scan) = scan_process_swap(Path::new("/proc"), host_pids.iter().copied());
+    assert!(
+        !host_swap.is_empty(),
+        "{} processes have a VmSwap line and the collector read none of {}",
+        reporting.len(),
+        host_scan.pids_scanned
+    );
+    // And the collection tick itself kept at least one, this process's own.
+    assert!(
+        scan.pids_unknown < scan.pids_scanned,
+        "{} processes have a VmSwap line and the tick's scan left all {} unknown",
+        reporting.len(),
+        scan.pids_scanned
+    );
+}
+
+/// Every numeric directory under `/proc`, read without the collector.
+fn live_pids() -> Vec<u32> {
+    fs::read_dir("/proc")
+        .expect("read /proc")
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .collect()
+}
+
+/// Whether `/proc/<pid>/status` has a `VmSwap:` line, judged on the whole
+/// text rather than by the collector's incremental reader. A process that is
+/// gone or unreadable has none.
+fn status_has_a_swap_line(pid: u32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/status"))
+        .is_ok_and(|text| text.lines().any(|line| line.starts_with("VmSwap:")))
 }
 
 #[test]
