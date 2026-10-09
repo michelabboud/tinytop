@@ -2,7 +2,7 @@
 
 ## Current Version
 
-- Version: `0.15.0`
+- Version: `0.15.1`
 - Date: 2026-10-09
 - Status: the **memory-ranked processes plan** (`docs/plans/2026-10-09-memory-ranked-processes-plan.md`,
   approved 2026-10-09) has all three tasks built; task 3 is in the tree as `## Unreleased` in the

@@ -13,8 +13,8 @@ use procfs::{
     CpuPressure, IoPressure, KernelStats, LoadAverage, Meminfo, MemoryPressure, Uptime, prelude::*,
 };
 use sysinfo::{
-    CpuRefreshKind, DiskRefreshKind, Disks, ProcessRefreshKind, ProcessesToUpdate, System,
-    UpdateKind,
+    DiskRefreshKind, Disks, MINIMUM_CPU_UPDATE_INTERVAL, ProcessRefreshKind, ProcessesToUpdate,
+    System, UpdateKind,
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use tinytop_types::{
@@ -229,6 +229,10 @@ pub struct LinuxCollector {
     thermal_extra_chips: Vec<String>,
     last_swap_scan: Option<SwapScanStats>,
     swap_budget_warning: SwapBudgetWarning,
+    /// When the process table was last refreshed, on the real clock (not
+    /// `clock`, which tests replace): the interval it guards is one `sysinfo`
+    /// measures with the real clock. See [`PROCESS_REFRESH_MIN_INTERVAL`].
+    last_process_refresh: Option<Instant>,
     #[cfg(test)]
     thermal_scan_calls: u64,
 }
@@ -252,6 +256,7 @@ impl Default for LinuxCollector {
             thermal_extra_chips: Vec::new(),
             last_swap_scan: None,
             swap_budget_warning: SwapBudgetWarning::default(),
+            last_process_refresh: None,
             #[cfg(test)]
             thermal_scan_calls: 0,
         }
@@ -277,6 +282,7 @@ impl LinuxCollector {
             thermal_extra_chips: Vec::new(),
             last_swap_scan: None,
             swap_budget_warning: SwapBudgetWarning::default(),
+            last_process_refresh: None,
             #[cfg(test)]
             thermal_scan_calls: 0,
         }
@@ -356,11 +362,22 @@ impl LinuxCollector {
             }
         }
 
-        let fast = collect_fast_sources(
+        // A collection that follows another too closely keeps the process
+        // table it already has; see `PROCESS_REFRESH_MIN_INTERVAL`.
+        let refresh_processes = self
+            .last_process_refresh
+            .is_none_or(|last| last.elapsed() >= PROCESS_REFRESH_MIN_INTERVAL);
+        let fast = collect_fast_sources_with(
             &mut self.system,
             self.previous_proc_stat_text.as_deref(),
             self.config.top_process_count,
+            refresh_processes,
         )?;
+        if refresh_processes {
+            // Stamped after the refresh returned, so this reading is never
+            // older than the one `sysinfo` took inside it.
+            self.last_process_refresh = Some(Instant::now());
+        }
         let gpu_tick = self.gpu.as_mut().map(|gpu| {
             let samples = gpu.sample();
             let busy = gpu.process_busy();
@@ -470,16 +487,35 @@ pub fn collect_fast_sources(
     previous_proc_stat_text: Option<&str>,
     top_process_count: usize,
 ) -> CollectorResult<LinuxFastSources> {
+    collect_fast_sources_with(system, previous_proc_stat_text, top_process_count, true)
+}
+
+/// [`collect_fast_sources`], with the process-table refresh made optional for
+/// [`LinuxCollector::collect`]. A first collection (`previous_proc_stat_text`
+/// is `None`) always refreshes, whatever `refresh_processes` says.
+fn collect_fast_sources_with(
+    system: &mut System,
+    previous_proc_stat_text: Option<&str>,
+    top_process_count: usize,
+    refresh_processes: bool,
+) -> CollectorResult<LinuxFastSources> {
     let first_proc_stat = match previous_proc_stat_text {
         Some(text) => text.to_string(),
         None => proc_stat_text()?,
     };
 
     let meminfo = Meminfo::current()?;
-    refresh_system(system);
+    let first_collection = previous_proc_stat_text.is_none();
+    if first_collection || refresh_processes {
+        refresh_system(system);
+    }
 
-    if previous_proc_stat_text.is_none() {
-        thread::sleep(Duration::from_millis(120));
+    if first_collection {
+        // A first collection has no previous sample, so it takes two a short
+        // interval apart and reports CPU over that interval: the host figure
+        // from the two `/proc/stat` reads around this sleep, the per-process
+        // figures from the two process refreshes.
+        thread::sleep(FIRST_COLLECTION_CPU_WINDOW);
         refresh_system(system);
     }
     let current_proc_stat = proc_stat_text()?;
@@ -995,9 +1031,48 @@ fn parse_uptime(text: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// How long a first collection waits between its two samples.
+///
+/// It is `sysinfo`'s own minimum: a second process refresh sooner than this
+/// does not re-read the machine's CPU time, and the per-process figures it
+/// then computes are wrong (see [`refresh_system`]). The wait was 120 ms
+/// through 0.15.0, which is under that minimum.
+const FIRST_COLLECTION_CPU_WINDOW: Duration = MINIMUM_CPU_UPDATE_INTERVAL;
+
+/// The shortest time between two refreshes of the process table.
+///
+/// `sysinfo` computes a process's CPU as its CPU time since the previous
+/// refresh divided by the machine's CPU time since the previous refresh, but
+/// it re-reads the machine's time at most once per
+/// [`MINIMUM_CPU_UPDATE_INTERVAL`] (200 ms). A refresh inside that window
+/// would divide a few milliseconds of process time by the whole previous
+/// interval of machine time and report almost nothing. Collections do arrive
+/// that close together: an on-demand `/snapshot/collect` just after a timer
+/// tick, or the timer firing several times in a row to catch up after a slow
+/// tick. Such a collection keeps the process table of the previous one, which
+/// is at most this old; everything else in the sample is read fresh.
+const PROCESS_REFRESH_MIN_INTERVAL: Duration = MINIMUM_CPU_UPDATE_INTERVAL;
+
+/// Refresh the process table, and with it each process's CPU figure.
+///
+/// **This must not rebuild or refresh the `System`'s CPU list.** The process
+/// refresh reads the machine's CPU time itself and keeps the previous reading;
+/// a process's CPU is its own CPU time since the last refresh divided by the
+/// difference between those two readings, as a percentage of one core.
+/// Through 0.15.0 this function called `refresh_cpu_list` first, on every tick.
+/// That call replaces the CPU state with a new one whose previous reading is
+/// zero, and the process refresh that followed within the same few
+/// milliseconds did not read again, so every process's CPU time for one tick
+/// was divided by the machine's CPU time since boot: 0.0 % for everything
+/// (measured 2026-10-09: 0.002 % for a process using a whole core, 19 hours
+/// after boot). When the tick was slow enough for the process refresh to read
+/// again (over 200 ms after the rebuild), the divisor was only the time since
+/// the rebuild instead, and every process read several times too high.
+///
+/// The host CPU figure does not come from here: it is computed from two
+/// `/proc/stat` reads (see [`calculate_cpu_usage`]). The CPU list is filled
+/// by the first process refresh, which is what the core count needs.
 fn refresh_system(system: &mut System) {
-    system.refresh_cpu_list(CpuRefreshKind::nothing().with_cpu_usage());
-    system.refresh_cpu_usage();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,

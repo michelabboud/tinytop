@@ -228,7 +228,7 @@ Every route that returns processes returns the same object: `/api/snapshot`, `/s
 | --- | --- | --- | --- |
 | `pid` | integer | always | Process id |
 | `command` | string | always | Command line (redacted when `redactionDefault` is on) |
-| `cpuPercent` | number | always | CPU share over the last tick; can exceed 100 on a multi-core process |
+| `cpuPercent` | number | always | CPU used since the previous collection, as a percentage of **one core**: 100 is one core fully used, and a process running on several cores reads above 100, up to 100 × the core count (the scale `top` and `ps` use). It is not a share of the whole machine. The first sample after the daemon starts, and a one-shot `collect`, measure over 200 ms instead. A process first seen in a sample reads 0 there. The legacy Bun collector reports the `pcpu` figure of `ps` instead: the same unit, averaged over the process's whole lifetime |
 | `memoryPercent` | number | always | Resident memory as a share of total RAM |
 | `rssBytes` | integer | always | Resident memory (RSS) in bytes |
 | `swapBytes` | integer | when known | Swapped-out memory in bytes. **Absent means unknown, not zero**; a present `0` is a measured zero |

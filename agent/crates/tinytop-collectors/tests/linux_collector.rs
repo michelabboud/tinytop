@@ -937,12 +937,15 @@ fn live_swap_read_cost_on_this_host() {
     let mut scans = Vec::with_capacity(TICKS);
     let mut ticks = Vec::with_capacity(TICKS);
     for _ in 0..TICKS {
+        // A collection inside sysinfo's minimum CPU interval keeps the process
+        // table of the previous one, and would be timed without its refresh.
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         let started = Instant::now();
         collector.collect().expect("live collection");
         ticks.push(started.elapsed());
         scans.push(collector.last_swap_scan().expect("swap scan stats"));
     }
-    // The first tick carries the collector's 120 ms CPU warm-up sleep.
+    // The first tick carries the collector's 200 ms CPU warm-up sleep.
     ticks.remove(0);
     ticks.sort_unstable();
     let last = scans[TICKS - 1];
