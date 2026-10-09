@@ -17,7 +17,7 @@ use tinytop_types::{
     SwapSnapshot, SystemSnapshot,
 };
 
-use crate::{CollectorConfig, CollectorError, CollectorResult};
+use crate::{CollectorConfig, CollectorError, CollectorResult, process_rank::rank_processes};
 
 struct SysinfoSlowCache {
     taken_at: Instant,
@@ -196,7 +196,7 @@ fn native_processes(system: &System, top_process_count: usize) -> Vec<ProcessSna
     // Validated settings are at least one; keep that invariant for direct callers.
     let top_process_count = top_process_count.max(1);
     let total_memory = system.total_memory();
-    let mut processes = system
+    let processes = system
         .processes()
         .values()
         .map(|process| {
@@ -214,17 +214,16 @@ fn native_processes(system: &System, top_process_count: usize) -> Vec<ProcessSna
                 parent_pid: process.parent().map(|pid| pid.as_u32()),
                 started_at: process_started_at(process),
                 gpu_percent: None,
+                // `sysinfo` exposes no per-process swap on macOS or Windows.
+                // Unknown stays unknown: the memory list ranks by resident
+                // memory alone here, and no value is invented.
+                swap_bytes: None,
+                cpu_rank: None,
+                memory_rank: None,
             }
         })
         .collect::<Vec<_>>();
-    processes.sort_by(|left, right| {
-        right
-            .cpu_percent
-            .partial_cmp(&left.cpu_percent)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    processes.truncate(top_process_count);
-    processes
+    rank_processes(processes, top_process_count)
 }
 
 fn process_command(process: &sysinfo::Process) -> String {

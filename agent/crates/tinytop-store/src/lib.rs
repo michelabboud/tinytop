@@ -4177,6 +4177,9 @@ fn process_snapshot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ProcessSna
             .try_get::<Option<i64>, _>("started_at_ms")?
             .and_then(rfc3339_from_ms),
         gpu_percent: row.try_get("gpu_percent")?,
+        swap_bytes: None,
+        cpu_rank: None,
+        memory_rank: None,
     })
 }
 

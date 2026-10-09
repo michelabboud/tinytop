@@ -43,6 +43,9 @@ fn history_sample_with_a_gpu_serializes_with_dashboard_field_names() {
         parent_pid: None,
         started_at: None,
         gpu_percent: Some(12.5),
+        swap_bytes: None,
+        cpu_rank: None,
+        memory_rank: None,
     });
 
     let value = serde_json::to_value(HistorySample {

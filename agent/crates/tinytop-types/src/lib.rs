@@ -225,6 +225,20 @@ pub struct ProcessSnapshot {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_percent: Option<f64>,
+    /// Bytes of this process held in swap. `None` means unknown (a platform
+    /// that does not expose it, a kernel thread, or a process that could not
+    /// be read this tick), never zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_bytes: Option<u64>,
+    /// Zero-based position in the sample's top-by-CPU list; `None` when the
+    /// process is in the sample only because of its memory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_rank: Option<u32>,
+    /// Zero-based position in the sample's top-by-memory list, where memory is
+    /// `rss_bytes` plus `swap_bytes` (unknown swap counts as zero); `None`
+    /// when the process is in the sample only because of its CPU.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_rank: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -532,5 +546,73 @@ mod tests {
         let process: ProcessSnapshot = serde_json::from_value(present.clone()).unwrap();
         assert_eq!(process.gpu_percent, Some(12.5));
         assert_eq!(serde_json::to_value(process).unwrap(), present);
+    }
+
+    #[test]
+    fn process_swap_and_ranks_are_optional_and_round_trip() {
+        // Break caught: a required field (or a missing `default`) makes every
+        // snapshot stored before these fields existed fail to deserialize.
+        let older = json!({
+            "pid": 42, "command": "fixture", "cpuPercent": 1.0,
+            "memoryPercent": 2.0, "rssBytes": 3
+        });
+        let process: ProcessSnapshot =
+            serde_json::from_value(older.clone()).expect("older process JSON deserializes");
+        assert_eq!(process.swap_bytes, None);
+        assert_eq!(process.cpu_rank, None);
+        assert_eq!(process.memory_rank, None);
+        // Unknown is omitted, never written as `null` or `0`.
+        assert_eq!(serde_json::to_value(process).unwrap(), older);
+
+        let newer = json!({
+            "pid": 42, "command": "fixture", "cpuPercent": 1.0,
+            "memoryPercent": 2.0, "rssBytes": 3,
+            "swapBytes": 2_791_728_742_u64, "cpuRank": 0, "memoryRank": 11
+        });
+        let process: ProcessSnapshot =
+            serde_json::from_value(newer.clone()).expect("newer process JSON deserializes");
+        assert_eq!(process.swap_bytes, Some(2_791_728_742));
+        assert_eq!(process.cpu_rank, Some(0));
+        assert_eq!(process.memory_rank, Some(11));
+        assert_eq!(serde_json::to_value(process).unwrap(), newer);
+    }
+
+    #[test]
+    fn a_known_zero_is_written_and_differs_from_unknown() {
+        // Break caught: `skip_serializing_if` on a zero test instead of on
+        // `None` would drop rank 0 (the top of a list) and a known-zero swap.
+        let memory_only = json!({
+            "pid": 7, "command": "fixture", "cpuPercent": 0.0,
+            "memoryPercent": 0.1, "rssBytes": 4096,
+            "swapBytes": 0, "memoryRank": 0
+        });
+        let process: ProcessSnapshot =
+            serde_json::from_value(memory_only.clone()).expect("memory-only process JSON");
+        assert_eq!(process.swap_bytes, Some(0));
+        assert_eq!(process.cpu_rank, None);
+        assert_eq!(process.memory_rank, Some(0));
+        let written = serde_json::to_value(process).unwrap();
+        assert_eq!(written, memory_only);
+        assert!(written.get("cpuRank").is_none());
+    }
+
+    #[test]
+    fn a_malformed_new_field_is_refused_not_silently_dropped() {
+        for (field, value) in [
+            ("swapBytes", json!(-1)),
+            ("swapBytes", json!("12")),
+            ("cpuRank", json!(-1)),
+            ("memoryRank", json!(1.5)),
+        ] {
+            let mut process = json!({
+                "pid": 42, "command": "fixture", "cpuPercent": 1.0,
+                "memoryPercent": 2.0, "rssBytes": 3
+            });
+            process[field] = value.clone();
+            assert!(
+                serde_json::from_value::<ProcessSnapshot>(process).is_err(),
+                "{field}={value} must not deserialize"
+            );
+        }
     }
 }

@@ -1412,7 +1412,29 @@ mod tests {
             .expect("inserted snapshot should be readable");
         assert_eq!(history.len(), 1);
         let one_process_count = history[0].snapshot.processes.len();
+        let stored = store
+            .read_history_processes(tinytop_store::HistoryQuery::default())
+            .await
+            .expect("inserted process rows should be readable");
+        assert_eq!(stored.captures.len(), 1);
+        assert_eq!(
+            crate::writer::tests::assert_stored_process_rows(
+                stored.captures[0]
+                    .processes
+                    .iter()
+                    .map(|process| process.rank),
+                1,
+            ),
+            one_process_count,
+            "the assembled snapshot and the process rows must agree"
+        );
         store.close().await.expect("inspection store should close");
+        let one_cpu_list = printed_cpu_list(&one_process_stdout);
+        assert_eq!(
+            printed_process_count(&one_process_stdout),
+            one_process_count,
+            "every collected process row must be inserted"
+        );
 
         let (_two_process_database_path, two_process_database_url) =
             fixture.database("two-process.sqlite");
@@ -1451,23 +1473,84 @@ mod tests {
             .expect("inserted snapshot should be readable");
         assert_eq!(history.len(), 1);
         let two_process_count = history[0].snapshot.processes.len();
+        let stored = store
+            .read_history_processes(tinytop_store::HistoryQuery::default())
+            .await
+            .expect("inserted process rows should be readable");
+        assert_eq!(stored.captures.len(), 1);
+        assert_eq!(
+            crate::writer::tests::assert_stored_process_rows(
+                stored.captures[0]
+                    .processes
+                    .iter()
+                    .map(|process| process.rank),
+                2,
+            ),
+            two_process_count,
+            "the assembled snapshot and the process rows must agree"
+        );
         store.close().await.expect("inspection store should close");
+        let two_cpu_list = printed_cpu_list(&two_process_stdout);
+        assert_eq!(
+            printed_process_count(&two_process_stdout),
+            two_process_count,
+            "every collected process row must be inserted"
+        );
 
+        // The count is the length of each list (CPU and memory); a sample is
+        // their union, so the row counts 1..=2 and 2..=4 can overlap and only
+        // the list lengths are strictly ordered.
         assert!(
-            one_process_count < two_process_count,
-            "topProcessCount=1 inserted {one_process_count} processes and topProcessCount=2 inserted {two_process_count}; database-specific settings must produce strict ordering"
+            one_cpu_list < two_cpu_list,
+            "topProcessCount=1 collected a CPU list of {one_cpu_list} and topProcessCount=2 one of {two_cpu_list}; database-specific settings must produce strict ordering"
         );
         assert_eq!(
-            one_process_count, 1,
-            "persisted topProcessCount=1 must insert exactly one process"
+            one_cpu_list, 1,
+            "persisted topProcessCount=1 must collect exactly one process per list"
         );
         assert_eq!(
-            two_process_count, 2,
-            "persisted topProcessCount=2 must insert exactly two processes"
+            two_cpu_list, 2,
+            "persisted topProcessCount=2 must collect exactly two processes per list"
+        );
+        assert!(
+            (1..=2).contains(&one_process_count),
+            "topProcessCount=1 inserted {one_process_count} rows"
+        );
+        assert!(
+            (2..=4).contains(&two_process_count),
+            "topProcessCount=2 inserted {two_process_count} rows"
         );
         eprintln!(
-            "process counts: bare default={default_process_count}, topProcessCount=1={one_process_count}, topProcessCount=2={two_process_count}"
+            "process rows: bare default={default_process_count}, topProcessCount=1={one_process_count}, topProcessCount=2={two_process_count}"
         );
+    }
+
+    fn printed_processes(stdout: &[u8]) -> Vec<serde_json::Value> {
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(stdout).expect("collection stdout should be snapshot JSON");
+        snapshot["processes"]
+            .as_array()
+            .expect("snapshot processes should be an array")
+            .clone()
+    }
+
+    fn printed_process_count(stdout: &[u8]) -> usize {
+        printed_processes(stdout).len()
+    }
+
+    /// The length of the CPU list in a printed snapshot, after checking that
+    /// its process rows are a well-formed pair of lists.
+    fn printed_cpu_list(stdout: &[u8]) -> usize {
+        crate::writer::tests::assert_two_process_lists(printed_processes(stdout).iter().map(
+            |process| {
+                let rank = |key: &str| {
+                    process[key]
+                        .as_u64()
+                        .map(|rank| u32::try_from(rank).expect("rank fits u32"))
+                };
+                (rank("cpuRank"), rank("memoryRank"))
+            },
+        ))
     }
 
     #[tokio::test]

@@ -262,6 +262,9 @@ async fn every_collected_process_is_written_to_both_tables_whatever_the_count() 
                 parent_pid: None,
                 started_at: None,
                 gpu_percent: None,
+                swap_bytes: None,
+                cpu_rank: None,
+                memory_rank: None,
             })
             .collect();
         store
@@ -485,6 +488,9 @@ fn snapshot(captured_at_ms: i64) -> SystemSnapshot {
                 parent_pid: None,
                 started_at: None,
                 gpu_percent: None,
+                swap_bytes: None,
+                cpu_rank: None,
+                memory_rank: None,
             })
             .collect(),
         gpus: Vec::new(),

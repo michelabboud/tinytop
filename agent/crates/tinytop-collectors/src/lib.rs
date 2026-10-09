@@ -8,6 +8,7 @@ pub mod gpu;
 pub mod linux;
 #[cfg(all(feature = "macos-collector", target_os = "macos"))]
 pub mod macos;
+pub mod process_rank;
 #[cfg_attr(
     not(all(feature = "linux-collector", target_os = "linux")),
     allow(dead_code)

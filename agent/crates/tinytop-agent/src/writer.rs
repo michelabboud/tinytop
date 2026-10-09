@@ -1654,6 +1654,78 @@ pub(crate) mod tests {
         }
     }
 
+    /// Check the shape of one sample's process rows, given each row's
+    /// `(cpu_rank, memory_rank)` in emitted order, and return the length of
+    /// the CPU list. A sample is the union of a CPU list and a memory list of
+    /// equal length: the CPU list comes first with ranks `0..len` in order,
+    /// every later row is memory-only, the memory ranks are `0..len` each
+    /// once, and the row count is between one and two list lengths.
+    pub(crate) fn assert_two_process_lists(
+        ranks: impl IntoIterator<Item = (Option<u32>, Option<u32>)>,
+    ) -> usize {
+        let ranks = ranks.into_iter().collect::<Vec<_>>();
+        let cpu_list = ranks.iter().filter(|(cpu, _)| cpu.is_some()).count();
+        for (index, (cpu, memory)) in ranks.iter().enumerate() {
+            if index < cpu_list {
+                assert_eq!(*cpu, u32::try_from(index).ok(), "row {index}: {ranks:?}");
+            } else {
+                assert_eq!(*cpu, None, "row {index} follows the CPU list: {ranks:?}");
+                assert!(memory.is_some(), "row {index} is in neither list");
+            }
+        }
+        let mut memory_ranks = ranks
+            .iter()
+            .filter_map(|(_, memory)| *memory)
+            .collect::<Vec<_>>();
+        memory_ranks.sort_unstable();
+        let expected = (0..u32::try_from(cpu_list).expect("list length")).collect::<Vec<_>>();
+        assert_eq!(
+            memory_ranks, expected,
+            "the memory list is as long as the CPU list: {ranks:?}"
+        );
+        assert!(
+            (cpu_list..=2 * cpu_list).contains(&ranks.len()),
+            "{} rows for two lists of {cpu_list}",
+            ranks.len()
+        );
+        cpu_list
+    }
+
+    /// History rows must carry `rank` as the contiguous ordinal `0..len`, and
+    /// a sample of two lists of `count` holds between `count` and `2 * count`.
+    // Task 2 (store: `cpu_rank` / `memory_rank` columns) tightens this to the per-list assertions.
+    pub(crate) fn assert_stored_process_rows(
+        stored_ranks: impl IntoIterator<Item = i64>,
+        count: usize,
+    ) -> usize {
+        let stored_ranks = stored_ranks.into_iter().collect::<Vec<_>>();
+        let expected =
+            (0..i64::try_from(stored_ranks.len()).expect("row count")).collect::<Vec<_>>();
+        assert_eq!(stored_ranks, expected, "rank is the row ordinal");
+        assert!(
+            (count..=2 * count).contains(&stored_ranks.len()),
+            "{} stored rows for two lists of {count}",
+            stored_ranks.len()
+        );
+        stored_ranks.len()
+    }
+
+    /// The `(cpu_rank, memory_rank)` of each process row of the snapshot the
+    /// last collection published, in emitted order. The sample that
+    /// `collect_and_store` returns is read back from the store, which does not
+    /// keep the two ranks yet; the published snapshot is the collector's own.
+    fn live_process_ranks(state: &AppState) -> Vec<(Option<u32>, Option<u32>)> {
+        state
+            .latest_snapshot
+            .borrow()
+            .as_ref()
+            .expect("a collection should have published a snapshot")
+            .processes
+            .iter()
+            .map(|process| (process.cpu_rank, process.memory_rank))
+            .collect()
+    }
+
     pub(crate) async fn test_state(prefix: &str) -> (TempDatabase, AppState) {
         let fixture = TempDatabase::new(prefix);
         let store = SqliteHistoryStore::connect(&fixture.url)
@@ -2591,7 +2663,13 @@ pub(crate) mod tests {
             .await
             .expect("configured collection should succeed");
 
-        assert_eq!(sample.snapshot.processes.len(), 3);
+        // The count is the length of each list; the sample is their union.
+        // This needs a host that exposes at least three processes.
+        let live = live_process_ranks(&state);
+        assert_eq!(assert_two_process_lists(live.clone()), 3);
+        assert!((3..=6).contains(&live.len()));
+        // Task 2 (store: `cpu_rank` / `memory_rank` columns) tightens this to the per-list assertions.
+        assert_eq!(sample.snapshot.processes.len(), live.len());
     }
 
     #[test]
@@ -2627,14 +2705,33 @@ pub(crate) mod tests {
         let sample = collect_and_store(&state)
             .await
             .expect("configured collection should succeed");
+        // The count is the length of each list (CPU and memory); the sample
+        // is their union, so it holds between two and four rows.
         assert_eq!(
-            sample.snapshot.processes.len(),
+            assert_two_process_lists(live_process_ranks(&state)),
             2,
             "this test needs a host that exposes at least two processes"
         );
+        // Task 2 (store: `cpu_rank` / `memory_rank` columns) tightens this to the per-list assertions.
+        let collected = sample.snapshot.processes.len();
+        assert!((2..=4).contains(&collected));
         let (status, live) = request_json(router(state.clone()), "/api/snapshot").await;
         assert_eq!(status, StatusCode::OK, "{live}");
-        assert_eq!(live["processes"].as_array().map(Vec::len), Some(2));
+        let live_ranks = live["processes"]
+            .as_array()
+            .expect("live processes should be an array")
+            .iter()
+            .map(|process| {
+                let rank = |key: &str| {
+                    process[key]
+                        .as_u64()
+                        .map(|rank| u32::try_from(rank).expect("rank fits u32"))
+                };
+                (rank("cpuRank"), rank("memoryRank"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(live_ranks.len(), collected);
+        assert_eq!(assert_two_process_lists(live_ranks), 2);
 
         // A bounded `since` inside the fast keep window reads the per-tick
         // table; an open one reads the minute table.
@@ -2654,7 +2751,14 @@ pub(crate) mod tests {
             assert_eq!(read.source, expected_source);
             assert_eq!(read.captures.len(), 1, "{expected_source:?}");
             assert_eq!(read.captures[0].captured_at_ms, sample.captured_at_ms);
-            assert_eq!(read.captures[0].processes.len(), 2, "{expected_source:?}");
+            let stored = assert_stored_process_rows(
+                read.captures[0]
+                    .processes
+                    .iter()
+                    .map(|process| process.rank),
+                2,
+            );
+            assert_eq!(stored, collected, "{expected_source:?}");
         }
     }
 
@@ -2782,12 +2886,19 @@ pub(crate) mod tests {
             .expect("changed settings should persist");
 
         let third = collect_and_store(&state).await.expect("third tick");
-        // A live host may expose fewer processes than either configured maximum.
-        assert!(third.snapshot.processes.len() <= tinytop_collectors::DEFAULT_TOP_PROCESS_COUNT);
+        // A live host may expose fewer processes than either configured
+        // maximum. The maximum bounds each list; the sample is their union.
+        let third_cpu_list = assert_two_process_lists(live_process_ranks(&state));
+        assert!(third_cpu_list <= tinytop_collectors::DEFAULT_TOP_PROCESS_COUNT);
+        assert!(
+            third.snapshot.processes.len() <= 2 * tinytop_collectors::DEFAULT_TOP_PROCESS_COUNT
+        );
         assert_eq!(state.collector.lock().await.configure_calls(), 2);
 
         let fourth = collect_and_store(&state).await.expect("fourth tick");
-        assert!(fourth.snapshot.processes.len() <= 3);
+        let fourth_cpu_list = assert_two_process_lists(live_process_ranks(&state));
+        assert!(fourth_cpu_list <= 3);
+        assert!(fourth.snapshot.processes.len() <= 2 * 3);
         assert_eq!(state.collector.lock().await.configure_calls(), 2);
 
         changed.thermal.enabled = true;

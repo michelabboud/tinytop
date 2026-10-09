@@ -2,6 +2,8 @@ use std::{
     collections::HashMap,
     env,
     ffi::OsStr,
+    fs::File,
+    io::Read,
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -24,6 +26,7 @@ use tinytop_types::{
 use crate::{
     Collector, CollectorConfig, CollectorError, CollectorResult,
     gpu::{GpuAdapter, GpuBackend, GpuScanStats, attach_gpu, detect_backend},
+    process_rank::rank_processes,
     thermal::{self, ThermalSensor},
 };
 
@@ -50,6 +53,8 @@ pub struct LinuxSnapshotSources {
     pub io_pressure_text: String,
     pub df_blocks_text: String,
     pub df_inodes_text: String,
+    /// One process per line, already reduced to the set the sample keeps. See
+    /// [`parse_processes`] for the two line formats.
     pub ps_text: String,
 }
 
@@ -66,6 +71,8 @@ pub struct LinuxFastSources {
     pub memory_pressure_text: String,
     pub io_pressure_text: String,
     pub ps_text: String,
+    /// What this tick's per-process swap read cost and covered.
+    pub swap_scan: SwapScanStats,
 }
 
 #[derive(Debug, Clone)]
@@ -106,6 +113,54 @@ pub struct ParsedMeminfo {
 
 type GpuDetector = Box<dyn FnMut() -> Option<Box<dyn GpuBackend>> + Send>;
 const DEFAULT_THERMAL_ROOT: &str = "/sys/class/hwmon";
+const PROC_ROOT: &str = "/proc";
+
+/// How long the per-process swap read may take on one collection tick.
+///
+/// Ranking by memory needs the swap of *every* process, not only of the ones
+/// already in the sample — a swapped-out process is exactly the one whose
+/// resident memory would never have put it there — so each tick opens and
+/// reads `/proc/<pid>/status` once per process.
+///
+/// **The budget is 2 % of one core at the default 1.5 s collection interval.**
+/// At the 250 ms minimum interval the same read is 12 % of one core.
+///
+/// **Measured 2026-10-09** on the development host (WSL2, 28 logical CPUs,
+/// load average 6–8, 782–796 processes, release build), over six runs of 25
+/// ticks each: the median tick cost 12.1, 12.6, 14.7, 14.7, 17.4 and 18.7 ms,
+/// and the slowest single tick 26.7 ms. That is 15–24 µs per process. Opening
+/// and closing the files alone is about 5 ms of it; the rest is the kernel
+/// producing the text, so there is little left to save on this side.
+///
+/// **The cost is linear in the process count, and this budget is not.** At the
+/// per-process cost above, the read reaches 30 ms somewhere between 1,250 and
+/// 2,000 processes, so a host with several thousand processes will exceed it.
+/// Nothing shortens or skips the read when that happens: the alternative that
+/// was considered, reading swap only on the minute tier, would leave the
+/// per-tick memory list ranking by resident memory alone and miss the
+/// swapped-out process, which is the reason the list exists.
+/// [`SwapScanStats::within_budget`] reports an overrun, and the ignored test
+/// `live_swap_read_cost_on_this_host` repeats the measurement.
+///
+/// It is a design limit to measure against, not an operator setting.
+pub const SWAP_READ_BUDGET_PER_TICK: Duration = Duration::from_millis(30);
+
+/// The cost and coverage of one tick's per-process swap read.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SwapScanStats {
+    pub duration: Duration,
+    /// Processes whose `/proc/<pid>/status` was asked for.
+    pub pids_scanned: usize,
+    /// Of those, the ones whose swap is unknown: gone before the read, not
+    /// readable, a kernel thread (no `VmSwap` line), or a malformed line.
+    pub pids_unknown: usize,
+}
+
+impl SwapScanStats {
+    pub fn within_budget(&self) -> bool {
+        self.duration <= SWAP_READ_BUDGET_PER_TICK
+    }
+}
 
 pub struct LinuxCollector {
     previous_proc_stat_text: Option<String>,
@@ -122,6 +177,7 @@ pub struct LinuxCollector {
     thermal_root: PathBuf,
     thermal_enabled: bool,
     thermal_extra_chips: Vec<String>,
+    last_swap_scan: Option<SwapScanStats>,
     #[cfg(test)]
     thermal_scan_calls: u64,
 }
@@ -143,6 +199,7 @@ impl Default for LinuxCollector {
             thermal_root: PathBuf::from(DEFAULT_THERMAL_ROOT),
             thermal_enabled: false,
             thermal_extra_chips: Vec::new(),
+            last_swap_scan: None,
             #[cfg(test)]
             thermal_scan_calls: 0,
         }
@@ -166,6 +223,7 @@ impl LinuxCollector {
             thermal_root: PathBuf::from(DEFAULT_THERMAL_ROOT),
             thermal_enabled: false,
             thermal_extra_chips: Vec::new(),
+            last_swap_scan: None,
             #[cfg(test)]
             thermal_scan_calls: 0,
         }
@@ -186,6 +244,13 @@ impl LinuxCollector {
     #[doc(hidden)]
     pub fn last_gpu_scan(&self) -> Option<GpuScanStats> {
         self.gpu.as_ref().and_then(|backend| backend.last_scan())
+    }
+
+    /// The per-process swap read of the most recent collection; `None` before
+    /// the first one.
+    #[doc(hidden)]
+    pub fn last_swap_scan(&self) -> Option<SwapScanStats> {
+        self.last_swap_scan
     }
 
     #[doc(hidden)]
@@ -254,6 +319,7 @@ impl LinuxCollector {
             Vec::new()
         };
         self.previous_proc_stat_text = Some(fast.current_proc_stat_text.clone());
+        self.last_swap_scan = Some(fast.swap_scan);
         let cache = self
             .slow_cache
             .as_ref()
@@ -365,6 +431,7 @@ pub fn collect_fast_sources(
     // Store validation guarantees at least one process; retain the invariant at
     // the collector boundary if a future caller bypasses validated settings.
     let top_process_count = top_process_count.max(1);
+    let (ps_text, swap_scan) = sysinfo_process_text(system, meminfo.mem_total, top_process_count);
     Ok(LinuxFastSources {
         timestamp: OffsetDateTime::now_utc()
             .format(&Rfc3339)
@@ -378,7 +445,8 @@ pub fn collect_fast_sources(
         cpu_pressure_text: cpu_pressure_text(),
         memory_pressure_text: memory_pressure_text(),
         io_pressure_text: io_pressure_text(),
-        ps_text: sysinfo_process_text(system, meminfo.mem_total, top_process_count),
+        ps_text,
+        swap_scan,
     })
 }
 
@@ -790,13 +858,28 @@ impl<'a> DfColumns<'a> {
     }
 }
 
+/// Parse the process lines a sample keeps. Two line formats are understood:
+///
+/// - **Tab-separated, ten columns** — what [`sysinfo_process_text`] writes and
+///   the only thing the live collector produces:
+///   `pid`, `cpu %`, `memory %`, `rss KiB`, `parent pid`, `started at`,
+///   `swap KiB`, `cpu rank`, `memory rank`, `command`. An unknown optional
+///   value is `-`. The command is last because it is the one column that may
+///   itself contain a tab.
+/// - **Whitespace-separated, five or more columns** — the `ps` shape of the Bun
+///   collector, kept for fixtures: `pid`, `cpu %`, `memory %`, `rss KiB`,
+///   `command…`. It carries no swap and no ranks, so those stay unknown.
+///
+/// The text never leaves this crate: it is written and parsed inside one
+/// collection tick, so the tab format has no older shape to stay compatible
+/// with. A line that fits neither format is dropped.
 fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| {
             if line.contains('\t') {
-                let parts = line.splitn(7, '\t').collect::<Vec<_>>();
-                if parts.len() < 7 {
+                let parts = line.splitn(PROCESS_TEXT_COLUMNS, '\t').collect::<Vec<_>>();
+                if parts.len() < PROCESS_TEXT_COLUMNS {
                     return None;
                 }
 
@@ -808,7 +891,10 @@ fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
                     parent_pid: parse_optional_u32(parts[4]),
                     started_at: parse_optional_string(parts[5]),
                     gpu_percent: None,
-                    command: parts[6].to_string(),
+                    swap_bytes: parse_optional_u64(parts[6]).map(|kib| kib.saturating_mul(1024)),
+                    cpu_rank: parse_optional_u32(parts[7]),
+                    memory_rank: parse_optional_u32(parts[8]),
+                    command: parts[9].to_string(),
                 });
             }
 
@@ -825,6 +911,9 @@ fn parse_processes(text: &str) -> Vec<ProcessSnapshot> {
                 parent_pid: None,
                 started_at: None,
                 gpu_percent: None,
+                swap_bytes: None,
+                cpu_rank: None,
+                memory_rank: None,
                 command: parts[4..].join(" "),
             })
         })
@@ -973,8 +1062,24 @@ fn statvfs_inodes_text(disks: &Disks) -> String {
     lines.join("\n")
 }
 
-fn sysinfo_process_text(system: &System, total_memory: u64, top_process_count: usize) -> String {
-    let mut processes = system
+/// Columns of a tab-separated process line; see [`parse_processes`].
+const PROCESS_TEXT_COLUMNS: usize = 10;
+
+/// Read the swap of every process, rank the whole process table, and write the
+/// set the sample keeps as tab-separated lines for [`parse_processes`].
+///
+/// Ranking happens here, on the values as read (CPU before it is rounded to
+/// one decimal, resident memory in bytes), not on the text.
+fn sysinfo_process_text(
+    system: &System,
+    total_memory: u64,
+    top_process_count: usize,
+) -> (String, SwapScanStats) {
+    let (swap_by_pid, swap_scan) = scan_process_swap(
+        Path::new(PROC_ROOT),
+        system.processes().keys().map(|pid| pid.as_u32()),
+    );
+    let candidates = system
         .processes()
         .values()
         .map(|process| {
@@ -983,40 +1088,144 @@ fn sysinfo_process_text(system: &System, total_memory: u64, top_process_count: u
             } else {
                 round_percent((process.memory() as f64 / total_memory as f64) * 100.0)
             };
-            (
-                process.pid().as_u32(),
-                process.cpu_usage() as f64,
+            let pid = process.pid().as_u32();
+            ProcessSnapshot {
+                pid,
+                command: process_command(process),
+                cpu_percent: process.cpu_usage() as f64,
                 memory_percent,
-                process.memory() / 1024,
-                process.parent().map(|pid| pid.as_u32()),
-                process_started_at(process),
-                process_command(process),
-            )
+                rss_bytes: process.memory(),
+                parent_pid: process.parent().map(|pid| pid.as_u32()),
+                started_at: process_started_at(process),
+                gpu_percent: None,
+                swap_bytes: swap_by_pid.get(&pid).copied(),
+                cpu_rank: None,
+                memory_rank: None,
+            }
         })
         .collect::<Vec<_>>();
-    processes.sort_by(|left, right| {
-        right
-            .1
-            .partial_cmp(&left.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
 
-    processes
+    let text = rank_processes(candidates, top_process_count)
         .into_iter()
-        .take(top_process_count)
-        .map(
-            |(pid, cpu, memory, rss_kib, parent_pid, started_at, command)| {
-                format!(
-                    "{pid}\t{cpu:.1}\t{memory:.1}\t{rss_kib}\t{}\t{}\t{command}",
-                    parent_pid
-                        .map(|pid| pid.to_string())
-                        .unwrap_or_else(|| "-".to_string()),
-                    started_at.unwrap_or_else(|| "-".to_string()),
-                )
-            },
-        )
+        .map(|process| {
+            format!(
+                "{}\t{:.1}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                process.pid,
+                process.cpu_percent,
+                process.memory_percent,
+                process.rss_bytes / 1024,
+                optional_text(process.parent_pid),
+                optional_text(process.started_at),
+                optional_text(process.swap_bytes.map(|bytes| bytes / 1024)),
+                optional_text(process.cpu_rank),
+                optional_text(process.memory_rank),
+                process.command,
+            )
+        })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    (text, swap_scan)
+}
+
+fn optional_text(value: Option<impl ToString>) -> String {
+    value.map_or_else(|| "-".to_string(), |value| value.to_string())
+}
+
+/// Read `VmSwap` for each pid from `<proc_root>/<pid>/status`.
+///
+/// The map holds only the processes whose swap is known. Everything else is
+/// absent, and no failure here is an error for the sample: a process can exit
+/// between the process-table refresh and this read, a kernel thread has no
+/// `VmSwap` line at all, and another user's process may refuse the open.
+/// `proc_root` is a parameter so tests can point it at a fixture tree.
+pub fn scan_process_swap(
+    proc_root: &Path,
+    pids: impl IntoIterator<Item = u32>,
+) -> (HashMap<u32, u64>, SwapScanStats) {
+    let started = Instant::now();
+    let mut swap_by_pid = HashMap::new();
+    let mut stats = SwapScanStats::default();
+    // One buffer for the whole pass; it grows only for a status file that
+    // does not fit, and is never shrunk or re-zeroed between processes.
+    let mut status = vec![0_u8; STATUS_READ_CHUNK_BYTES];
+    for pid in pids {
+        stats.pids_scanned += 1;
+        match read_process_swap(proc_root, pid, &mut status) {
+            Some(swap_bytes) => {
+                swap_by_pid.insert(pid, swap_bytes);
+            }
+            None => stats.pids_unknown += 1,
+        }
+    }
+    stats.duration = started.elapsed();
+    (swap_by_pid, stats)
+}
+
+/// How much of a status file one `read` asks for. A status file is about
+/// 1.5 KiB, so the first read normally returns all of it.
+const STATUS_READ_CHUNK_BYTES: usize = 4096;
+
+/// Read one process's `VmSwap`, stopping as soon as the line has been seen.
+///
+/// The loop reads until that line is complete rather than up to a fixed size,
+/// because `Groups:` comes before `VmSwap:` and has no small bound. It calls
+/// `read` directly instead of `read_to_end`, which adds a size query and a
+/// final empty read to each file. That is a small gain, not a large one:
+/// about 5 % of the pass in an interleaved comparison over 797 processes
+/// (2026-10-09). The kernel producing the text is the cost, not this loop.
+fn read_process_swap(proc_root: &Path, pid: u32, status: &mut Vec<u8>) -> Option<u64> {
+    let mut file = File::open(proc_root.join(format!("{pid}/status"))).ok()?;
+    let mut filled = 0;
+    loop {
+        if filled == status.len() {
+            status.resize(filled + STATUS_READ_CHUNK_BYTES, 0);
+        }
+        let read = match file.read(&mut status[filled..]) {
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            // The process exited between the open and the read.
+            Err(_) => return None,
+        };
+        if read == 0 {
+            // End of file without a terminated `VmSwap` line: whatever is
+            // there is judged as it stands.
+            return parse_vm_swap(&status[..filled]);
+        }
+        filled += read;
+        // Only whole lines are judged, so a read that stops inside the
+        // number cannot be taken for a smaller figure.
+        if let Some(end) = status[..filled].iter().rposition(|&byte| byte == b'\n')
+            && let Some(value) = vm_swap_value(&status[..end])
+        {
+            return parse_vm_swap_value(value);
+        }
+    }
+}
+
+/// The `VmSwap` figure of a `/proc/<pid>/status` text, in bytes.
+///
+/// `None` when the line is missing (a kernel thread, or a kernel built without
+/// swap accounting) or is not exactly `VmSwap: <kibibytes> kB`. The text is
+/// taken as bytes because the `Name:` line is the process's own, arbitrary,
+/// not necessarily UTF-8 name.
+pub fn parse_vm_swap(status: &[u8]) -> Option<u64> {
+    parse_vm_swap_value(vm_swap_value(status)?)
+}
+
+/// What follows `VmSwap:` on its line, if the text has that line.
+fn vm_swap_value(status: &[u8]) -> Option<&[u8]> {
+    status
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"VmSwap:"))
+}
+
+fn parse_vm_swap_value(value: &[u8]) -> Option<u64> {
+    let mut parts = std::str::from_utf8(value).ok()?.split_ascii_whitespace();
+    let kibibytes = parts.next()?.parse::<u64>().ok()?;
+    if parts.next()? != "kB" || parts.next().is_some() {
+        return None;
+    }
+    kibibytes.checked_mul(1024)
 }
 
 fn process_command(process: &sysinfo::Process) -> String {
@@ -1043,6 +1252,10 @@ fn process_started_at(process: &sysinfo::Process) -> Option<String> {
 }
 
 fn parse_optional_u32(value: &str) -> Option<u32> {
+    (value != "-").then(|| value.parse().ok()).flatten()
+}
+
+fn parse_optional_u64(value: &str) -> Option<u64> {
     (value != "-").then(|| value.parse().ok()).flatten()
 }
 

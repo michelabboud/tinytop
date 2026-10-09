@@ -128,6 +128,9 @@ fn snapshot(stamp: Option<i64>) -> SystemSnapshot {
                 parent_pid: Some(1),
                 started_at: Some(format!("2026-08-30T00:00:0{rank}Z")),
                 gpu_percent: None,
+                swap_bytes: None,
+                cpu_rank: None,
+                memory_rank: None,
             })
             .collect(),
         gpus: Vec::new(),
@@ -713,6 +716,9 @@ async fn history_window_of_2400_rows_assembles_under_budget() {
             parent_pid: Some(1),
             started_at: Some(format!("2026-08-30T00:00:0{rank}Z")),
             gpu_percent: None,
+            swap_bytes: None,
+            cpu_rank: None,
+            memory_rank: None,
         })
         .collect();
     store.insert_snapshot(0, &seed).await.expect("seed");
