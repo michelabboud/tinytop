@@ -28,6 +28,13 @@ export type DashboardSettings = {
   };
 };
 
+// How many processes a sample keeps. Mirrors the Rust daemon
+// (tinytop-store DEFAULT_/MIN_/MAX_TOP_PROCESS_COUNT);
+// tests/top-process-count.test.ts fails when the copies drift.
+export const DEFAULT_TOP_PROCESS_COUNT = 12;
+export const MIN_TOP_PROCESS_COUNT = 1;
+export const MAX_TOP_PROCESS_COUNT = 50;
+
 export const DEFAULT_DASHBOARD_SETTINGS: DashboardSettings = {
   defaultTheme: "midnight",
   defaultGraphMode: "line",
@@ -35,7 +42,7 @@ export const DEFAULT_DASHBOARD_SETTINGS: DashboardSettings = {
   defaultHistoryWindow: "live",
   retentionHours: 72,
   rollupRetentionDays: 30,
-  topProcessCount: 8,
+  topProcessCount: DEFAULT_TOP_PROCESS_COUNT,
   redactionDefault: false,
   thresholds: {
     cpuWarn: 80,
@@ -139,7 +146,7 @@ function validateDashboardSettings(settings: DashboardSettings): void {
   validateRange("pollIntervalMs", settings.pollIntervalMs, 250, 60_000);
   validateRange("retentionHours", settings.retentionHours, 1, 8_760);
   validateRange("rollupRetentionDays", settings.rollupRetentionDays, 1, 366);
-  validateRange("topProcessCount", settings.topProcessCount, 1, 50);
+  validateRange("topProcessCount", settings.topProcessCount, MIN_TOP_PROCESS_COUNT, MAX_TOP_PROCESS_COUNT);
   validateRange("thresholds.cpuWarn", settings.thresholds.cpuWarn, 0, 100);
   validateRange("thresholds.cpuCritical", settings.thresholds.cpuCritical, 0, 100);
   validateRange("thresholds.memoryWarn", settings.thresholds.memoryWarn, 0, 100);

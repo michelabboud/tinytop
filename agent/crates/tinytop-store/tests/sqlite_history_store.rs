@@ -1,7 +1,8 @@
 use tinytop_store::retention_ladder::{RetentionLadder, TierKeep};
 use tinytop_store::{
-    DashboardSettings, DashboardThresholds, HistoryMarkerType, HistoryPointMode,
-    HistoryPointsQuery, HistoryQuery, SqliteHistoryStore,
+    DEFAULT_TOP_PROCESS_COUNT, DashboardSettings, DashboardThresholds, HistoryMarkerType,
+    HistoryPointMode, HistoryPointsQuery, HistoryQuery, MAX_TOP_PROCESS_COUNT,
+    MIN_TOP_PROCESS_COUNT, SqliteHistoryStore, StoreError,
 };
 use tinytop_types::{
     CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
@@ -206,7 +207,11 @@ async fn sqlite_store_persists_dashboard_settings() {
     assert_eq!(defaults.default_graph_mode, "line");
     assert_eq!(defaults.default_history_window, "live");
     assert_eq!(defaults.poll_interval_ms, 1_500);
+    assert_eq!(defaults.top_process_count, 12);
+    assert_eq!(defaults.top_process_count, DEFAULT_TOP_PROCESS_COUNT);
 
+    // Eight was the previous default, so this row is also what an
+    // upgraded install holds: a stored count must survive the new default.
     let settings = DashboardSettings {
         default_theme: "aurora".to_string(),
         default_graph_mode: "heatmap".to_string(),
@@ -216,7 +221,7 @@ async fn sqlite_store_persists_dashboard_settings() {
             l1: TierKeep { keep_days: 4 },
             ..RetentionLadder::default()
         },
-        top_process_count: 12,
+        top_process_count: 8,
         ..DashboardSettings::default()
     };
     store
@@ -239,9 +244,58 @@ async fn sqlite_store_persists_dashboard_settings() {
     assert_eq!(persisted.poll_interval_ms, 3_000);
     assert_eq!(persisted.retention_hours, 96);
     assert_eq!(persisted.retention_ladder.l1.keep_days, 4);
-    assert_eq!(persisted.top_process_count, 12);
+    assert_eq!(persisted.top_process_count, 8);
 
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn top_process_count_outside_its_range_is_refused_and_not_stored() {
+    let store = SqliteHistoryStore::connect("sqlite::memory:")
+        .await
+        .expect("in-memory store should connect");
+    let expected = format!(
+        "topProcessCount must be between {MIN_TOP_PROCESS_COUNT} and {MAX_TOP_PROCESS_COUNT}"
+    );
+    assert_eq!(expected, "topProcessCount must be between 1 and 50");
+
+    for rejected in [
+        i64::MIN,
+        -1,
+        MIN_TOP_PROCESS_COUNT - 1,
+        MAX_TOP_PROCESS_COUNT + 1,
+        i64::MAX,
+    ] {
+        let candidate = DashboardSettings {
+            top_process_count: rejected,
+            ..DashboardSettings::default()
+        };
+        match store.put_settings(&candidate).await {
+            Err(StoreError::Validation(message)) if message == expected => {}
+            result => panic!("topProcessCount={rejected}: expected {expected:?}, got {result:?}"),
+        }
+    }
+    assert_eq!(
+        store
+            .get_settings()
+            .await
+            .expect("settings should still read")
+            .top_process_count,
+        DEFAULT_TOP_PROCESS_COUNT,
+        "a refused write must leave the default in place"
+    );
+
+    for accepted in [MIN_TOP_PROCESS_COUNT, MAX_TOP_PROCESS_COUNT] {
+        let candidate = DashboardSettings {
+            top_process_count: accepted,
+            ..DashboardSettings::default()
+        };
+        let saved = store
+            .put_settings(&candidate)
+            .await
+            .expect("a boundary value should be accepted");
+        assert_eq!(saved.top_process_count, accepted);
+    }
 }
 
 #[tokio::test]

@@ -49,6 +49,13 @@ import {
 } from "./ladder-rules.js";
 
 const DEFAULT_POLL_MS = 1500;
+// How many processes a sample keeps, live and in history. These three mirror
+// the daemon (tinytop-store DEFAULT_/MIN_/MAX_TOP_PROCESS_COUNT) and the
+// `min`/`max` on #daemon-top-process-count; tests/top-process-count.test.ts
+// fails when any copy drifts.
+const DEFAULT_TOP_PROCESS_COUNT = 12;
+const MIN_TOP_PROCESS_COUNT = 1;
+const MAX_TOP_PROCESS_COUNT = 50;
 const DASHBOARD_URL = new URL(window.location.href);
 const MAX_HISTORY_PAGE_SIZE = 10_000;
 const MAX_HISTORY_PAGE_COUNT = 8;
@@ -192,7 +199,7 @@ const DEFAULT_DAEMON_SETTINGS = {
     extraChips: [],
   },
   targetDatabaseBytes: 128 * 1024 * 1024,
-  topProcessCount: 8,
+  topProcessCount: DEFAULT_TOP_PROCESS_COUNT,
   redactionDefault: false,
   thresholds: {
     cpuWarn: 80,
@@ -2912,7 +2919,7 @@ function validateDaemonSettings(settings = collectDaemonSettingsFromForm()) {
   const errors = [];
   validateRange(errors, "Refresh ms", settings.pollIntervalMs, 250, 60_000);
   validateRange(errors, "DB budget MiB", Math.round(settings.targetDatabaseBytes / 1024 / 1024), 1, 10_240);
-  validateRange(errors, "Processes", settings.topProcessCount, 1, 50);
+  validateRange(errors, "Processes", settings.topProcessCount, MIN_TOP_PROCESS_COUNT, MAX_TOP_PROCESS_COUNT);
   if (state.retentionLadderAvailable) {
     errors.push(
       ...validateRetentionLadder(
@@ -3477,7 +3484,7 @@ function collectDaemonSettingsFromForm() {
     otel,
     thermal,
     targetDatabaseBytes: numberControlValue(elements.daemonDbBudgetMib, 128) * 1024 * 1024,
-    topProcessCount: numberControlValue(elements.daemonTopProcessCount, 8),
+    topProcessCount: numberControlValue(elements.daemonTopProcessCount, DEFAULT_TOP_PROCESS_COUNT),
     redactionDefault: Boolean(elements.daemonRedactionDefault?.checked),
     thresholds: {
       cpuWarn: numberControlValue(elements.daemonCpuWarn, 80),

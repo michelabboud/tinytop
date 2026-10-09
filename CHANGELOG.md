@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.1 - 2026-10-09
+
+Michel, after the 2026-10-09 memory incident: *"lets extend the apps to 12 instead of 7 and make it a variable in tinytop setting, with default of 12"*.
+
+- **Each sample now keeps 12 processes by default instead of 8** — in the live process table, in `process_samples_fast` (per tick) and in `process_samples` (per minute). The count was already a daemon setting, `topProcessCount` (the **Processes** field under Settings → General → Daemon, `1`–`50`, in `GET`/`PUT /api/settings` and the export/import document since ADR 0007); only its default moved. The history looked like "seven" because `rank` is zero-based: `max(rank) = 7` is eight rows.
+- **An existing install keeps its stored count.** The settings row stores the whole document, so a database that has ever saved settings carries `"topProcessCount": 8` explicitly and an upgrade does not rewrite it — a stored 8 cannot be told apart from a chosen 8. Set the field to 12 once in the dialog (or `PUT /api/settings`); it applies from the next collection.
+- The default and the `1`–`50` bounds are now **named constants** (`DEFAULT_`/`MIN_`/`MAX_TOP_PROCESS_COUNT`) in `tinytop-store`, `tinytop-collectors`, `src/settings.ts` and the dashboard script instead of bare `8` and `1, 50` literals repeated across both runtimes. The copies cannot import one another, so `tests/top-process-count.test.ts` and a `tinytop-agent` test read all of them and fail on drift.
+- No schema change: `rank` has no range constraint, the primary key is `(captured_at_ms, rank)`, and neither the prune nor the read path bounds it. A new store test writes 12 and 50 processes and reads back every rank from both tables.
+- Cost, measured on the live 818 MiB database at 8 processes (`dbstat`): the two process tables and their four indexes hold 64.0 MiB at steady state (24 h of per-tick rows, 30 days of per-minute rows). Twelve is 1.5× the rows, so about **+32 MiB (+4 %)**. The command dictionary (`process_commands`, 225 MiB with its unique index) is not row-proportional and may also grow as four more processes per sample introduce command lines not seen before; that part is not predictable from retention settings.
+- Not changed, and worth knowing: the list is ranked by **CPU**, not memory, so a process holding a lot of memory while idle can still be absent at 12. The legacy Bun collector keeps its own fixed 10 and does not read the setting.
+
 ## 0.12.0 - 2026-09-02
 
 Michel, on the new Info tab: *"in services add the PID of the rust daemon? right?"* and *"also the open port"*.

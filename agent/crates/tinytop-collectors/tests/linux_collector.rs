@@ -6,7 +6,7 @@ use std::{
 };
 
 use tinytop_collectors::{
-    Collector, CollectorConfig,
+    Collector, CollectorConfig, DEFAULT_TOP_PROCESS_COUNT,
     linux::{
         LinuxCollector, build_linux_snapshot_from_sources, calculate_cpu_usage,
         decode_proc_mount_escape, detect_linux_runtime, parse_df_blocks, parse_loadavg,
@@ -314,6 +314,41 @@ fn configure_changes_the_interval_without_resetting_the_cache() {
     });
     collector.collect().expect("shortened-interval collection");
     assert_eq!(collector.slow_enumerations(), 2);
+}
+
+#[test]
+fn an_unconfigured_collector_keeps_twelve_processes() {
+    assert_eq!(DEFAULT_TOP_PROCESS_COUNT, 12);
+    assert_eq!(
+        CollectorConfig::default().top_process_count,
+        DEFAULT_TOP_PROCESS_COUNT
+    );
+    if std::env::consts::OS != "linux" {
+        return;
+    }
+
+    // The widest setting tells us how many processes this host can show, so
+    // the default is checked exactly instead of with a `<=` that eight passes.
+    let mut collector = LinuxCollector::with_clock(Instant::now);
+    collector.configure(CollectorConfig {
+        top_process_count: 50,
+        ..CollectorConfig::default()
+    });
+    let visible = collector.collect().expect("widest list").processes.len();
+
+    let mut unconfigured = LinuxCollector::with_clock(Instant::now);
+    let kept = unconfigured
+        .collect()
+        .expect("default list")
+        .processes
+        .len();
+    if visible >= DEFAULT_TOP_PROCESS_COUNT {
+        assert_eq!(kept, DEFAULT_TOP_PROCESS_COUNT);
+    } else {
+        // A containment lane with a tiny process table: every process fits.
+        assert!(kept <= DEFAULT_TOP_PROCESS_COUNT);
+        eprintln!("host exposes only {visible} process(es); default checked as an upper bound");
+    }
 }
 
 #[test]

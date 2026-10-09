@@ -231,7 +231,7 @@ On page load:
 5. It requests the latest snapshot from `/api/snapshot`.
 6. It starts polling every 1500 ms.
 
-The daemon's own collection tick is `pollIntervalMs`; filesystems are re-checked every `detailIntervalSec` (default 60 seconds), and the Filesystem panel shows `as of hh:mm:ss` when its rows are older than one poll. A saved `Top processes` count applies on the daemon's next collection tick.
+The daemon's own collection tick is `pollIntervalMs`; filesystems are re-checked every `detailIntervalSec` (default 60 seconds), and the Filesystem panel shows `as of hh:mm:ss` when its rows are older than one poll. The **Processes** field (Settings → General → Daemon; default `12`, allowed `1`–`50`) is how many processes each sample keeps, ranked by CPU, both in the live table and in history. A saved count applies on the daemon's next collection tick. Raising it stores proportionally more process-history rows; an install that already has saved settings keeps its saved count when TinyTop is upgraded, so raise it there by hand.
 
 If history is unavailable, the dashboard still works from live polling, but the chart starts with newly collected samples.
 

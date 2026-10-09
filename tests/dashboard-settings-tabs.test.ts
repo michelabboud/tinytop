@@ -209,6 +209,7 @@ describe("tabbed settings shell", () => {
       "parseThermalExtraChips",
       "disabledMetricsFromSelection",
       "DEFAULT_POLL_MS",
+      "DEFAULT_TOP_PROCESS_COUNT",
       `${extractFunction(app, "collectDaemonSettingsFromForm")}; return collectDaemonSettingsFromForm;`,
     )(
       state,
@@ -220,6 +221,7 @@ describe("tabbed settings shell", () => {
       (text: string) => text.split(/[\s,]+/u).filter(Boolean),
       disabledMetricsFromSelection,
       1_500,
+      12,
     ) as () => Record<string, any>;
     const collected = collect();
     expect(collected.retentionLadder.l1.keepDays).toBe(17);

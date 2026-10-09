@@ -246,7 +246,7 @@ Response:
   "retentionHours": 72,
   "rollupRetentionDays": 30,
   "targetDatabaseBytes": 134217728,
-  "topProcessCount": 8,
+  "topProcessCount": 12,
   "redactionDefault": false,
   "thermal": { "enabled": false, "extraChips": [] },
   "otel": {
@@ -289,7 +289,7 @@ Response:
 }
 ```
 
-`topProcessCount` accepts `1`–`50`. A change saved through the dashboard, `PUT /api/settings`, or `POST /api/settings/import` is effective from the next collection, which begins after the save returns; the tick's settings reload remains a backstop for changes made by other means.
+`topProcessCount` is how many processes each sample keeps, ranked by CPU, in `/api/snapshot` and in both process history tables. It defaults to `12` and accepts `1`–`50`; a value outside that range is refused with `400 {"error":"topProcessCount must be between 1 and 50"}`, and a non-integer or absent value with `400 {"error":"settings document could not be decoded: …"}`. A stored value is never rewritten by an upgrade. A change saved through the dashboard, `PUT /api/settings`, or `POST /api/settings/import` is effective from the next collection, which begins after the save returns; the tick's settings reload remains a backstop for changes made by other means.
 
 `otel.disabledMetrics` is a list of metric names that the Rust daemon does not record or export. It accepts at most 64 unique entries; each must be 1–128 characters matching `^[a-z][a-z0-9._]*$`. An unknown but well-formed name is accepted and preserved so configuration documents can round-trip between different TinyTop versions. An absent `disabledMetrics` key defaults to an empty list, so all metrics are exported.
 

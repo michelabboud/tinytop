@@ -2594,6 +2594,174 @@ pub(crate) mod tests {
         assert_eq!(sample.snapshot.processes.len(), 3);
     }
 
+    #[test]
+    fn the_store_and_the_collector_agree_on_twelve_processes_by_default() {
+        // Break caught: the default is raised in one crate only, so the daemon
+        // keeps twelve while `collect --json` (no database) still keeps eight.
+        assert_eq!(tinytop_store::DEFAULT_TOP_PROCESS_COUNT, 12);
+        assert_eq!(
+            usize::try_from(tinytop_store::DEFAULT_TOP_PROCESS_COUNT).ok(),
+            Some(tinytop_collectors::DEFAULT_TOP_PROCESS_COUNT)
+        );
+        let settings = DashboardSettings::default();
+        assert_eq!(settings.top_process_count, 12);
+        assert_eq!(CollectorConfig::default().top_process_count, 12);
+        assert_eq!(collector_config_from(&settings).top_process_count, 12);
+    }
+
+    #[tokio::test]
+    async fn a_configured_process_count_reaches_the_live_list_and_both_history_tables() {
+        // Break caught: the setting trims the live list but history keeps a
+        // different number of rows (or the reverse).
+        let (_fixture, state) = test_state("process-count-live-and-history").await;
+        let mut settings = state.store.get_settings().await.expect("default settings");
+        assert_eq!(settings.top_process_count, 12);
+        settings.top_process_count = 2;
+        state
+            .store
+            .put_settings(&settings)
+            .await
+            .expect("settings should persist");
+        configure_collector_if_changed(&state).await;
+
+        let sample = collect_and_store(&state)
+            .await
+            .expect("configured collection should succeed");
+        assert_eq!(
+            sample.snapshot.processes.len(),
+            2,
+            "this test needs a host that exposes at least two processes"
+        );
+        let (status, live) = request_json(router(state.clone()), "/api/snapshot").await;
+        assert_eq!(status, StatusCode::OK, "{live}");
+        assert_eq!(live["processes"].as_array().map(Vec::len), Some(2));
+
+        // A bounded `since` inside the fast keep window reads the per-tick
+        // table; an open one reads the minute table.
+        for (expected_source, since_ms) in [
+            (ProcessHistorySource::Fast, Some(sample.captured_at_ms)),
+            (ProcessHistorySource::Minute, None),
+        ] {
+            let read = state
+                .store
+                .read_history_processes(HistoryQuery {
+                    since_ms,
+                    until_ms: Some(sample.captured_at_ms),
+                    limit: Some(10),
+                })
+                .await
+                .expect("process history should read");
+            assert_eq!(read.source, expected_source);
+            assert_eq!(read.captures.len(), 1, "{expected_source:?}");
+            assert_eq!(read.captures[0].captured_at_ms, sample.captured_at_ms);
+            assert_eq!(read.captures[0].processes.len(), 2, "{expected_source:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn put_settings_rejects_a_process_count_it_cannot_honour_with_400() {
+        // Break caught: an out-of-range or non-numeric count passes the HTTP
+        // boundary, or is refused in a different shape from other settings.
+        let (_fixture, state) = test_state("put-bad-process-count").await;
+        let valid =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+
+        for rejected in [json!(0), json!(51), json!(-3)] {
+            let mut payload = valid.clone();
+            payload["topProcessCount"] = rejected.clone();
+            let (status, body) = put_json(router(state.clone()), "/api/settings", payload).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}: {body}");
+            assert_eq!(
+                body,
+                json!({ "error": "topProcessCount must be between 1 and 50" }),
+                "{rejected}"
+            );
+        }
+
+        for rejected in [
+            json!("twelve"),
+            json!("12"),
+            json!(12.5),
+            json!(null),
+            json!(true),
+        ] {
+            let mut payload = valid.clone();
+            payload["topProcessCount"] = rejected.clone();
+            let (status, body) = put_json(router(state.clone()), "/api/settings", payload).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{rejected}: {body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("settings document could not be decoded: "),
+                "{rejected}: {body}"
+            );
+        }
+
+        // The field has no serde default: a document without it is refused,
+        // never completed silently with a count the caller did not send.
+        let mut without = valid.clone();
+        without
+            .as_object_mut()
+            .expect("settings serialize to an object")
+            .remove("topProcessCount");
+        let (status, body) = put_json(router(state.clone()), "/api/settings", without).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("settings document could not be decoded: "),
+            "{body}"
+        );
+
+        assert_eq!(
+            state
+                .store
+                .get_settings()
+                .await
+                .expect("settings should still read")
+                .top_process_count,
+            12,
+            "a refused write must not change the stored count"
+        );
+        assert!(
+            state.collector_config.lock().await.is_none(),
+            "a refused write must not configure the collector"
+        );
+    }
+
+    #[tokio::test]
+    async fn import_rejects_a_process_count_out_of_range() {
+        // Break caught: the import path validates less than PUT does.
+        let (_fixture, state) = test_state("import-bad-process-count").await;
+        let mut candidate =
+            serde_json::to_value(state.store.get_settings().await.expect("default settings"))
+                .expect("settings should serialize");
+        candidate["topProcessCount"] = json!(51);
+        let document = json!({ "tinytopConfigVersion": 1, "settings": candidate });
+
+        let (status, body) =
+            post_json(router(state.clone()), "/api/settings/import", document).await;
+
+        assert_ne!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.to_string()
+                .contains("topProcessCount must be between 1 and 50"),
+            "{body}"
+        );
+        assert_eq!(
+            state
+                .store
+                .get_settings()
+                .await
+                .expect("settings should still read")
+                .top_process_count,
+            12
+        );
+    }
+
     #[tokio::test]
     async fn collect_and_store_reconfigures_only_when_the_settings_changed() {
         let (_fixture, state) = test_state("collector-config-change").await;
@@ -2615,7 +2783,7 @@ pub(crate) mod tests {
 
         let third = collect_and_store(&state).await.expect("third tick");
         // A live host may expose fewer processes than either configured maximum.
-        assert!(third.snapshot.processes.len() <= 8);
+        assert!(third.snapshot.processes.len() <= tinytop_collectors::DEFAULT_TOP_PROCESS_COUNT);
         assert_eq!(state.collector.lock().await.configure_calls(), 2);
 
         let fourth = collect_and_store(&state).await.expect("fourth tick");

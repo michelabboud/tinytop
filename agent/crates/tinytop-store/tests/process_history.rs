@@ -5,8 +5,8 @@ use std::{
 
 use sqlx::SqlitePool;
 use tinytop_store::{
-    DashboardSettings, HistoryQuery, ProcessHistorySource, SqliteHistoryStore,
-    maintenance::maintain_with_config,
+    DEFAULT_TOP_PROCESS_COUNT, DashboardSettings, HistoryQuery, MAX_TOP_PROCESS_COUNT,
+    ProcessHistorySource, SqliteHistoryStore, maintenance::maintain_with_config,
 };
 use tinytop_types::{
     CpuSnapshot, CpuTimes, FilesystemSnapshot, IdentitySnapshot, LoadSnapshot, MemorySnapshot,
@@ -237,6 +237,81 @@ async fn read_history_processes_picks_fast_inside_the_keep_window_and_minute_out
                 .collect();
             assert_eq!(commands, expected_commands);
         }
+    }
+}
+
+#[tokio::test]
+async fn every_collected_process_is_written_to_both_tables_whatever_the_count() {
+    // Break caught: a rank bound somewhere in the write or read path drops the
+    // processes beyond the eight that were the previous default.
+    for process_count in [
+        usize::try_from(DEFAULT_TOP_PROCESS_COUNT).expect("default fits usize"),
+        usize::try_from(MAX_TOP_PROCESS_COUNT).expect("maximum fits usize"),
+    ] {
+        let fixture = TempDatabase::new(&format!("count-{process_count}"));
+        let store = fixture.store().await;
+        let t = current_time_ms();
+        let mut collected = snapshot(t);
+        collected.processes = (0..process_count)
+            .map(|index| ProcessSnapshot {
+                pid: 1_000 + u32::try_from(index).expect("fixture index fits u32"),
+                command: format!("fixture-process-{index}"),
+                cpu_percent: 0.0,
+                memory_percent: 1.0,
+                rss_bytes: 4_096,
+                parent_pid: None,
+                started_at: None,
+                gpu_percent: None,
+            })
+            .collect();
+        store
+            .insert_snapshot(t, &collected)
+            .await
+            .expect("snapshot should insert");
+
+        let pool = fixture.pool().await;
+        let expected_ranks: Vec<i64> =
+            (0..i64::try_from(process_count).expect("count fits i64")).collect();
+        for (table, sql) in [
+            (
+                "process_samples_fast",
+                "SELECT rank FROM process_samples_fast WHERE captured_at_ms = ? ORDER BY rank",
+            ),
+            (
+                "process_samples",
+                "SELECT rank FROM process_samples WHERE captured_at_ms = ? ORDER BY rank",
+            ),
+        ] {
+            let ranks: Vec<i64> = sqlx::query_scalar(sql)
+                .bind(t)
+                .fetch_all(&pool)
+                .await
+                .expect("ranks should read");
+            assert_eq!(
+                ranks, expected_ranks,
+                "{table} at {process_count} processes"
+            );
+        }
+        pool.close().await;
+
+        let read = store
+            .read_history_processes(HistoryQuery {
+                since_ms: Some(t),
+                until_ms: Some(t),
+                limit: Some(10),
+            })
+            .await
+            .expect("process history should read");
+        assert_eq!(read.captures.len(), 1);
+        let commands: Vec<&str> = read.captures[0]
+            .processes
+            .iter()
+            .map(|process| process.command.as_str())
+            .collect();
+        let expected_commands: Vec<String> = (0..process_count)
+            .map(|index| format!("fixture-process-{index}"))
+            .collect();
+        assert_eq!(commands, expected_commands);
     }
 }
 

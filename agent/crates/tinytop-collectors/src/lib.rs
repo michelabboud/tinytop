@@ -22,6 +22,11 @@ use tinytop_types::SystemSnapshot;
 
 pub type CollectorResult<T> = Result<T, CollectorError>;
 
+/// How many processes a sample keeps when the collector is not configured.
+/// Must equal the store's `DEFAULT_TOP_PROCESS_COUNT`; the two crates do not
+/// depend on each other, so a `tinytop-agent` test compares them.
+pub const DEFAULT_TOP_PROCESS_COUNT: usize = 12;
+
 /// Runtime collector settings. These defaults mirror the store's
 /// `topProcessCount` and `retentionLadder.detailIntervalSec` defaults. The
 /// daemon configures its collector before the first sample, so they govern only
@@ -37,7 +42,7 @@ pub struct CollectorConfig {
 impl Default for CollectorConfig {
     fn default() -> Self {
         Self {
-            top_process_count: 8,
+            top_process_count: DEFAULT_TOP_PROCESS_COUNT,
             filesystems_interval: Duration::from_secs(60),
             thermal_enabled: false,
             thermal_extra_chips: Vec::new(),

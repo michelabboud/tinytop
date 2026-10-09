@@ -44,6 +44,19 @@ pub use crate::retention_ladder::DiskPressureState;
 use crate::retention_ladder::RetentionLadder;
 use crate::thermal_settings::ThermalSettings;
 
+/// How many processes each sample keeps when nothing is configured, for both
+/// the live list and the two process history tables. Twelve rather than the
+/// earlier eight: the list is ranked by CPU, so a memory incident is explained
+/// by processes that sit just below the busiest few. `tinytop-collectors`
+/// carries the same number for `collect --json`; the agent tests pin the two
+/// together.
+pub const DEFAULT_TOP_PROCESS_COUNT: i64 = 12;
+/// A sample that keeps no process cannot answer "what was running".
+pub const MIN_TOP_PROCESS_COUNT: i64 = 1;
+/// Bounds the per-tick history write: every kept process is one row in
+/// `process_samples_fast` on every tick.
+pub const MAX_TOP_PROCESS_COUNT: i64 = 50;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistorySample {
@@ -139,7 +152,7 @@ impl Default for DashboardSettings {
             otel: OtelSettings::default(),
             thermal: ThermalSettings::default(),
             target_database_bytes: default_target_database_bytes(),
-            top_process_count: 8,
+            top_process_count: DEFAULT_TOP_PROCESS_COUNT,
             redaction_default: false,
             thresholds: DashboardThresholds::default(),
             enabled_sections: DashboardSections::default(),
@@ -287,7 +300,12 @@ impl DashboardSettings {
             1_048_576,
             10_737_418_240,
         )?;
-        validate_range("topProcessCount", self.top_process_count, 1, 50)?;
+        validate_range(
+            "topProcessCount",
+            self.top_process_count,
+            MIN_TOP_PROCESS_COUNT,
+            MAX_TOP_PROCESS_COUNT,
+        )?;
         validate_range("thresholds.cpuWarn", self.thresholds.cpu_warn, 0, 100)?;
         validate_range(
             "thresholds.cpuCritical",
