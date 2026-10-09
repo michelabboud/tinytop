@@ -88,4 +88,4 @@ The Rust Linux collector uses `procfs` (CPU ticks, memory, load, uptime, PSI), `
 
 ## Docs to keep current (per the global workflow rules)
 
-`CHANGELOG.md`, `PROGRESS.md`, `README.md`/`ARCHITECTURE.md`, and `VERSION` (single source of truth, currently `0.13.0`) are all live and expected to be updated per task. New ADRs for architectural decisions.
+`CHANGELOG.md`, `PROGRESS.md`, `README.md`/`ARCHITECTURE.md`, and `VERSION` (single source of truth, currently `0.14.0`) are all live and expected to be updated per task. New ADRs for architectural decisions.

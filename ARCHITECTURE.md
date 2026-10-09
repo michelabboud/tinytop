@@ -161,6 +161,10 @@ serves every rung; completed buckets freeze after their grace window, and each
 enabled coarser tier is promoted before its finer source may be pruned. The
 retention horizons and L3/L4 toggles come from `retentionLadder` settings.
 
+The current schema version is `user_version = 6`; a fresh database is created
+directly at it, and every older version migrates forward one step at a time,
+each step in its own transaction. A database newer than the binary is refused.
+
 Existing populated v0 databases migrate to SQLite `user_version = 1` only after
 `VACUUM INTO` has created the complete, non-overwriting
 `<database>.pre-v0.sqlite` pre-image. Migration then changes the schema in one
@@ -199,7 +203,7 @@ PRAGMA busy_timeout = 5000;
 PRAGMA foreign_keys = ON;
 ```
 
-Core schema-v4 table excerpt (see [Tiered History Ladder](#tiered-history-ladder) and the SQLite architecture document for the complete tier/detail tables):
+Core table excerpt, unchanged since schema v4 (see [Tiered History Ladder](#tiered-history-ladder) and the SQLite architecture document for the complete tier/detail tables):
 
 ```sql
 CREATE TABLE IF NOT EXISTS metric_samples (
@@ -285,7 +289,7 @@ CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 ```
 
-The current v5 implementation stores typed graph/query columns, per-row assembly scalars, interned host identity, and on-change filesystem/presence rows for every raw history sample. `host_identity` is unique over the eight stable identity strings; `fs_mount_events` preserves mount appearance and disappearance independently of value changes. Schema v4's interned GPU identity and process-time layout remain unchanged; v5 adds `sensor_dim` and `sensor_samples` without rebuilding an existing table. The store also keeps daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
+The current v6 implementation stores typed graph/query columns, per-row assembly scalars, interned host identity, and on-change filesystem/presence rows for every raw history sample. `host_identity` is unique over the eight stable identity strings; `fs_mount_events` preserves mount appearance and disappearance independently of value changes. Schema v4's interned GPU identity and process-time layout remain unchanged; v5 adds `sensor_dim` and `sensor_samples` without rebuilding an existing table. Schema v6 ([ADR 0036](docs/adr/0036-schema-v6-two-process-ranks-on-one-row-and-per-process-swap.md)) adds nullable `swap_bytes`, `cpu_rank` and `memory_rank` to both process tables in place: a sample is the top N processes by CPU followed by the memory-only members of the top N by resident-plus-swap memory, so it holds N to 2N rows; `rank` is the row's ordinal within the sample (the primary key with `captured_at_ms`), and the two rank columns carry each list's zero-based position, `NULL` when the process is not in that list. Rows written before v6 have `cpu_rank = rank` and no memory rank or swap. The per-minute table is a copy of the tick that was due, never a fold of the minute. The store also keeps daemon defaults in `app_settings`, L2/L3/L4 aggregate buckets, typed process detail rows, maintenance/migration state, and timeline events; `/api/history/coverage` reports the resulting ladder and disk/archive state.
 
 Rust retention is the four-tier ladder described in [Tiered History Ladder](#tiered-history-ladder): each sample refreshes L2, completed buckets promote to enabled coarser tiers before finer rows are pruned, and `retentionHours` / `rollupRetentionDays` are derived compatibility mirrors of L1/L2. The legacy Bun split path still keeps raw rows until manual archive/reset.
 

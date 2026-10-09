@@ -169,7 +169,7 @@ async fn fresh_database_is_created_at_v4() {
         .expect("close fresh store");
     let pool = fixture.raw_pool(false).await;
 
-    assert_eq!(user_version(&pool).await, 5);
+    assert_eq!(user_version(&pool).await, 6);
     for table in ["gpu_adapters", "gpu_samples"] {
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
@@ -206,7 +206,7 @@ async fn v3_fixture_migrates_to_v4_converting_started_at_and_creating_gpu_tables
         .expect("close migrated store");
     let pool = fixture.raw_pool(false).await;
 
-    assert_eq!(user_version(&pool).await, 5);
+    assert_eq!(user_version(&pool).await, 6);
     for table in ["process_samples_fast", "process_samples"] {
         let rows: Vec<Option<i64>> = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT started_at_ms FROM {table} ORDER BY rank"
@@ -297,7 +297,7 @@ async fn a_v2_fixture_chains_to_v4() {
         .await
         .expect("close chained store");
     let pool = fixture.raw_pool(false).await;
-    assert_eq!(user_version(&pool).await, 5);
+    assert_eq!(user_version(&pool).await, 6);
     assert_eq!(
         table_info(&pool, "process_samples_fast").await[8].1,
         "started_at_ms"
@@ -322,7 +322,7 @@ async fn a_v0_fixture_chains_to_v4() {
         .await
         .expect("close chained store");
     let pool = fixture.raw_pool(false).await;
-    assert_eq!(user_version(&pool).await, 5);
+    assert_eq!(user_version(&pool).await, 6);
     assert_eq!(
         table_info(&pool, "process_samples").await[7].1,
         "started_at_ms"

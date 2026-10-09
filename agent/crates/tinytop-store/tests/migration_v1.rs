@@ -173,7 +173,7 @@ async fn fresh_database_is_created_at_schema_version_4() {
     drop(store);
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 5);
+    assert_eq!(schema_version(&pool).await, 6);
     for table in [
         "metric_rollups_5m",
         "metric_rollups_1h",
@@ -354,7 +354,7 @@ async fn reconnect_completes_an_interrupted_post_schema_vacuum() {
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count after resumed completion");
-    assert_eq!(marker_count, 5);
+    assert_eq!(marker_count, 6);
     let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
         .fetch_one(&pool)
         .await
@@ -418,7 +418,7 @@ async fn crash_after_schema_commit_is_recovered_on_next_connect() {
             .fetch_one(&pool)
             .await
             .expect("post-recovery schemaMigrated marker count");
-    assert_eq!(marker_count_after, 5);
+    assert_eq!(marker_count_after, 6);
     let integrity: String = sqlx::query_scalar("PRAGMA integrity_check")
         .fetch_one(&pool)
         .await
@@ -710,7 +710,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
     pre_image_pool.close().await;
 
     let pool = verification_pool(&fixture.url).await;
-    assert_eq!(schema_version(&pool).await, 5);
+    assert_eq!(schema_version(&pool).await, 6);
     let cutoff_ms = seeded.now_ms - SNAPSHOT_JSON_KEEP_MS;
     let recent_assembleable_rows: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM metric_samples WHERE captured_at_ms >= ? AND identity_id IS NOT NULL",
@@ -754,7 +754,7 @@ async fn verify_successful_migration(fixture: &TempDatabase, seeded: &SeededV0) 
             .fetch_one(&pool)
             .await
             .expect("schemaMigrated marker count");
-    assert_eq!(marker_count, 5);
+    assert_eq!(marker_count, 6);
     pool.close().await;
 
     let bytes_after = std::fs::metadata(&fixture.path)

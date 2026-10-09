@@ -1692,28 +1692,48 @@ pub(crate) mod tests {
     }
 
     /// History rows must carry `rank` as the contiguous ordinal `0..len`, and
-    /// a sample of two lists of `count` holds between `count` and `2 * count`.
-    // Task 2 (store: `cpu_rank` / `memory_rank` columns) tightens this to the per-list assertions.
-    pub(crate) fn assert_stored_process_rows(
-        stored_ranks: impl IntoIterator<Item = i64>,
+    /// their stored `cpu_rank` / `memory_rank` must be two lists of exactly
+    /// `count` each (see `assert_two_process_lists`), so a sample holds
+    /// between `count` and `2 * count` rows. Returns the row count.
+    pub(crate) fn assert_stored_process_rows<'a>(
+        stored: impl IntoIterator<Item = &'a tinytop_store::HistoryProcessSample>,
         count: usize,
     ) -> usize {
-        let stored_ranks = stored_ranks.into_iter().collect::<Vec<_>>();
-        let expected =
-            (0..i64::try_from(stored_ranks.len()).expect("row count")).collect::<Vec<_>>();
-        assert_eq!(stored_ranks, expected, "rank is the row ordinal");
-        assert!(
-            (count..=2 * count).contains(&stored_ranks.len()),
-            "{} stored rows for two lists of {count}",
-            stored_ranks.len()
+        let stored = stored.into_iter().collect::<Vec<_>>();
+        let ordinals = stored
+            .iter()
+            .map(|process| process.rank)
+            .collect::<Vec<_>>();
+        let expected = (0..i64::try_from(stored.len()).expect("row count")).collect::<Vec<_>>();
+        assert_eq!(ordinals, expected, "rank is the row ordinal");
+        let list_rank = |rank: Option<i64>| {
+            rank.map(|rank| u32::try_from(rank).expect("a stored list rank fits u32"))
+        };
+        assert_eq!(
+            assert_two_process_lists(
+                stored
+                    .iter()
+                    .map(|process| (list_rank(process.cpu_rank), list_rank(process.memory_rank)))
+            ),
+            count,
+            "each stored list holds the configured count"
         );
-        stored_ranks.len()
+        stored.len()
+    }
+
+    /// The `(cpu_rank, memory_rank)` of each process row, in emitted order.
+    pub(crate) fn process_ranks(snapshot: &SystemSnapshot) -> Vec<(Option<u32>, Option<u32>)> {
+        snapshot
+            .processes
+            .iter()
+            .map(|process| (process.cpu_rank, process.memory_rank))
+            .collect()
     }
 
     /// The `(cpu_rank, memory_rank)` of each process row of the snapshot the
-    /// last collection published, in emitted order. The sample that
-    /// `collect_and_store` returns is read back from the store, which does not
-    /// keep the two ranks yet; the published snapshot is the collector's own.
+    /// last collection published, in emitted order. This is the collector's
+    /// own output; the sample `collect_and_store` returns is read back from
+    /// the store and must carry the same ranks.
     fn live_process_ranks(state: &AppState) -> Vec<(Option<u32>, Option<u32>)> {
         state
             .latest_snapshot
@@ -2668,8 +2688,9 @@ pub(crate) mod tests {
         let live = live_process_ranks(&state);
         assert_eq!(assert_two_process_lists(live.clone()), 3);
         assert!((3..=6).contains(&live.len()));
-        // Task 2 (store: `cpu_rank` / `memory_rank` columns) tightens this to the per-list assertions.
-        assert_eq!(sample.snapshot.processes.len(), live.len());
+        let stored = process_ranks(&sample.snapshot);
+        assert_eq!(assert_two_process_lists(stored.clone()), 3);
+        assert_eq!(stored, live, "the store returns the ranks it was given");
     }
 
     #[test]
@@ -2712,8 +2733,14 @@ pub(crate) mod tests {
             2,
             "this test needs a host that exposes at least two processes"
         );
-        // Task 2 (store: `cpu_rank` / `memory_rank` columns) tightens this to the per-list assertions.
-        let collected = sample.snapshot.processes.len();
+        let stored = process_ranks(&sample.snapshot);
+        assert_eq!(assert_two_process_lists(stored.clone()), 2);
+        assert_eq!(
+            stored,
+            live_process_ranks(&state),
+            "the store returns the ranks it was given"
+        );
+        let collected = stored.len();
         assert!((2..=4).contains(&collected));
         let (status, live) = request_json(router(state.clone()), "/api/snapshot").await;
         assert_eq!(status, StatusCode::OK, "{live}");
@@ -2751,13 +2778,7 @@ pub(crate) mod tests {
             assert_eq!(read.source, expected_source);
             assert_eq!(read.captures.len(), 1, "{expected_source:?}");
             assert_eq!(read.captures[0].captured_at_ms, sample.captured_at_ms);
-            let stored = assert_stored_process_rows(
-                read.captures[0]
-                    .processes
-                    .iter()
-                    .map(|process| process.rank),
-                2,
-            );
+            let stored = assert_stored_process_rows(&read.captures[0].processes, 2);
             assert_eq!(stored, collected, "{expected_source:?}");
         }
     }
@@ -2889,6 +2910,7 @@ pub(crate) mod tests {
         // A live host may expose fewer processes than either configured
         // maximum. The maximum bounds each list; the sample is their union.
         let third_cpu_list = assert_two_process_lists(live_process_ranks(&state));
+        assert_eq!(process_ranks(&third.snapshot), live_process_ranks(&state));
         assert!(third_cpu_list <= tinytop_collectors::DEFAULT_TOP_PROCESS_COUNT);
         assert!(
             third.snapshot.processes.len() <= 2 * tinytop_collectors::DEFAULT_TOP_PROCESS_COUNT
@@ -2897,6 +2919,7 @@ pub(crate) mod tests {
 
         let fourth = collect_and_store(&state).await.expect("fourth tick");
         let fourth_cpu_list = assert_two_process_lists(live_process_ranks(&state));
+        assert_eq!(process_ranks(&fourth.snapshot), live_process_ranks(&state));
         assert!(fourth_cpu_list <= 3);
         assert!(fourth.snapshot.processes.len() <= 2 * 3);
         assert_eq!(state.collector.lock().await.configure_calls(), 2);

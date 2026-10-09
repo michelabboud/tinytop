@@ -2,7 +2,7 @@
 
 ## Current Version
 
-- Version: `0.13.0`
+- Version: `0.14.0`
 - Date: 2026-09-02
 - Status: Phase 5 IN PROGRESS. **0.11.0** (ADR 0035) moves seven reference blocks off the dashboard
   into a new read-only **Settings → Info** tab (Coverage · Tiers · Services · Events): the coverage

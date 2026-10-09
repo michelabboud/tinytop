@@ -415,6 +415,411 @@ async fn prune_process_fast_history_is_limit_bounded_and_leaves_no_orphans() {
     pool.close().await;
 }
 
+/// A process row with only the fields the two-list tests vary.
+fn ranked(
+    pid: u32,
+    rss_bytes: u64,
+    swap_bytes: Option<u64>,
+    cpu_rank: Option<u32>,
+    memory_rank: Option<u32>,
+) -> ProcessSnapshot {
+    ProcessSnapshot {
+        pid,
+        command: format!("ranked-{pid}"),
+        cpu_percent: f64::from(pid) / 7.0,
+        memory_percent: 1.5,
+        rss_bytes,
+        parent_pid: Some(1),
+        started_at: None,
+        gpu_percent: None,
+        swap_bytes,
+        cpu_rank,
+        memory_rank,
+    }
+}
+
+type StoredRanks = (i64, i64, Option<i64>, Option<i64>, Option<i64>);
+
+/// `(rank, pid, swap_bytes, cpu_rank, memory_rank)` of one capture, straight
+/// from the table, in key order.
+async fn stored_ranks(pool: &SqlitePool, table: &str, captured_at_ms: i64) -> Vec<StoredRanks> {
+    let sql = match table {
+        "process_samples_fast" => {
+            "SELECT rank, pid, swap_bytes, cpu_rank, memory_rank FROM process_samples_fast WHERE captured_at_ms = ? ORDER BY rank"
+        }
+        "process_samples" => {
+            "SELECT rank, pid, swap_bytes, cpu_rank, memory_rank FROM process_samples WHERE captured_at_ms = ? ORDER BY rank"
+        }
+        other => panic!("unsupported table {other}"),
+    };
+    sqlx::query_as(sql)
+        .bind(captured_at_ms)
+        .fetch_all(pool)
+        .await
+        .expect("stored ranks should read")
+}
+
+fn expected_ranks(processes: &[ProcessSnapshot]) -> Vec<StoredRanks> {
+    processes
+        .iter()
+        .enumerate()
+        .map(|(ordinal, process)| {
+            (
+                i64::try_from(ordinal).expect("ordinal fits i64"),
+                i64::from(process.pid),
+                process
+                    .swap_bytes
+                    .map(|bytes| i64::try_from(bytes).expect("fixture swap fits i64")),
+                process.cpu_rank.map(i64::from),
+                process.memory_rank.map(i64::from),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn both_lists_are_stored_and_read_back_from_both_tables() {
+    // Break caught: a rank is written into the other rank's column, swap or a
+    // NULL rank is stored as zero, the memory-only rows are dropped, or `rank`
+    // stops being the row ordinal the history routes order by.
+    const GIB: u64 = 1 << 30;
+    let cases: [(&str, Vec<ProcessSnapshot>); 3] = [
+        (
+            // N = 3, four rows: in both lists, CPU-only, swap unknown, and a
+            // swapped-out process that only the memory list sees.
+            "union",
+            vec![
+                ranked(10, 2 * GIB, Some(0), Some(0), Some(1)),
+                ranked(11, 4_096, Some(8_192), Some(1), None),
+                ranked(12, 5 * GIB, None, Some(2), Some(0)),
+                ranked(13, GIB / 10, Some(2_600_000_000), None, Some(2)),
+            ],
+        ),
+        (
+            // N = 2 and the two lists are the same processes: N rows.
+            "identical-lists",
+            vec![
+                ranked(20, GIB, Some(1), Some(0), Some(1)),
+                ranked(21, 2 * GIB, Some(2), Some(1), Some(0)),
+            ],
+        ),
+        (
+            // N = 2 and the two lists share nothing: 2N rows.
+            "disjoint-lists",
+            vec![
+                ranked(30, 1, Some(0), Some(0), None),
+                ranked(31, 2, Some(0), Some(1), None),
+                ranked(32, 9 * GIB, Some(GIB), None, Some(0)),
+                ranked(33, 8 * GIB, None, None, Some(1)),
+            ],
+        ),
+    ];
+    for (label, processes) in cases {
+        let fixture = TempDatabase::new(&format!("two-lists-{label}"));
+        let store = fixture.store().await;
+        let t = current_time_ms();
+        let mut collected = snapshot(t);
+        collected.processes = processes.clone();
+
+        let stored = store
+            .insert_snapshot(t, &collected)
+            .await
+            .expect("snapshot should insert");
+        assert_eq!(
+            stored.snapshot.processes, processes,
+            "{label}: the sample read back from the store is the sample written"
+        );
+
+        let pool = fixture.pool().await;
+        for table in ["process_samples_fast", "process_samples"] {
+            assert_eq!(
+                stored_ranks(&pool, table, t).await,
+                expected_ranks(&processes),
+                "{label}: {table}"
+            );
+        }
+        pool.close().await;
+
+        let assembled = store
+            .read_history(HistoryQuery {
+                since_ms: Some(t),
+                until_ms: Some(t),
+                limit: Some(1),
+            })
+            .await
+            .expect("history should read");
+        assert_eq!(assembled.len(), 1, "{label}");
+        assert_eq!(assembled[0].snapshot.processes, processes, "{label}");
+
+        for (expected_source, since_ms) in [
+            (ProcessHistorySource::Fast, Some(t)),
+            (ProcessHistorySource::Minute, None),
+        ] {
+            let read = store
+                .read_history_processes(HistoryQuery {
+                    since_ms,
+                    until_ms: Some(t),
+                    limit: Some(10),
+                })
+                .await
+                .expect("process history should read");
+            assert_eq!(read.source, expected_source, "{label}");
+            assert_eq!(read.captures.len(), 1, "{label} {expected_source:?}");
+            let rows: Vec<StoredRanks> = read.captures[0]
+                .processes
+                .iter()
+                .map(|process| {
+                    (
+                        process.rank,
+                        process.pid,
+                        process.swap_bytes,
+                        process.cpu_rank,
+                        process.memory_rank,
+                    )
+                })
+                .collect();
+            assert_eq!(
+                rows,
+                expected_ranks(&processes),
+                "{label} {expected_source:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn history_process_json_omits_an_unknown_swap_and_an_absent_rank() {
+    // Break caught: an absent rank or unknown swap goes on the wire as `null`
+    // or `0`, or under a name the live snapshot does not use.
+    let fixture = TempDatabase::new("ranks-json");
+    let store = fixture.store().await;
+    let t = current_time_ms();
+    let mut collected = snapshot(t);
+    collected.processes = vec![
+        ranked(10, 100, Some(7), Some(0), Some(1)),
+        ranked(11, 200, None, None, Some(0)),
+    ];
+    store
+        .insert_snapshot(t, &collected)
+        .await
+        .expect("snapshot should insert");
+
+    let read = store
+        .read_history_processes(HistoryQuery {
+            since_ms: Some(t),
+            until_ms: Some(t),
+            limit: Some(1),
+        })
+        .await
+        .expect("process history should read");
+    let json = serde_json::to_value(&read.captures[0].processes).expect("rows should serialize");
+    assert_eq!(json[0]["rank"], 0);
+    assert_eq!(json[0]["swapBytes"], 7);
+    assert_eq!(json[0]["cpuRank"], 0);
+    assert_eq!(json[0]["memoryRank"], 1);
+    assert_eq!(json[1]["rank"], 1);
+    assert_eq!(json[1]["memoryRank"], 0);
+    let memory_only = json[1].as_object().expect("a process row is an object");
+    assert!(!memory_only.contains_key("swapBytes"), "{memory_only:?}");
+    assert!(!memory_only.contains_key("cpuRank"), "{memory_only:?}");
+}
+
+#[tokio::test]
+async fn the_minute_row_is_a_copy_of_the_tick_that_was_due_not_a_fold_of_the_minute() {
+    // Break caught: the minute tier averages or merges ranks across the ticks
+    // of a minute, or keeps a process from a tick that was not the due one.
+    let fixture = TempDatabase::new("minute-copy");
+    let store = fixture.store().await;
+    let t = current_time_ms() - 120_000;
+    let ticks: [(i64, Vec<ProcessSnapshot>); 3] = [
+        (
+            t,
+            vec![
+                ranked(10, 100, Some(1), Some(0), Some(1)),
+                ranked(11, 900, Some(2), Some(1), Some(0)),
+            ],
+        ),
+        (
+            // Inside the same detail interval: pid 10 and 11 trade places and
+            // a third process enters. None of this reaches the minute tier.
+            t + 1_500,
+            vec![
+                ranked(11, 950, Some(3), Some(0), Some(1)),
+                ranked(10, 100, Some(1), Some(1), None),
+                ranked(12, 5_000, Some(4_000), None, Some(0)),
+            ],
+        ),
+        (
+            t + 61_000,
+            vec![
+                ranked(12, 6_000, Some(5_000), Some(0), Some(0)),
+                ranked(10, 100, None, Some(1), Some(1)),
+            ],
+        ),
+    ];
+    for (captured_at_ms, processes) in &ticks {
+        let mut collected = snapshot(*captured_at_ms);
+        collected.processes = processes.clone();
+        store
+            .insert_snapshot(*captured_at_ms, &collected)
+            .await
+            .expect("snapshot should insert");
+    }
+
+    let pool = fixture.pool().await;
+    let minute_captures: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT captured_at_ms FROM process_samples ORDER BY captured_at_ms",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("minute captures should read");
+    assert_eq!(minute_captures, [t, t + 61_000]);
+    for (captured_at_ms, processes) in &ticks {
+        assert_eq!(
+            stored_ranks(&pool, "process_samples_fast", *captured_at_ms).await,
+            expected_ranks(processes),
+            "every tick is in the fast tier"
+        );
+    }
+    for index in [0, 2] {
+        let (captured_at_ms, processes) = &ticks[index];
+        assert_eq!(
+            stored_ranks(&pool, "process_samples", *captured_at_ms).await,
+            expected_ranks(processes),
+            "the minute row equals the fast row of the same tick"
+        );
+    }
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn rewriting_a_timestamp_replaces_its_rows_and_their_ranks_in_both_tables() {
+    // Break caught: a replay with fewer processes leaves the old tail rows, or
+    // keeps the first write's ranks beside the second write's values.
+    let fixture = TempDatabase::new("replace-ranks");
+    let store = fixture.store().await;
+    let t = current_time_ms();
+    let first = vec![
+        ranked(10, 100, Some(1), Some(0), None),
+        ranked(11, 200, Some(2), Some(1), Some(1)),
+        ranked(12, 300, Some(3), None, Some(0)),
+    ];
+    let second = vec![
+        ranked(12, 300, None, Some(0), Some(1)),
+        ranked(10, 400, Some(9), Some(1), Some(0)),
+    ];
+    for processes in [&first, &second] {
+        let mut collected = snapshot(t);
+        collected.processes = processes.clone();
+        store
+            .insert_snapshot(t, &collected)
+            .await
+            .expect("snapshot should insert");
+    }
+
+    let pool = fixture.pool().await;
+    for table in ["process_samples_fast", "process_samples"] {
+        assert_eq!(
+            stored_ranks(&pool, table, t).await,
+            expected_ranks(&second),
+            "{table}"
+        );
+    }
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn swap_above_i64_max_is_refused_exactly_as_rss_is_and_the_largest_value_that_fits_is_kept() {
+    // Break caught: a u64 that SQLite INTEGER cannot hold is wrapped negative
+    // or clamped into a plausible number instead of being refused.
+    let too_large = u64::try_from(i64::MAX).expect("i64::MAX fits u64") + 1;
+    for (label, overflowing) in [
+        ("rss", ranked(11, too_large, Some(1), Some(1), Some(0))),
+        ("swap", ranked(11, 1, Some(too_large), Some(1), Some(0))),
+    ] {
+        let fixture = TempDatabase::new(&format!("overflow-{label}"));
+        let store = fixture.store().await;
+        let t = current_time_ms();
+        let mut collected = snapshot(t);
+        collected.processes = vec![ranked(10, 1, Some(1), Some(0), Some(1)), overflowing];
+
+        // The metric row is kept; the tick's process rows are refused whole,
+        // in both tiers — no row of the sample is written beside a missing one.
+        let stored = store
+            .insert_snapshot(t, &collected)
+            .await
+            .expect("the metric sample is still stored");
+        assert_eq!(stored.snapshot.processes, [], "{label}");
+        let pool = fixture.pool().await;
+        for table in ["process_samples_fast", "process_samples"] {
+            assert_eq!(stored_ranks(&pool, table, t).await, [], "{label}: {table}");
+        }
+        pool.close().await;
+    }
+
+    let fixture = TempDatabase::new("overflow-edge");
+    let store = fixture.store().await;
+    let t = current_time_ms();
+    let largest = u64::try_from(i64::MAX).expect("i64::MAX fits u64");
+    let mut collected = snapshot(t);
+    collected.processes = vec![ranked(10, largest, Some(largest), Some(u32::MAX), Some(0))];
+    let stored = store
+        .insert_snapshot(t, &collected)
+        .await
+        .expect("the largest values that fit are stored");
+    assert_eq!(stored.snapshot.processes, collected.processes);
+}
+
+#[tokio::test]
+async fn a_stored_rank_or_swap_outside_its_type_is_refused_on_read() {
+    // Break caught: a corrupt negative value is wrapped into a huge u32/u64
+    // and served as a real rank or a real swap size.
+    for (label, update, expected) in [
+        (
+            "cpu-rank",
+            "UPDATE process_samples_fast SET cpu_rank = -1 WHERE rank = 0",
+            "process cpu_rank is outside u32",
+        ),
+        (
+            "memory-rank",
+            "UPDATE process_samples_fast SET memory_rank = 4294967296 WHERE rank = 0",
+            "process memory_rank is outside u32",
+        ),
+        (
+            "swap",
+            "UPDATE process_samples_fast SET swap_bytes = -1 WHERE rank = 0",
+            "swap_bytes is negative",
+        ),
+    ] {
+        let fixture = TempDatabase::new(&format!("corrupt-{label}"));
+        let store = fixture.store().await;
+        let t = current_time_ms();
+        let mut collected = snapshot(t);
+        collected.processes = vec![ranked(10, 1, Some(1), Some(0), Some(0))];
+        store
+            .insert_snapshot(t, &collected)
+            .await
+            .expect("snapshot should insert");
+        let pool = fixture.pool().await;
+        sqlx::query(update)
+            .execute(&pool)
+            .await
+            .expect("corrupting update");
+        pool.close().await;
+
+        let error = store
+            .read_history(HistoryQuery {
+                since_ms: Some(t),
+                until_ms: Some(t),
+                limit: Some(1),
+            })
+            .await
+            .expect_err("a value outside its type must be refused")
+            .to_string();
+        assert!(error.contains(expected), "{label}: {error}");
+    }
+}
+
 fn snapshot(captured_at_ms: i64) -> SystemSnapshot {
     SystemSnapshot {
         timestamp: format!("fixture-{captured_at_ms}"),

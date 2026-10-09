@@ -7,3 +7,5 @@ One dated line each: date · source · item · status. A line leaves only by bei
 - 2026-10-09 · 0.12.1 lane report · The "Processes" label and help text in Settings → General → Daemon are terse enough that the setting was not found · open
 - 2026-10-09 · mechanical review of 0.13.0 (finding 3) · pid reuse between the process-table refresh and the `/proc/<pid>/status` read can attach one tick's swap figure to the wrong process; a guard needs the start time compared across both reads · open, accepted limit
 - 2026-10-09 · mechanical review of 0.13.0 (finding 6) · The Bun collector has no per-process swap and no CPU/memory ranks, so the two runtimes are no longer behaviourally identical for the process list · open
+- 2026-10-09 · task 2 lane report · Test names in `tinytop-store/tests/migration_v1..v4.rs` still say "v4" while asserting schema 6 · open
+- 2026-10-09 · task 2 lane report · The minute-tier process INSERT's `ON CONFLICT` clause is unreachable because a `DELETE` precedes it · open

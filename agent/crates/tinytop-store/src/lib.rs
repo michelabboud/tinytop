@@ -521,6 +521,19 @@ pub struct HistoryProcessSample {
     pub started_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_percent: Option<f64>,
+    /// Swapped-out bytes; absent when the row predates schema v6 or the
+    /// platform does not expose per-process swap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swap_bytes: Option<i64>,
+    /// Zero-based position in the sample's top-N-by-CPU list; absent when the
+    /// process is only in the memory list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_rank: Option<i64>,
+    /// Zero-based position in the sample's top-N-by-memory (RSS + swap) list;
+    /// absent when the process is only in the CPU list, or the row predates
+    /// schema v6.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_rank: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2285,14 +2298,17 @@ impl SqliteHistoryStore {
                 r#"
                 INSERT INTO process_samples (
                   captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
-                  rss_bytes, parent_pid, started_at_ms, gpu_percent
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  rss_bytes, parent_pid, started_at_ms, gpu_percent,
+                  swap_bytes, cpu_rank, memory_rank
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(captured_at_ms, rank) DO UPDATE SET
                   pid = excluded.pid, command_id = excluded.command_id,
                   cpu_percent = excluded.cpu_percent, memory_percent = excluded.memory_percent,
                   rss_bytes = excluded.rss_bytes, parent_pid = excluded.parent_pid,
                   started_at_ms = excluded.started_at_ms,
-                  gpu_percent = excluded.gpu_percent
+                  gpu_percent = excluded.gpu_percent,
+                  swap_bytes = excluded.swap_bytes, cpu_rank = excluded.cpu_rank,
+                  memory_rank = excluded.memory_rank
                 "#,
             )
             .bind(captured_at_ms)
@@ -2310,6 +2326,14 @@ impl SqliteHistoryStore {
             )
             .bind(started_at_ms)
             .bind(process.gpu_percent)
+            .bind(
+                process
+                    .swap_bytes
+                    .map(|value| to_i64(value, "process swap bytes"))
+                    .transpose()?,
+            )
+            .bind(process.cpu_rank.map(i64::from))
+            .bind(process.memory_rank.map(i64::from))
             .execute(&mut *transaction)
             .await?;
         }
@@ -2376,8 +2400,9 @@ impl SqliteHistoryStore {
                 r#"
                 INSERT INTO process_samples_fast (
                   captured_at_ms, rank, pid, command_id, cpu_percent, memory_percent,
-                  rss_bytes, parent_pid, started_at_ms, gpu_percent
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  rss_bytes, parent_pid, started_at_ms, gpu_percent,
+                  swap_bytes, cpu_rank, memory_rank
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(captured_at_ms)
@@ -2395,6 +2420,14 @@ impl SqliteHistoryStore {
             )
             .bind(started_at_ms)
             .bind(process.gpu_percent)
+            .bind(
+                process
+                    .swap_bytes
+                    .map(|value| to_i64(value, "process swap bytes"))
+                    .transpose()?,
+            )
+            .bind(process.cpu_rank.map(i64::from))
+            .bind(process.memory_rank.map(i64::from))
             .execute(&mut *transaction)
             .await?;
         }
@@ -2519,7 +2552,7 @@ impl SqliteHistoryStore {
             r#"
             SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
                    p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at_ms,
-                   p.gpu_percent
+                   p.gpu_percent, p.swap_bytes, p.cpu_rank, p.memory_rank
             FROM process_samples_fast p
             JOIN process_commands c ON c.command_id = p.command_id
             WHERE p.captured_at_ms >= ? AND p.captured_at_ms <= ?
@@ -2546,7 +2579,7 @@ impl SqliteHistoryStore {
             r#"
             SELECT p.captured_at_ms, p.rank, p.pid, c.command, p.cpu_percent,
                    p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at_ms,
-                   p.gpu_percent
+                   p.gpu_percent, p.swap_bytes, p.cpu_rank, p.memory_rank
             FROM process_samples p
             JOIN process_commands c ON c.command_id = p.command_id
             WHERE p.captured_at_ms >= ? AND p.captured_at_ms <= ?
@@ -3018,7 +3051,7 @@ impl SqliteHistoryStore {
             )
             SELECT p.captured_at_ms, p.rank, p.pid, c.command AS command, p.cpu_percent,
                    p.memory_percent, p.rss_bytes, p.parent_pid, p.started_at_ms,
-                   p.gpu_percent
+                   p.gpu_percent, p.swap_bytes, p.cpu_rank, p.memory_rank
             FROM {table} p
             INNER JOIN capture_times t ON t.captured_at_ms = p.captured_at_ms
             INNER JOIN process_commands c ON c.command_id = p.command_id
@@ -3056,6 +3089,9 @@ impl SqliteHistoryStore {
                     .try_get::<Option<i64>, _>("started_at_ms")?
                     .and_then(rfc3339_from_ms),
                 gpu_percent: row.try_get("gpu_percent")?,
+                swap_bytes: row.try_get("swap_bytes")?,
+                cpu_rank: row.try_get("cpu_rank")?,
+                memory_rank: row.try_get("memory_rank")?,
             };
             let Some(capture) = captures.last_mut() else {
                 return Err(StoreError::Validation(
@@ -4177,10 +4213,25 @@ fn process_snapshot_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ProcessSna
             .try_get::<Option<i64>, _>("started_at_ms")?
             .and_then(rfc3339_from_ms),
         gpu_percent: row.try_get("gpu_percent")?,
-        swap_bytes: None,
-        cpu_rank: None,
-        memory_rank: None,
+        swap_bytes: optional_u64(row, "swap_bytes")?,
+        cpu_rank: optional_rank(row, "cpu_rank")?,
+        memory_rank: optional_rank(row, "memory_rank")?,
     })
+}
+
+/// A stored list position. NULL means "not in that list" (or, for a row older
+/// than schema v6, "not recorded"); a value outside `u32` is a corrupt row and
+/// is refused rather than wrapped.
+fn optional_rank(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &'static str,
+) -> Result<Option<u32>, StoreError> {
+    row.try_get::<Option<i64>, _>(column)?
+        .map(|value| {
+            u32::try_from(value)
+                .map_err(|_| StoreError::Validation(format!("process {column} is outside u32")))
+        })
+        .transpose()
 }
 
 fn filesystem_snapshot_from_row(

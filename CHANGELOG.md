@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.14.0 - 2026-10-09
+
+Task 2 of the memory-ranked processes plan (`docs/plans/2026-10-09-memory-ranked-processes-plan.md`): the store. The dashboard and the API documentation are task 3.
+
+- **Schema v6 (ADR 0036): process history keeps both lists and per-process swap.** `process_samples_fast` (per tick) and `process_samples` (per minute) gain three nullable columns — `swap_bytes`, `cpu_rank`, `memory_rank` — and the store now writes and reads them. Until now it dropped the three fields the collector started producing in 0.13.0, so a sample read back from history had lost its memory ranking and its swap.
+- **`rank` is now the row's ordinal within its sample**, still the primary key with `captured_at_ms`, and no longer "the CPU position": the CPU list comes first, so `rank` equals `cpu_rank` on the first N rows, and the memory-only rows follow. History is still returned in `rank` order.
+- **The migration adds columns in place — no table is rebuilt and no row is deleted or rewritten.** It runs once, at the first start of this version, in one transaction: a v5 file either becomes a v6 file or is left exactly as it was. Rows already stored get `cpu_rank = rank` (they were the top N by CPU, in CPU order); their swap and memory rank stay empty, because they were never measured.
+- **Measured: 0.86–0.96 s** for 920,000 process rows (the live database held 795,468 on 2026-10-09), growing the file by about 4.5 bytes per row. The dashboard is unavailable for that second; no start timeout applies.
+- **A process table the migration does not recognise stops the daemon instead of being altered** — for example a column of the same name added by hand. The error lists the expected and the found columns; the remedy is to restore a backup (`./tinytop db backup`) or move the file aside.
+- **No way back to 0.13.0 on the same file**: an older binary refuses a v6 database. Take the backup before deploying.
+- `/api/history/processes` rows, and the processes inside `/api/history` samples, now carry `swapBytes`, `cpuRank` and `memoryRank`. Each is omitted when unknown or when the process is not in that list, so every row that was returned before is unchanged; what is new are the fields and the memory-only rows after the first N.
+- The per-minute table is a copy of the one tick that was due, as before — ranks and swap are not averaged across a minute.
+- A swap value too large for SQLite's integer is refused the same way an oversized resident size is: that tick's process rows are not written, the metric sample is kept, and the writer logs a warning.
+- A sample holds between N and 2N process rows (17 at the default 12 when measured on 2026-10-09), so process history grows by about 40 % at the default.
+- Tests: migration from every earlier schema version, empty and populated; the backfill, with every pre-existing column compared bit for bit; a failure injected after the first table was already altered, leaving the file untouched; fresh and migrated shapes compared; write and read-back of samples in both lists, CPU-only, memory-only and with unknown swap, at N, between, and 2N rows. The four `tinytop-agent` tests that could only check row counts now check both lists on the sample read back from the store.
+- Not changed: the archive database and the monthly CSV exports hold hourly metric buckets only and never contained process rows.
+
 ## 0.13.0 - 2026-10-09
 
 Task 1 of the memory-ranked processes plan (`docs/plans/2026-10-09-memory-ranked-processes-plan.md`): the collector and the snapshot types. Nothing is stored yet — the store, the API and the dashboard are tasks 2 and 3.

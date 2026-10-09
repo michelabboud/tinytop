@@ -12,7 +12,7 @@ use tinytop_types::SystemSnapshot;
 
 use crate::{StoreError, disk};
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 /// Historical v0→v1 JSON retention window.
 ///
@@ -641,6 +641,159 @@ pub const CREATE_SCHEMA_V5_SQL: [&str; 8] = [
     CREATE_SCHEMA_V5_TAIL_SQL,
 ];
 
+// Schema v6 (ADR 0036): the process tables keep two ranked lists on one row.
+// The three columns are LAST and nullable so `ALTER TABLE … ADD COLUMN` on a
+// v5 file produces exactly this shape (an added column is always appended).
+const CREATE_PROCESS_SAMPLES_FAST_V6_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS process_samples_fast (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  command_id INTEGER NOT NULL REFERENCES process_commands(command_id),
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at_ms INTEGER,
+  gpu_percent REAL,
+  swap_bytes INTEGER,
+  cpu_rank INTEGER,
+  memory_rank INTEGER,
+  PRIMARY KEY (captured_at_ms, rank)
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_fast_command
+  ON process_samples_fast (command_id);
+"#;
+
+const CREATE_PROCESS_SAMPLES_V6_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS process_samples (
+  captured_at_ms INTEGER NOT NULL,
+  rank INTEGER NOT NULL,
+  pid INTEGER NOT NULL,
+  cpu_percent REAL NOT NULL,
+  memory_percent REAL NOT NULL,
+  rss_bytes INTEGER NOT NULL,
+  parent_pid INTEGER,
+  started_at_ms INTEGER,
+  command_id INTEGER REFERENCES process_commands(command_id),
+  gpu_percent REAL,
+  swap_bytes INTEGER,
+  cpu_rank INTEGER,
+  memory_rank INTEGER,
+  PRIMARY KEY (captured_at_ms, rank)
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_time
+  ON process_samples (captured_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_process_samples_command
+  ON process_samples (command_id);
+"#;
+
+const CREATE_SCHEMA_V6_TAIL_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS app_events (
+  event_id INTEGER PRIMARY KEY,
+  occurred_at_ms INTEGER NOT NULL,
+  marker_type TEXT NOT NULL,
+  label TEXT NOT NULL,
+  details_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
+  ON app_events (occurred_at_ms DESC, marker_type);
+
+PRAGMA user_version = 6;
+"#;
+
+#[doc(hidden)]
+pub const CREATE_SCHEMA_V6_SQL: [&str; 8] = [
+    CREATE_SCHEMA_V3_HEAD_SQL,
+    CREATE_SCHEMA_V2_HEAD_SQL,
+    CREATE_PROCESS_COMMANDS_V2_SQL,
+    CREATE_PROCESS_SAMPLES_FAST_V6_SQL,
+    CREATE_PROCESS_SAMPLES_V6_SQL,
+    CREATE_GPU_TABLES_V4_SQL,
+    CREATE_SENSOR_TABLES_V5_SQL,
+    CREATE_SCHEMA_V6_TAIL_SQL,
+];
+
+/// The column names, in `cid` order, that the v5 → v6 migration requires of
+/// each process table before it adds anything. A file whose process tables
+/// are any other shape was not written by tinytop-agent's own DDL, and is
+/// refused rather than altered.
+const PROCESS_TABLE_V5_COLUMNS: [(&str, [&str; 10]); 2] = [
+    (
+        "process_samples_fast",
+        [
+            "captured_at_ms",
+            "rank",
+            "pid",
+            "command_id",
+            "cpu_percent",
+            "memory_percent",
+            "rss_bytes",
+            "parent_pid",
+            "started_at_ms",
+            "gpu_percent",
+        ],
+    ),
+    (
+        "process_samples",
+        [
+            "captured_at_ms",
+            "rank",
+            "pid",
+            "cpu_percent",
+            "memory_percent",
+            "rss_bytes",
+            "parent_pid",
+            "started_at_ms",
+            "command_id",
+            "gpu_percent",
+        ],
+    ),
+];
+
+/// One process table's share of the v5 → v6 migration.
+struct ProcessTableV6 {
+    table: &'static str,
+    /// `ADD COLUMN` appends to the stored schema; no row is rewritten by it.
+    add_columns: [&'static str; 3],
+    /// Existing rows were the top N by CPU in CPU order, so their `rank` IS
+    /// their CPU position. Their swap and memory position were never measured
+    /// and stay NULL — unknown, not zero.
+    backfill: &'static str,
+    count: &'static str,
+    /// Rows the backfill left in any state other than the one it promises.
+    count_unverified: &'static str,
+}
+
+const PROCESS_TABLES_V6: [ProcessTableV6; 2] = [
+    ProcessTableV6 {
+        table: "process_samples_fast",
+        add_columns: [
+            "ALTER TABLE process_samples_fast ADD COLUMN swap_bytes INTEGER",
+            "ALTER TABLE process_samples_fast ADD COLUMN cpu_rank INTEGER",
+            "ALTER TABLE process_samples_fast ADD COLUMN memory_rank INTEGER",
+        ],
+        backfill: "UPDATE process_samples_fast SET cpu_rank = rank",
+        count: "SELECT COUNT(*) FROM process_samples_fast",
+        count_unverified: "SELECT COUNT(*) FROM process_samples_fast WHERE cpu_rank IS NOT rank OR swap_bytes IS NOT NULL OR memory_rank IS NOT NULL",
+    },
+    ProcessTableV6 {
+        table: "process_samples",
+        add_columns: [
+            "ALTER TABLE process_samples ADD COLUMN swap_bytes INTEGER",
+            "ALTER TABLE process_samples ADD COLUMN cpu_rank INTEGER",
+            "ALTER TABLE process_samples ADD COLUMN memory_rank INTEGER",
+        ],
+        backfill: "UPDATE process_samples SET cpu_rank = rank",
+        count: "SELECT COUNT(*) FROM process_samples",
+        count_unverified: "SELECT COUNT(*) FROM process_samples WHERE cpu_rank IS NOT rank OR swap_bytes IS NOT NULL OR memory_rank IS NOT NULL",
+    },
+];
+
 const CREATE_PROCESS_SAMPLES_FAST_V4_TEMP_SQL: &str = r#"
 CREATE TABLE process_samples_fast_v4 (
   captured_at_ms INTEGER NOT NULL,
@@ -899,22 +1052,29 @@ pub(crate) async fn ensure_schema(
 
     match user_version {
         SCHEMA_VERSION => {
-            apply_schema_v5(pool).await?;
+            apply_schema_v6(pool).await?;
+            complete_pending_migration(pool, db_path).await
+        }
+        5 => {
+            migrate_v5_to_v6(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         4 => {
             migrate_v4_to_v5(pool, now_ms).await?;
+            migrate_v5_to_v6(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         3 => {
             migrate_v3_to_v4(pool, now_ms).await?;
             migrate_v4_to_v5(pool, now_ms).await?;
+            migrate_v5_to_v6(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         2 => {
             migrate_v2_to_v3(pool, now_ms).await?;
             migrate_v3_to_v4(pool, now_ms).await?;
             migrate_v4_to_v5(pool, now_ms).await?;
+            migrate_v5_to_v6(pool, now_ms).await?;
             complete_pending_migration(pool, db_path).await
         }
         1 => {
@@ -923,12 +1083,13 @@ pub(crate) async fn ensure_schema(
             migrate_v2_to_v3(pool, now_ms).await?;
             migrate_v3_to_v4(pool, now_ms).await?;
             migrate_v4_to_v5(pool, now_ms).await?;
+            migrate_v5_to_v6(pool, now_ms).await?;
             Ok(report)
         }
         0 => {
             let metric_samples_exists = table_exists(pool, "metric_samples").await?;
             if !metric_samples_exists {
-                apply_schema_v5(pool).await?;
+                apply_schema_v6(pool).await?;
                 return Ok(None);
             }
 
@@ -941,6 +1102,7 @@ pub(crate) async fn ensure_schema(
                 migrate_v2_to_v3(pool, now_ms).await?;
                 migrate_v3_to_v4(pool, now_ms).await?;
                 migrate_v4_to_v5(pool, now_ms).await?;
+                migrate_v5_to_v6(pool, now_ms).await?;
                 return Ok(None);
             }
 
@@ -950,6 +1112,7 @@ pub(crate) async fn ensure_schema(
             migrate_v2_to_v3(pool, now_ms).await?;
             migrate_v3_to_v4(pool, now_ms).await?;
             migrate_v4_to_v5(pool, now_ms).await?;
+            migrate_v5_to_v6(pool, now_ms).await?;
             Ok(Some(report))
         }
         other => Err(StoreError::Migration {
@@ -964,8 +1127,106 @@ pub(crate) async fn ensure_schema(
     }
 }
 
-async fn apply_schema_v5(pool: &SqlitePool) -> Result<(), StoreError> {
-    apply_schema_groups(pool, &CREATE_SCHEMA_V5_SQL).await
+async fn apply_schema_v6(pool: &SqlitePool) -> Result<(), StoreError> {
+    apply_schema_groups(pool, &CREATE_SCHEMA_V6_SQL).await
+}
+
+/// Schema v5 → v6 (ADR 0036): `swap_bytes`, `cpu_rank` and `memory_rank` on
+/// both process tables, and `cpu_rank = rank` for every row already there.
+///
+/// One transaction holds the shape check, the six `ADD COLUMN`s, both
+/// backfills, their verification, the audit marker and `user_version = 6`.
+/// Any error returns before the commit and the dropped transaction rolls all
+/// of it back, so a failed run leaves a v5 file exactly as it was. No row is
+/// deleted or rebuilt; `ADD COLUMN` appends to the stored schema only.
+async fn migrate_v5_to_v6(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {
+    let started = Instant::now();
+    let mut transaction = pool.begin().await?;
+
+    for (table, expected_columns) in PROCESS_TABLE_V5_COLUMNS {
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+                .bind(table)
+                .fetch_all(&mut *transaction)
+                .await?;
+        if columns != expected_columns {
+            return Err(StoreError::Migration {
+                reason: format!(
+                    "schema v6 migration does not recognise {table}: expected the schema v5 columns [{}], found [{}]",
+                    expected_columns.join(", "),
+                    columns.join(", ")
+                ),
+                remedy: format!(
+                    "{table} was changed outside tinytop-agent — restore a backup of the database (`./tinytop db backup` writes one) or move the file aside so a fresh one is created, then start again; the database was not modified"
+                ),
+            });
+        }
+    }
+
+    let mut row_counts = [0_i64; 2];
+    for (index, step) in PROCESS_TABLES_V6.iter().enumerate() {
+        let table = step.table;
+        let rows_before: i64 = sqlx::query_scalar(step.count)
+            .fetch_one(&mut *transaction)
+            .await?;
+        for statement in step.add_columns.into_iter().chain([step.backfill]) {
+            sqlx::query(statement)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| StoreError::Migration {
+                    reason: format!("`{statement}` failed inside the v5→v6 transaction: {error}"),
+                    remedy: format!(
+                        "the error names the cause — if it is a trigger or view on {table}, remove it — then start again; the database was not modified"
+                    ),
+                })?;
+        }
+        let rows_after: i64 = sqlx::query_scalar(step.count)
+            .fetch_one(&mut *transaction)
+            .await?;
+        let rows_unverified: i64 = sqlx::query_scalar(step.count_unverified)
+            .fetch_one(&mut *transaction)
+            .await?;
+        if rows_after != rows_before || rows_unverified != 0 {
+            return Err(StoreError::Migration {
+                reason: format!(
+                    "schema v6 backfill of {table} did not verify: {rows_before} rows before, {rows_after} after, {rows_unverified} without cpu_rank = rank and NULL swap_bytes and memory_rank"
+                ),
+                remedy:
+                    "report this with `tinytop-agent db stats --json`; the database was not modified"
+                        .to_string(),
+            });
+        }
+        row_counts[index] = rows_after;
+    }
+    let [fast_rows, minute_rows] = row_counts;
+
+    let duration_ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+    let details_json = serde_json::to_string(&serde_json::json!({
+        "fromVersion": 5,
+        "toVersion": 6,
+        "fastRows": fast_rows,
+        "minuteRows": minute_rows,
+        "durationMs": duration_ms,
+    }))?;
+    sqlx::query(
+        r#"
+        INSERT INTO app_events (occurred_at_ms, marker_type, label, details_json)
+        VALUES (?, 'schemaMigrated', 'SQLite schema migrated from v5 to v6', ?)
+        "#,
+    )
+    .bind(now_ms)
+    .bind(details_json)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("PRAGMA user_version = 6")
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+
+    eprintln!(
+        "history migration info: schema v5 → v6 in {duration_ms} ms (swap_bytes, cpu_rank and memory_rank added; cpu_rank backfilled from rank on {fast_rows} fast process rows and {minute_rows} minute process rows)"
+    );
+    Ok(())
 }
 
 async fn migrate_v4_to_v5(pool: &SqlitePool, now_ms: i64) -> Result<(), StoreError> {
@@ -2268,7 +2529,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v1_schema_chains_to_v5_and_v6_is_refused() {
+    async fn v1_schema_chains_to_v6_and_v7_is_refused() {
         // Break caught: the dispatcher stops at an intermediate version or accepts future DDL.
         let pool = memory_pool().await;
         sqlx::raw_sql(CREATE_SCHEMA_V1_SQL)
@@ -2283,20 +2544,20 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .expect("migrated version"),
-            5
+            6
         );
 
-        sqlx::query("PRAGMA user_version = 6")
+        sqlx::query("PRAGMA user_version = 7")
             .execute(&pool)
             .await
             .expect("future version fixture");
-        let error = ensure_schema(&pool, Path::new("migration-v6-fixture.sqlite"), 2_000)
+        let error = ensure_schema(&pool, Path::new("migration-v7-fixture.sqlite"), 2_000)
             .await
-            .expect_err("v6 must be refused");
+            .expect_err("v7 must be refused");
         assert!(
             error
                 .to_string()
-                .contains("unsupported SQLite schema version 6")
+                .contains("unsupported SQLite schema version 7")
         );
     }
 }

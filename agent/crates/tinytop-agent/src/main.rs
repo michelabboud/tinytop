@@ -1412,19 +1412,20 @@ mod tests {
             .expect("inserted snapshot should be readable");
         assert_eq!(history.len(), 1);
         let one_process_count = history[0].snapshot.processes.len();
+        assert_eq!(
+            crate::writer::tests::assert_two_process_lists(crate::writer::tests::process_ranks(
+                &history[0].snapshot
+            )),
+            1,
+            "the assembled snapshot carries both lists"
+        );
         let stored = store
             .read_history_processes(tinytop_store::HistoryQuery::default())
             .await
             .expect("inserted process rows should be readable");
         assert_eq!(stored.captures.len(), 1);
         assert_eq!(
-            crate::writer::tests::assert_stored_process_rows(
-                stored.captures[0]
-                    .processes
-                    .iter()
-                    .map(|process| process.rank),
-                1,
-            ),
+            crate::writer::tests::assert_stored_process_rows(&stored.captures[0].processes, 1),
             one_process_count,
             "the assembled snapshot and the process rows must agree"
         );
@@ -1473,19 +1474,20 @@ mod tests {
             .expect("inserted snapshot should be readable");
         assert_eq!(history.len(), 1);
         let two_process_count = history[0].snapshot.processes.len();
+        assert_eq!(
+            crate::writer::tests::assert_two_process_lists(crate::writer::tests::process_ranks(
+                &history[0].snapshot
+            )),
+            2,
+            "the assembled snapshot carries both lists"
+        );
         let stored = store
             .read_history_processes(tinytop_store::HistoryQuery::default())
             .await
             .expect("inserted process rows should be readable");
         assert_eq!(stored.captures.len(), 1);
         assert_eq!(
-            crate::writer::tests::assert_stored_process_rows(
-                stored.captures[0]
-                    .processes
-                    .iter()
-                    .map(|process| process.rank),
-                2,
-            ),
+            crate::writer::tests::assert_stored_process_rows(&stored.captures[0].processes, 2),
             two_process_count,
             "the assembled snapshot and the process rows must agree"
         );

@@ -11,7 +11,7 @@ This document describes the implemented SQLite history architecture for TinyTop.
 - Public dashboard API: Rust daemon on `127.0.0.1:4274`
 - Default database path: `~/.local/share/tinytop/history.sqlite`
 - Override path: `TINYTOP_HISTORY_DB=/path/to/history.sqlite`
-- Current schema version: v4, with typed metric rows, interned host identity, on-change filesystem rows and mount-presence events, one-minute/five-minute/hourly rollup tables, typed process detail tables with millisecond start times and nullable GPU percent, a per-tick process table and command dictionary, interned GPU adapters and per-tick GPU samples, migration/disk/fold state, and daemon timeline events
+- Current schema version: v6, with typed metric rows, interned host identity, on-change filesystem rows and mount-presence events, one-minute/five-minute/hourly rollup tables, typed process detail tables with millisecond start times, nullable GPU percent, and (v6) nullable per-process swap and two list ranks, a per-tick process table and command dictionary, interned GPU adapters and per-tick GPU samples, (v5) interned thermal sensors and per-tick sensor samples, migration/disk/fold state, and daemon timeline events
 - Current retention behavior: Rust daemon maintenance reads the validated `retentionLadder` block for L1–L4 horizons/toggles, filesystem check cadence, and per-tick process history; legacy `retentionHours` and `rollupRetentionDays` remain derived compatibility mirrors
 
 ## Process Boundary
@@ -84,7 +84,7 @@ PRAGMA foreign_keys = ON;
 
 ## Current Schema
 
-Fresh databases are created directly at schema v4. The DDL below is also the
+Fresh databases are created directly at schema v6. The DDL below is also the
 post-migration shape; the six minimum/root-maximum columns appear at the end of
 `metric_rollups_1m` because SQLite appends them when upgrading a populated v0
 database.
@@ -270,6 +270,9 @@ CREATE TABLE IF NOT EXISTS process_samples (
   started_at_ms INTEGER,
   command_id INTEGER REFERENCES process_commands(command_id),
   gpu_percent REAL,
+  swap_bytes INTEGER,
+  cpu_rank INTEGER,
+  memory_rank INTEGER,
   PRIMARY KEY (captured_at_ms, rank)
 );
 
@@ -295,6 +298,9 @@ CREATE TABLE IF NOT EXISTS process_samples_fast (
   parent_pid INTEGER,
   started_at_ms INTEGER,
   gpu_percent REAL,
+  swap_bytes INTEGER,
+  cpu_rank INTEGER,
+  memory_rank INTEGER,
   PRIMARY KEY (captured_at_ms, rank)
 ) WITHOUT ROWID;
 
@@ -321,6 +327,25 @@ CREATE TABLE IF NOT EXISTS gpu_samples (
   PRIMARY KEY (captured_at_ms, adapter_id)
 ) WITHOUT ROWID;
 
+CREATE TABLE IF NOT EXISTS sensor_dim (
+  sensor_id INTEGER PRIMARY KEY,
+  stable_id TEXT NOT NULL UNIQUE,
+  chip TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  label TEXT NOT NULL,
+  max_c REAL,
+  crit_c REAL,
+  first_seen_ms INTEGER NOT NULL,
+  last_seen_ms INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sensor_samples (
+  captured_at_ms INTEGER NOT NULL,
+  sensor_id INTEGER NOT NULL REFERENCES sensor_dim(sensor_id),
+  value REAL NOT NULL,
+  PRIMARY KEY (captured_at_ms, sensor_id)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS app_events (
   event_id INTEGER PRIMARY KEY,
   occurred_at_ms INTEGER NOT NULL,
@@ -332,7 +357,7 @@ CREATE TABLE IF NOT EXISTS app_events (
 CREATE INDEX IF NOT EXISTS idx_app_events_occurred_type
   ON app_events (occurred_at_ms DESC, marker_type);
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 6;
 ```
 
 The value written into `fs_samples.captured_at_ms` is the enumeration key
@@ -349,8 +374,8 @@ table by that key.
 ## Schema Versions And Migration
 
 `SqliteHistoryStore::connect` applies the SQLite pragmas, reads
-`PRAGMA user_version`, and ensures schema v4 before it runs the older runtime
-name canonicalization. A new or empty database is built directly at v4. A v4
+`PRAGMA user_version`, and ensures schema v6 before it runs the older runtime
+name canonicalization. A new or empty database is built directly at v6. A v6
 database only receives idempotent `CREATE ... IF NOT EXISTS` checks.
 
 A v1 database migrates to v2 in one transaction. Before any write, the store
@@ -429,11 +454,39 @@ rolls the transaction back. It recreates all three process indexes, adds
 `gpu_percent` to the minute tier, creates `gpu_adapters` and `gpu_samples`, and
 writes one `schemaMigrated` marker before setting `user_version = 4`.
 
+Schema v5 (ADR 0026) is one transaction that creates `sensor_dim` and
+`sensor_samples`; it rebuilds nothing.
+
+Schema v6 (ADR 0036) is one transaction that changes both process tables in
+place. It first reads the column names of `process_samples_fast` and
+`process_samples` and refuses, before any write, unless each is exactly the v5
+list — a file whose process tables were altered by hand is stopped with the
+expected and the found columns, not adapted to. It then runs, per table,
+`ALTER TABLE … ADD COLUMN swap_bytes INTEGER`, `… cpu_rank INTEGER`,
+`… memory_rank INTEGER` and `UPDATE … SET cpu_rank = rank`. No table is rebuilt
+and no existing value is rewritten: rows stored before v6 were the top N by CPU
+in CPU order, so their `rank` is their CPU position, while their swap and their
+memory position were never measured and stay NULL. Before the commit each table
+must have its original row count and no row with `cpu_rank` different from
+`rank` or a non-NULL `swap_bytes` or `memory_rank`. The marker records
+`fastRows`, `minuteRows` and `durationMs`, and `user_version = 6` is set inside
+the same transaction, so any failure leaves a v5 file exactly as it was. No
+pre-image is taken, because nothing is deleted. Measured 2026-10-09: 0.86–0.96 s
+for 460,000 rows in each table.
+
+From v6, `rank` is the row's ordinal within its sample (still the primary key
+with `captured_at_ms`). A sample is the top N processes by CPU in CPU order,
+then the members of the top N by resident-plus-swap memory that are not already
+present, in memory order; `cpu_rank` and `memory_rank` are the zero-based
+positions in those lists and NULL when the process is not in that list. A
+capture in which no row has a `memory_rank` was written before v6.
+
 The v0 path still performs its existing pre-image/VACUUM migration first and
-then chains into v1→v2→v3→v4; v1 and v2 follow the same remaining chain, and v3
-runs only the v3→v4 transaction. Unsupported schema versions are refused with
+then chains into v1→v2→v3→v4→v5→v6; every later version follows the same
+remaining chain, each step in its own transaction, so a v5 file runs only the
+v5→v6 transaction. Unsupported schema versions are refused with
 `unsupported SQLite schema version <version> at <path> (supported version is
-4)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
+6)`. The v0 pre-image is never overwritten, replaced, or deleted automatically.
 `tinytop-agent db pre-image status` inspects its canonical path and main-database
 state; `tinytop-agent db pre-image remove --yes` removes only that exact file and
 refuses unless the main database has completed schema v1 and passes integrity checking.
@@ -498,7 +551,7 @@ the collector has no source.
 2. The collector reads local Linux/WSL sources.
 3. `tinytop-store` writes the metric sample, filesystem changes, and GPU adapter/sample rows in one transaction, then writes the per-tick process rows in a separate transaction. Each process command is interned with `INSERT OR IGNORE` followed by a dictionary lookup; the resulting `command_id` is used by both process tables.
 4. The fast process transaction replaces rows at the same `captured_at_ms`, preserving idempotent collection while keeping metric readers independent.
-5. Once per detail interval, the existing minute-tier `process_samples` capture is written with the same dictionary IDs.
+5. Once per detail interval, the existing minute-tier `process_samples` capture is written with the same dictionary IDs. It is a copy of that one tick's process rows — ranks and swap included — not a fold of the ticks in the minute.
 
 ## Read Path
 
@@ -508,7 +561,8 @@ selected by its retention window:
 ```sql
 SELECT p.captured_at_ms, p.rank, p.pid, c.command,
        p.cpu_percent, p.memory_percent, p.rss_bytes,
-       p.parent_pid, p.started_at_ms, p.gpu_percent
+       p.parent_pid, p.started_at_ms, p.gpu_percent,
+       p.swap_bytes, p.cpu_rank, p.memory_rank
 FROM process_samples_fast AS p
 JOIN process_commands AS c ON c.command_id = p.command_id
 ORDER BY p.captured_at_ms DESC, p.rank;
